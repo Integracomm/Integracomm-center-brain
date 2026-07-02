@@ -1,0 +1,28 @@
+[project]
+name = "integracomm-ia"
+version = "0.1.0"
+description = "Ferramenta interna de IA da Integracomm — casca modular + agente de Growth (risco de churn)"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+    "python-multipart>=0.0.9",  # parse de formulário (login)
+    "httpx>=0.27",            # leitura HTTP (ClickUp, ML Connect)
+    "psycopg[binary]>=3.1",  # Postgres próprio + leitura RO do WhatsApp Connector
+    "apscheduler>=3.10",     # execução agendada 24/7 (diária; WhatsApp mais frequente)
+    "anthropic>=0.40",       # Claude (Opus na decisão; Haiku/Sonnet no volume)
+    "google-api-python-client>=2.0",  # Google Sheets (cancelamentos 2026, RO)
+    "google-auth>=2.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.4", "mypy>=1.10"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

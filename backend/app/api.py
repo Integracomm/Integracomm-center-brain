@@ -1,0 +1,1160 @@
+"""Painel mínimo (FastAPI) — camada de SURFACE do agente de Growth.
+
+Lê APENAS derivados do Postgres próprio (scores/alerts/motivos/auditoria); nunca
+toca as fontes nem executa ação. Humano no loop: exibe e sinaliza, quem age é o
+gestor. RBAC: `role` define o que se vê — admin vê tudo; gestor_growth vê só
+Growth (hoje o único agente, então a mesma coisa — o filtro fica pronto p/ quando
+houver mais agentes). Toda abertura do painel é auditada.
+
+    backend/.venv/Scripts/python -m uvicorn app.api:app --port 8000
+    # abre http://localhost:8000/?role=admin
+"""
+from __future__ import annotations
+
+import datetime as dt
+import os
+import re
+from html import escape
+from pathlib import Path
+from typing import Any
+
+import psycopg
+from fastapi import Body, FastAPI, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
+
+from .agents.growth.scoring import _top_driver, action_guideline
+from .auth import COOKIE, ROLE_HOME, check_login, make_token, verify_token
+from .db import persistence as P
+
+app = FastAPI(title="Integracomm IA — Growth", docs_url="/api/docs")
+
+# Relatório mensal de assessoria por cliente (endpoints + página /growth/report).
+# Import tardio dentro do módulo evita ciclo (report_api usa _conn/_require_api daqui).
+from .report_api import router as _report_router  # noqa: E402
+
+app.include_router(_report_router)
+
+_ROLES = {"admin", "gestor_growth"}
+_ROOT = Path(__file__).resolve().parents[1].parent  # raiz do projeto (onde vive o .env)
+
+
+def _load_root_env() -> None:
+    """Carrega o .env da RAIZ (o uvicorn roda de backend/, o .env está um nível acima)."""
+    envf = _ROOT / ".env"
+    if not envf.exists():
+        return
+    for line in envf.read_text(encoding="utf-8").splitlines():
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            os.environ.setdefault(k.strip(), v.strip())
+
+
+def _db_url() -> str:
+    url = os.environ.get("APP_DATABASE_URL")
+    if not url:
+        _load_root_env()
+        url = os.environ.get("APP_DATABASE_URL")
+    if not url:
+        raise RuntimeError("APP_DATABASE_URL não configurada")
+    return url
+
+
+def _conn():
+    c = psycopg.connect(_db_url())
+    c.autocommit = True
+    return c
+
+
+def _visible_agents(role: str) -> list[str]:
+    # seam de RBAC: admin vê todos os agentes; papéis específicos, só o seu.
+    return ["growth"] if role in ("admin", "gestor_growth") else []
+
+
+# --- sessão / login ----------------------------------------------------------
+def _session(request: Request) -> tuple[str, str] | None:
+    """(user, role) da sessão, ou None."""
+    return verify_token(request.cookies.get(COOKIE))
+
+
+def _require_api(request: Request) -> tuple[str, str]:
+    s = _session(request)
+    if not s:
+        raise HTTPException(status_code=401, detail="não autenticado — faça login em /login")
+    return s
+
+
+def _login_html(erro: bool = False) -> str:
+    msg = ("<div style='color:var(--status-critico);font-size:var(--fs-sm);margin-bottom:12px'>"
+           "usuário ou senha inválidos</div>") if erro else ""
+    return f"""<!doctype html><html lang=pt-br><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1"><title>Integracomm IA — Entrar</title>
+<link rel=preconnect href="https://fonts.googleapis.com"><link rel=preconnect href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=Poppins:wght@600;700&display=swap" rel=stylesheet>
+<style>{_tokens_css()}
+*{{box-sizing:border-box}}
+body{{margin:0;background:var(--bg-app);color:var(--text);font-family:var(--font-body);min-height:100vh;display:flex;align-items:center;justify-content:center}}
+.card{{width:340px;background:var(--surface-1);border:1px solid var(--border-mid);border-radius:var(--radius-md);padding:28px}}
+.logo{{width:26px;height:26px;border-radius:50%;background:var(--brand);position:relative;display:inline-block;vertical-align:middle}}
+.logo::after{{content:"";position:absolute;width:11px;height:11px;border-radius:50%;background:var(--surface-1);top:7.5px;left:11px}}
+h1{{font-family:var(--font-display);font-size:17px;font-weight:700;display:inline-block;margin:0 0 0 10px;vertical-align:middle}}
+label{{display:block;font-size:var(--fs-2xs);color:var(--text-muted);text-transform:uppercase;letter-spacing:.08em;margin:16px 0 5px}}
+select,input{{width:100%;background:var(--bg-panel);border:1px solid var(--border-strong);border-radius:var(--radius-sm);color:var(--text);font-family:var(--font-body);font-size:var(--fs-base);padding:9px 10px}}
+select:focus,input:focus{{outline:none;border-color:var(--brand)}}
+button{{width:100%;margin-top:20px;cursor:pointer;background:var(--brand);color:var(--brand-ink);border:none;border-radius:var(--radius-sm);font-family:var(--font-body);font-weight:600;font-size:var(--fs-md);padding:10px}}
+.hint{{font-size:var(--fs-xs);color:var(--text-faint);margin-top:14px;line-height:1.5}}
+</style></head><body>
+<form class=card method=post action=/login>
+  <div style="margin-bottom:18px"><span class=logo></span><h1>Integracomm IA</h1></div>
+  {msg}
+  <label>usuário / e-mail</label>
+  <input type=text name=user placeholder="adm@integracomm.com.br" autofocus autocomplete=username>
+  <label>senha</label>
+  <input type=password name=password autocomplete=current-password>
+  <button type=submit>Entrar</button>
+  <div class=hint>Senhas no <b>.env</b> da raiz (geradas no 1º boot). Humano no loop — a IA só sinaliza.</div>
+</form></body></html>"""
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page(request: Request, erro: str = Query("")):
+    s = _session(request)
+    if s:
+        return RedirectResponse(ROLE_HOME[s[1]], status_code=302)
+    return HTMLResponse(_login_html(bool(erro)))
+
+
+@app.post("/login")
+async def do_login(request: Request):
+    form = await request.form()
+    user = str(form.get("user") or "").strip().lower()  # normaliza (e-mail é case-insensitive)
+    role = check_login(user, str(form.get("password") or ""))
+    if not role:
+        return RedirectResponse("/login?erro=1", status_code=303)
+    with _conn() as c, c.cursor() as cur:  # auditoria: quem entrou, quando
+        cur.execute("INSERT INTO audit_log (actor, action, scope) VALUES (%s,'login','painel')", (user,))
+    resp = RedirectResponse(ROLE_HOME[role], status_code=303)
+    resp.set_cookie(COOKIE, make_token(user, role), max_age=12 * 3600,
+                    httponly=True, samesite="lax")
+    return resp
+
+
+@app.get("/logout")
+def logout():
+    resp = RedirectResponse("/login", status_code=303)
+    resp.delete_cookie(COOKIE)
+    return resp
+
+
+def _audit_view(conn: Any, role: str, scope: str = "growth/dashboard") -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO audit_log (actor, action, scope) VALUES (%s,%s,%s)",
+            (f"painel:{role}", "view", scope),
+        )
+
+
+def _latest_scores(conn: Any) -> list[dict]:
+    """Último score por conta (DISTINCT ON), com nome e motivos."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT ON (s.account_id)
+                   s.id, s.account_id, a.name, s.score, s.risk_band, s.stage,
+                   s.trajectory, s.confidence, s.coverage_weeks, s.evaluable,
+                   s.recommendation, s.computed_at, a.recurring_revenue, a.is_legacy
+              FROM scores s JOIN accounts a ON a.id = s.account_id
+             ORDER BY s.account_id, s.computed_at DESC
+            """
+        )
+        cols = [d[0] for d in cur.description]
+        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+        # contexto de execução (NÃO-pontuador): último exec_score por conta
+        cur.execute(
+            """SELECT DISTINCT ON (account_id) account_id, value_num, value_text
+                 FROM signal_snapshots WHERE signal_key='exec_score'
+                ORDER BY account_id, captured_at DESC"""
+        )
+        execmap = {aid: (float(v) if v is not None else None, t) for aid, v, t in cur.fetchall()}
+        # severidade do alerta aberto por conta (p/ o filtro de alerta)
+        cur.execute(
+            """SELECT DISTINCT ON (account_id) account_id, severity FROM alerts
+                WHERE status='aberto' ORDER BY account_id, created_at DESC"""
+        )
+        sevmap = dict(cur.fetchall())
+        for r in rows:
+            r["exec_score"], r["exec_motivo"] = execmap.get(r["account_id"], (None, None))
+            r["alert_sev"] = sevmap.get(r["account_id"])  # None = sem alerta
+        # motivos por score (psycopg3: = ANY(lista), não IN %s)
+        reasons: dict[Any, list] = {}
+        ids = [r["id"] for r in rows]
+        if ids:
+            cur.execute(
+                "SELECT score_id, text, is_leading, weight FROM score_reasons "
+                "WHERE score_id = ANY(%s) ORDER BY weight DESC", (ids,),
+            )
+            for sid, text, lead, w in cur.fetchall():
+                reasons.setdefault(sid, []).append({"text": text, "leading": lead, "weight": float(w)})
+    for r in rows:
+        r["reasons"] = reasons.get(r["id"], [])
+    return rows
+
+
+def _open_alerts(conn: Any) -> list[dict]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT a.name, al.severity, al.risk_band, al.stage, al.created_at, al.status
+                 FROM alerts al JOIN accounts a ON a.id = al.account_id
+                WHERE al.status = 'aberto' ORDER BY
+                  CASE al.severity WHEN 'critico' THEN 0 WHEN 'alto' THEN 1 ELSE 2 END,
+                  al.created_at DESC"""
+        )
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
+# --- JSON (para integração / testes) ---------------------------------------
+@app.get("/healthz")
+def healthz():
+    return {"ok": True}
+
+
+@app.get("/api/scores")
+def api_scores(request: Request):
+    _user, role = _require_api(request)
+    with _conn() as c:
+        return {"agents": _visible_agents(role), "scores": _serialize(_latest_scores(c))}
+
+
+@app.get("/api/alerts")
+def api_alerts(request: Request):
+    _require_api(request)
+    with _conn() as c:
+        return {"alerts": _serialize(_open_alerts(c))}
+
+
+# --- Aprendizado de boas práticas (intervenções × desfecho) -----------------
+def _top_practices(conn: Any) -> dict:
+    return P.top_practices(conn)
+
+
+@app.post("/api/interventions")
+def api_intervention(request: Request, payload: dict = Body(...)):
+    """Registra uma AÇÃO tomada com a conta. payload: {account_name | account_id,
+    action_text, driver?, stage?, taken_by?, alert_id?}."""
+    user, _role = _require_api(request)
+    payload.setdefault("taken_by", user)
+    action_text = (payload.get("action_text") or "").strip()
+    if not action_text:
+        return JSONResponse({"error": "action_text obrigatório"}, status_code=400)
+    with _conn() as c:
+        acc = payload.get("account_id")
+        if not acc and payload.get("account_name"):
+            with c.cursor() as cur:
+                cur.execute("SELECT id FROM accounts WHERE name ILIKE %s LIMIT 1",
+                            (f"%{payload['account_name']}%",))
+                row = cur.fetchone()
+                acc = row[0] if row else None
+        if not acc:
+            return JSONResponse({"error": "conta não encontrada"}, status_code=404)
+        iid = P.record_intervention(
+            c, account_id=str(acc), action_text=action_text,
+            driver=payload.get("driver"), stage=payload.get("stage"),
+            taken_by=payload.get("taken_by"), alert_id=payload.get("alert_id"),
+        )
+    return {"id": iid, "status": "registrada"}
+
+
+@app.post("/api/interventions/{iid}/result")
+def api_intervention_result(iid: str, request: Request, payload: dict = Body(...)):
+    """Fecha o loop da ação: {result: retido|cancelou|sem_efeito, notes?}.
+    'retido' vira boa prática citada em casos futuros com a mesma dor."""
+    _require_api(request)
+    result = payload.get("result")
+    if result not in ("retido", "cancelou", "sem_efeito"):
+        return JSONResponse({"error": "result deve ser retido|cancelou|sem_efeito"}, status_code=400)
+    with _conn() as c:
+        P.set_intervention_result(c, intervention_id=iid, result=result, notes=payload.get("notes"))
+    return {"id": iid, "result": result}
+
+
+@app.get("/api/practices")
+def api_practices(request: Request):
+    """Boas práticas aprendidas: por dor, a ação que mais reteve."""
+    _require_api(request)
+    with _conn() as c:
+        pr = _top_practices(c)
+    return {"practices": [{"driver": d, "action": a, "retencoes": n} for d, (a, n) in pr.items()]}
+
+
+def _serialize(rows: list[dict]) -> list[dict]:
+    out = []
+    for r in rows:
+        d = {}
+        for k, v in r.items():
+            d[k] = v.isoformat() if hasattr(v, "isoformat") else (float(v) if _is_dec(v) else v)
+        out.append(d)
+    return out
+
+
+def _is_dec(v: Any) -> bool:
+    import decimal
+    return isinstance(v, decimal.Decimal)
+
+
+# --- Painéis HTML ------------------------------------------------------------
+# `/` = HUB central (inteligência que enxerga todas as áreas; hoje só Growth
+# está ativa — as demais são placeholders da casca modular).
+# `/growth` = área de Growth/Assessoria (gestor_growth ou admin).
+@app.get("/", response_class=HTMLResponse)
+def hub(request: Request):
+    s = _session(request)
+    if not s:
+        return RedirectResponse("/login", status_code=302)
+    user, role = s
+    if role != "admin":  # RBAC: hub central é do admin; gestor vai direto à sua área
+        return RedirectResponse("/growth", status_code=302)
+    with _conn() as c:
+        _audit_view(c, user, scope="hub")
+        stats = _hub_stats(c)
+    return HTMLResponse(_render_hub(user, stats))
+
+
+@app.get("/growth", response_class=HTMLResponse)
+def dashboard(request: Request, view: str = Query("contas")):
+    s = _session(request)
+    if not s:
+        return RedirectResponse("/login", status_code=302)
+    user, role = s
+    if view not in ("contas", "alertas", "playbooks", "relatorios"):
+        view = "contas"
+    with _conn() as c:
+        _audit_view(c, user, scope=f"growth/{view}")
+        scores = _latest_scores(c)
+        alerts = _open_alerts(c)
+        practices = _top_practices(c)
+        interventions = _recent_interventions(c) if view == "playbooks" else None
+    return HTMLResponse(_render(role, scores, alerts, practices, view=view,
+                                interventions=interventions))
+
+
+def _recent_interventions(conn: Any, limit: int = 20) -> list[dict]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT a.name, i.action_text, i.result, i.taken_at, i.driver
+                 FROM interventions i JOIN accounts a ON a.id = i.account_id
+                ORDER BY i.taken_at DESC LIMIT %s""", (limit,))
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
+@app.post("/api/reports/send-slack")
+def api_report_send_slack(request: Request):
+    """Envia o relatório do estado atual ao grupo do Slack (webhook do .env).
+    Ação deliberada do usuário logado; auditada."""
+    from .slack import send_text, webhook_configured
+
+    user, _role = _require_api(request)
+    if not webhook_configured():
+        return JSONResponse({"error": "SLACK_WEBHOOK_URL não configurada no .env"}, status_code=503)
+    with _conn() as c:
+        text = _report_text(_report_from(_latest_scores(c), _open_alerts(c)))
+    try:
+        send_text(text)
+    except Exception as e:  # noqa: BLE001 — reporta falha do webhook ao usuário
+        return JSONResponse({"error": f"falha no envio: {type(e).__name__}"}, status_code=502)
+    with _conn() as c, c.cursor() as cur:
+        cur.execute("INSERT INTO audit_log (actor, action, scope) VALUES (%s,%s,%s)",
+                    (user, "report_slack", "slack:webhook"))
+    return {"status": "enviado"}
+
+
+@app.get("/api/reports/summary")
+def api_report_summary(request: Request, format: str = Query("json")):
+    """Relatório do estado atual. `?format=text` = payload pronto p/ Slack."""
+    _require_api(request)
+    with _conn() as c:
+        scores = _latest_scores(c)
+        alerts = _open_alerts(c)
+    rep = _report_from(scores, alerts)
+    if format == "text":
+        return PlainTextResponse(_report_text(rep), media_type="text/plain; charset=utf-8")
+    return rep
+
+
+def _hub_stats(conn: Any) -> dict:
+    """Agregados da empresa para o hub (hoje = Growth; cross-área quando houver +áreas)."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM (SELECT DISTINCT ON (account_id) evaluable FROM scores ORDER BY account_id, computed_at DESC) t")
+        monitored = cur.fetchone()[0]
+        cur.execute("SELECT count(*) FROM (SELECT DISTINCT ON (account_id) evaluable FROM scores ORDER BY account_id, computed_at DESC) t WHERE evaluable")
+        evaluable = cur.fetchone()[0]
+        cur.execute("SELECT severity, count(*) FROM alerts WHERE status='aberto' GROUP BY 1")
+        sev = dict(cur.fetchall())
+        cur.execute("""SELECT COALESCE(sum(a.recurring_revenue),0) FROM accounts a
+                       WHERE a.recurring_revenue IS NOT NULL
+                         AND EXISTS (SELECT 1 FROM alerts al WHERE al.account_id=a.id AND al.status='aberto')""")
+        mrr_risk = float(cur.fetchone()[0] or 0)
+        cur.execute("""SELECT COALESCE(sum(a.recurring_revenue),0) FROM accounts a
+                       WHERE a.recurring_revenue IS NOT NULL
+                         AND EXISTS (SELECT 1 FROM alerts al WHERE al.account_id=a.id
+                                     AND al.status='aberto' AND al.severity='critico')""")
+        mrr_crit = float(cur.fetchone()[0] or 0)
+        cur.execute("""SELECT count(*) FROM (SELECT DISTINCT ON (account_id) evaluable FROM scores
+                       ORDER BY account_id, computed_at DESC) t WHERE NOT evaluable""")
+        non_eval = cur.fetchone()[0]
+        cur.execute("""SELECT count(DISTINCT s.account_id) FROM signal_snapshots s
+                       WHERE s.signal_key='exec_score' AND s.value_num < 70""")
+        exec_late = cur.fetchone()[0]
+    return {"monitored": monitored, "evaluable": evaluable, "sev": sev,
+            "mrr_risk": mrr_risk, "mrr_crit": mrr_crit, "non_eval": non_eval,
+            "exec_late": exec_late}
+
+
+def _fmt_brl(v: float) -> str:
+    return f"R$ {v:,.0f}".replace(",", ".")
+
+
+def _render_hub(role: str, st: dict) -> str:
+    n_alerts = sum(st["sev"].values())
+    crit = st["sev"].get("critico", 0)
+    # Iniciativas sugeridas pela inteligência central — derivadas dos dados reais
+    # das áreas ativas (hoje Growth). Quando houver 2+ áreas, viram cross-área.
+    initiatives = []
+    if crit:
+        initiatives.append(("Reter as contas em risco crítico",
+                            f"{crit} contas sinalizaram saída ou estão em faixa crítica — "
+                            f"{_fmt_brl(st['mrr_crit'])} de MRR em jogo. Fila pronta na área de Growth.",
+                            "--status-critico"))
+    if st["exec_late"]:
+        initiatives.append(("Regularizar execução nas contas em alerta",
+                            f"{st['exec_late']} contas monitoradas têm entregas atrasadas no ClickUp — "
+                            "atrito operacional que alimenta a insatisfação.",
+                            "--status-alto"))
+    if st["non_eval"]:
+        initiatives.append(("Recuperar cobertura de dados",
+                            f"{st['non_eval']} contas sem conversa suficiente no WhatsApp — o agente não as "
+                            "enxerga; revisar manualmente e reativar os grupos.",
+                            "--status-semdados"))
+    init_html = "".join(
+        f"<div class='init'><span class='sdot' style='--c:var({var})'></span>"
+        f"<div><div class='it'>{escape(t)}</div><div class='id_'>{escape(d)}</div></div></div>"
+        for t, d, var in initiatives
+    ) or "<div class='init'><div class='id_'>sem iniciativas pendentes</div></div>"
+
+    areas = [
+        ("Growth / Assessoria", "ativa", "/growth",
+         f"{st['monitored']} contas · {n_alerts} alertas · {_fmt_brl(st['mrr_risk'])} em risco"),
+        ("Marketing", "em breve", None, "aquisição e funil"),
+        ("Pré-vendas", "em breve", None, "qualificação e conversão"),
+        ("Financeiro", "em breve", None, "inadimplência e margem"),
+        ("Operações", "em breve", None, "capacidade e SLA"),
+    ]
+    area_cards = "".join(
+        (f"<a class='area' href='{link}'>" if link else "<div class='area soon'>")
+        + f"<div class='an'>{escape(nm)}</div>"
+        + f"<div class='ast'>{_chip(status, '--status-baixo' if status == 'ativa' else '--status-semdados')}</div>"
+        + f"<div class='ad'>{escape(desc)}</div>"
+        + ("</a>" if link else "</div>")
+        for nm, status, link, desc in areas
+    )
+
+    head = """<!doctype html><html lang=pt-br><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Integracomm IA — Central</title>
+<link rel=preconnect href="https://fonts.googleapis.com"><link rel=preconnect href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Poppins:wght@500;600;700&display=swap" rel=stylesheet>
+<style>
+__TOKENS__
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg-app);color:var(--text);font-family:var(--font-body);font-size:var(--fs-base);-webkit-font-smoothing:antialiased}
+a{color:inherit;text-decoration:none}
+.app{display:flex;min-height:100vh}
+.rail{width:var(--rail-width);flex-shrink:0;background:var(--bg-rail);border-right:1px solid var(--border);position:sticky;top:0;height:100vh;display:flex;flex-direction:column}
+.brand{display:flex;align-items:center;gap:10px;padding:18px 16px 14px}
+.brand .logo{width:22px;height:22px;border-radius:50%;background:var(--brand);position:relative;flex-shrink:0}
+.brand .logo::after{content:"";position:absolute;width:9px;height:9px;border-radius:50%;background:var(--bg-rail);top:6.5px;left:9px}
+.brand .bt{font-family:var(--font-display);font-weight:700;font-size:13.5px;line-height:1.15}
+.brand .bs{font-size:10.5px;color:var(--text-muted)}
+nav{padding:10px 12px;display:flex;flex-direction:column;gap:2px;flex:1}
+.nav-item{display:flex;align-items:center;justify-content:space-between;padding:9px 12px;border-radius:var(--radius-sm);color:var(--text-muted);font-size:var(--fs-base);font-weight:var(--fw-medium)}
+.nav-item:hover{background:var(--surface-2);color:var(--text-2)}
+.nav-item.active{background:var(--surface-2);color:var(--text);box-shadow:inset 2px 0 0 var(--brand)}
+.nav-item.soon{opacity:.55} .nav-item .tag{font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-faint)}
+.rail-foot{padding:12px 16px;border-top:1px solid var(--border);font-size:var(--fs-2xs);color:var(--text-muted);line-height:1.5}
+main{flex:1;min-width:0;padding:26px 32px 48px;max-width:var(--content-max)}
+h1{font-family:var(--font-display);font-weight:700;font-size:var(--fs-h1);letter-spacing:var(--tracking-tight);margin:0}
+.sub{font-size:var(--fs-sm);color:var(--text-muted);margin-top:6px}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:22px}
+.kpi{background:var(--surface-1);border:1px solid var(--border-mid);border-radius:var(--radius-md);padding:16px 18px}
+.kpi .n{font-family:var(--font-display);font-weight:700;font-size:30px;line-height:1}
+.kpi .l{font-size:var(--fs-2xs);color:var(--text-muted);text-transform:uppercase;letter-spacing:var(--tracking-label);margin-top:8px}
+section{margin-top:var(--space-8)}
+h2{font-family:var(--font-display);font-weight:600;font-size:var(--fs-lg);margin:0 0 4px}
+.secsub{font-size:var(--fs-sm);color:var(--text-muted);margin:0 0 14px}
+.areas{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px}
+.area{display:block;background:var(--surface-1);border:1px solid var(--border-mid);border-radius:var(--radius-md);padding:16px 18px}
+.area:hover{background:var(--surface-2);border-color:var(--border-strong)}
+.area.soon{opacity:.55}
+.an{font-family:var(--font-display);font-weight:600;font-size:15px}
+.ast{margin:8px 0}
+.ad{font-size:var(--fs-sm);color:var(--text-muted);line-height:1.45}
+.central{background:var(--surface-1);border:1px solid var(--border-mid);border-left:3px solid var(--brand);border-radius:var(--radius-md);padding:18px 20px}
+.init{display:flex;gap:10px;align-items:flex-start;padding:10px 0;border-top:1px solid var(--border)}
+.init:first-child{border-top:none;padding-top:0}
+.init .sdot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--c);margin-top:5px;flex-shrink:0}
+.it{font-weight:var(--fw-semibold);font-size:var(--fs-md)}
+.id_{font-size:var(--fs-sm);color:var(--text-muted);line-height:1.5;margin-top:2px}
+.foot{font-size:var(--fs-xs);color:var(--text-faint);margin-top:24px}
+</style></head><body>
+<div class=app>
+ <aside class=rail>
+   <div class=brand><div class=logo></div><div><div class=bt>Integracomm IA</div><div class=bs>Central</div></div></div>
+   <nav>
+     <a class="nav-item active" href="/">Início</a>
+     <a class="nav-item" href="/growth">Growth / Assessoria</a>
+     <a class="nav-item soon">Marketing <span class=tag>em breve</span></a>
+     <a class="nav-item soon">Pré-vendas <span class=tag>em breve</span></a>
+     <a class="nav-item soon">Financeiro <span class=tag>em breve</span></a>
+     <a class="nav-item soon">Operações <span class=tag>em breve</span></a>
+   </nav>
+   <div class=rail-foot>papel: <b>__ROLE__</b> · <a href="/logout" style="color:var(--text-muted);text-decoration:underline">sair</a><br>humano no loop — a IA só sinaliza</div>
+ </aside>
+ <main>
+  <h1>Visão central</h1>
+  <p class=sub>A inteligência central consolida os sinais de todas as áreas e sugere iniciativas alinhadas entre elas. Hoje 1 de 5 áreas está ativa (Growth); as demais entram como novos agentes na mesma casca.</p>
+  <div class=kpis>
+    <div class=kpi><div class=n>__MON__</div><div class=l>Contas monitoradas</div></div>
+    <div class=kpi><div class=n style="color:var(--status-critico)">__NALERT__</div><div class=l>Alertas abertos</div></div>
+    <div class=kpi><div class=n style="color:var(--status-alto)">__MRRRISK__</div><div class=l>MRR em risco</div></div>
+    <div class=kpi><div class=n>1<span style="color:var(--text-faint);font-size:18px">/5</span></div><div class=l>Áreas ativas</div></div>
+  </div>
+  <section>
+    <h2>Iniciativas sugeridas</h2>
+    <p class=secsub>derivadas dos sinais das áreas ativas — priorização da empresa, não de uma área só</p>
+    <div class=central>__INITS__</div>
+  </section>
+  <section>
+    <h2>Áreas</h2>
+    <p class=secsub>cada área tem seu agente e seu painel; o gestor da área entra direto na sua</p>
+    <div class=areas>__AREAS__</div>
+  </section>
+  <p class=foot>Derivados do Postgres próprio (LGPD: sem conteúdo bruto). A IA calcula, exibe e sinaliza — a decisão é sempre humana.</p>
+ </main>
+</div>
+</body></html>"""
+    return (head.replace("__TOKENS__", _tokens_css()).replace("__ROLE__", escape(role))
+            .replace("__MON__", str(st["monitored"])).replace("__NALERT__", str(n_alerts))
+            .replace("__MRRRISK__", _fmt_brl(st["mrr_risk"]))
+            .replace("__INITS__", init_html).replace("__AREAS__", area_cards))
+
+
+# mapeamento semântico -> variável de token (design-tokens.css é a fonte da verdade)
+_BAND_VAR = {"critico": "--status-critico", "alto": "--status-alto", "medio": "--status-medio",
+             "baixo": "--status-baixo", "sem_dados": "--status-semdados"}
+_SEV_VAR = {"critico": "--status-critico", "alto": "--status-alto", "atencao": "--status-medio"}
+_DASH = "<span style='color:var(--text-faint)'>—</span>"
+
+
+def _tokens_css() -> str:
+    """design-tokens.css inline (fonte única). Sem custo: lido do disco 1x."""
+    global _TOKENS_CACHE
+    try:
+        return _TOKENS_CACHE
+    except NameError:
+        pass
+    p = _ROOT / "frontend" / "design-tokens.css"
+    css = p.read_text(encoding="utf-8") if p.exists() else ""
+    globals()["_TOKENS_CACHE"] = css
+    return css
+
+
+def _chip(label: str, var: str, dot: bool = False) -> str:
+    d = "<span class='dot'></span>" if dot else ""
+    return f"<span class='chip' style='--c:var({var})'>{d}{escape(label)}</span>"
+
+
+def _mrr_val(s) -> float:
+    v = s.get("recurring_revenue")
+    return float(v) if v is not None else -1.0
+
+
+def _mrr_txt(s) -> str:
+    v = s.get("recurring_revenue")
+    return f"R$ {float(v):,.0f}".replace(",", ".") if v is not None else _DASH
+
+
+def _exec_badge(s) -> str:
+    """Selo de execução (ClickUp): situação das ENTREGAS da conta. Só o rótulo
+    (em dia / atenção / atrasada); nota 0-100 e motivo ficam no hover."""
+    v = s.get("exec_score")
+    if v is None:
+        return _DASH
+    if v >= 70:
+        var, txt = "--status-baixo", "em dia"
+    elif v >= 40:
+        var, txt = "--status-medio", "atenção"
+    else:
+        var, txt = "--status-critico", "atrasada"
+    mot = escape((s.get("exec_motivo") or "")[:140])
+    tip = f"Saúde de execução no ClickUp: {v:.0f}/100. {mot}"
+    return f"<span class='chip' style='--c:var({var})' title='{tip}'>{txt}</span>"
+
+
+def _tag(name: str) -> str:
+    """Tag completa do nome do grupo (ex.: ST-B1-S2) — mostrada no hover."""
+    m = re.match(r"\s*\[([^\]]+)\]", name or "")
+    return m.group(1).strip().upper() if m else "—"
+
+
+def _squad(name: str) -> str:
+    """Squad = os tokens Bx-Sy da convenção de nome `[TAG-Bx-Sy]` (ex.: B2-S2,
+    B3-S1). Grupos sem Bx-Sy (ex.: ADS puros) caem no prefixo do tag (ADS, MKP…)."""
+    tag = _tag(name)
+    m = re.search(r"B(\d)\D*S(\d)", tag)
+    if m:
+        return f"B{m.group(1)}-S{m.group(2)}"
+    p = re.match(r"([A-Z]+)", tag)
+    return p.group(1) if p else "—"
+
+
+def _guide(s: dict, practices: dict | None = None) -> str:
+    g = action_guideline(
+        s["stage"], is_legacy=bool(s.get("is_legacy")),
+        recurring_revenue=(float(s["recurring_revenue"]) if s.get("recurring_revenue") is not None else None),
+        evaluable=bool(s["evaluable"]),
+        reasons=s.get("reasons"), exec_score=s.get("exec_score"),
+    )
+    # aprendizado: cita a prática que mais reteve em casos com a MESMA dor
+    if practices:
+        driver = _top_driver(s.get("reasons") or [])
+        hit = practices.get(driver or "")
+        if hit:
+            action, n = hit
+            g += f" 📚 Já funcionou nesta dor: “{action}” (reteve {n}×)."
+    return g
+
+
+_STAGE_LABEL = {"saudavel": "saudável", "desengajamento_inicial": "desengajamento",
+                "insatisfacao_latente": "insatisfação latente", "insatisfacao_ativa": "insatisfação ativa",
+                "intencao_de_saida": "intenção de saída", "nao_avaliavel": "não avaliável"}
+
+
+def _render(role: str, scores: list[dict], alerts: list[dict],
+            practices: dict | None = None, view: str = "contas",
+            interventions: list | None = None) -> str:
+    evaluable = [s for s in scores if s["evaluable"]]
+    non_eval = [s for s in scores if not s["evaluable"]]
+    evaluable.sort(key=lambda s: (float(s["score"]), -_mrr_val(s)))
+    non_eval.sort(key=lambda s: -_mrr_val(s))
+    ordered = evaluable + non_eval  # tabela única; não-avaliáveis ao fim
+    squads = sorted({_squad(s["name"]) for s in ordered})
+
+    def reason_txt(s):
+        rs = s.get("reasons", [])[:3]
+        return escape(" · ".join(r["text"] for r in rs)) if rs else ""
+
+    def row(s):
+        ev = bool(s["evaluable"])
+        stage_key = s["stage"] if ev else "nao_avaliavel"
+        band = s["risk_band"]
+        sev = s.get("alert_sev") or "sem"
+        sq = _squad(s["name"])
+        mrr = _mrr_val(s)
+        score_cell = (f"<span class='score'>{float(s['score']):.1f}</span>" if ev
+                      else "<span style='color:var(--text-faint)'>s/ dados</span>")
+        mot = reason_txt(s)
+        mot_line = f"<div class='mot'>{mot}</div>" if mot else ""
+        stage_dot = (f"<span class='sdot' style='--c:var({_SEV_VAR.get(sev,'--status-semdados')})'></span>"
+                     if sev != "sem" else "")
+        return (
+            f"<div class='row acct' data-name=\"{escape(s['name'].lower())}\" data-band=\"{band}\" "
+            f"data-alert=\"{sev}\" data-stage=\"{stage_key}\" data-squad=\"{sq}\" data-mrr=\"{mrr:.0f}\">"
+            f"<div class='c-name'><div class='nm'>{escape(s['name'][:60])}</div>{mot_line}"
+            f"<a class='repbtn' href='/growth/report?account_id={s['account_id']}' "
+            f"title='Relatório mensal de assessoria (mês anterior; gerado na hora)'>Relatório</a></div>"
+            f"<div class='c-score'>{score_cell}</div>"
+            f"<div>{_chip(band, _BAND_VAR.get(band, '--status-semdados'))}</div>"
+            f"<div class='c-stage'>{stage_dot}{escape(_STAGE_LABEL.get(stage_key, stage_key))}</div>"
+            f"<div class='c-squad' title=\"{escape(_tag(s['name']))}\">{escape(sq)}</div>"
+            f"<div class='c-mrr'>{_mrr_txt(s)}</div>"
+            f"<div>{_exec_badge(s)}</div>"
+            f"<div class='guide c-full'>{escape(_guide(s, practices))}</div>"
+            f"</div>"
+        )
+
+    rows = "".join(row(s) for s in ordered)
+    alert_rows = "".join(
+        f"<div class='row arow'><div class='c-name'><div class='nm'>{escape(a['name'][:60])}</div></div>"
+        f"<div>{_chip(a['severity'], _SEV_VAR.get(a['severity'], '--status-semdados'), dot=True)}</div>"
+        f"<div class='c-stage'>{escape(_STAGE_LABEL.get(a['stage'], a['stage']))}</div>"
+        f"<div class='c-status'>{escape(str(a['status']))}</div></div>"
+        for a in alerts
+    ) or "<div class='row empty'>sem alertas abertos</div>"
+    squad_opts = "".join(f"<option value='{escape(q)}'>{escape(q)}</option>" for q in squads)
+
+    head = """<!doctype html><html lang=pt-br><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Integracomm IA · Growth — Saúde de clientes</title>
+<link rel=preconnect href="https://fonts.googleapis.com"><link rel=preconnect href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Poppins:wght@500;600;700&display=swap" rel=stylesheet>
+<style>
+__TOKENS__
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg-app);color:var(--text);font-family:var(--font-body);font-size:var(--fs-base);-webkit-font-smoothing:antialiased}
+a{color:inherit;text-decoration:none}
+.app{display:flex;min-height:100vh}
+/* --- sidebar --- */
+.rail{width:var(--rail-width);flex-shrink:0;background:var(--bg-rail);border-right:1px solid var(--border);position:sticky;top:0;height:100vh;display:flex;flex-direction:column}
+.brand{display:flex;align-items:center;gap:10px;padding:18px 16px 14px}
+.brand .logo{width:22px;height:22px;border-radius:50%;background:var(--brand);position:relative;flex-shrink:0}
+.brand .logo::after{content:"";position:absolute;width:9px;height:9px;border-radius:50%;background:var(--bg-rail);top:6.5px;left:9px}
+.brand .bt{font-family:var(--font-display);font-weight:700;font-size:13.5px;line-height:1.15}
+.brand .bs{font-size:10.5px;color:var(--text-muted);letter-spacing:.02em}
+nav{padding:10px 12px;display:flex;flex-direction:column;gap:2px;flex:1}
+.nav-item{display:flex;align-items:center;justify-content:space-between;padding:9px 12px;border-radius:var(--radius-sm);color:var(--text-muted);font-size:var(--fs-base);font-weight:var(--fw-medium)}
+.nav-item:hover{background:var(--surface-2);color:var(--text-2)}
+.nav-item.active{background:var(--surface-2);color:var(--text);box-shadow:inset 2px 0 0 var(--brand)}
+.nav-item.soon{opacity:.55} .nav-item .tag{font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-faint)}
+.rail-foot{padding:12px 16px;border-top:1px solid var(--border);font-size:var(--fs-2xs);color:var(--text-muted);line-height:1.5}
+/* --- main --- */
+main{flex:1;min-width:0;padding:26px 32px 48px;max-width:var(--content-max)}
+.page-head{display:flex;align-items:baseline;gap:14px}
+h1{font-family:var(--font-display);font-weight:700;font-size:var(--fs-h1);letter-spacing:var(--tracking-tight);margin:0}
+.role-chip{font-size:var(--fs-xs);color:var(--text-muted)}
+.role-chip b{color:var(--text-2)}
+.kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:20px}
+.kpi{background:var(--surface-1);border:1px solid var(--border-mid);border-radius:var(--radius-md);padding:16px 18px}
+.kpi .n{font-family:var(--font-display);font-weight:700;font-size:var(--fs-kpi);line-height:1}
+.kpi .l{font-size:var(--fs-2xs);color:var(--text-muted);text-transform:uppercase;letter-spacing:var(--tracking-label);margin-top:8px}
+.kpi .s{font-size:var(--fs-xs);color:var(--text-faint);margin-top:3px}
+section{margin-top:var(--space-8)}
+.sec-head{display:flex;align-items:baseline;gap:10px;margin-bottom:10px}
+.sec-head h2{font-family:var(--font-display);font-weight:600;font-size:var(--fs-lg);margin:0}
+.sec-head .sub{font-size:var(--fs-sm);color:var(--text-muted)}
+.note{font-size:var(--fs-sm);color:var(--text-muted);margin:0 0 10px}
+.note b{color:var(--text-2)}
+/* --- tabelas em grid --- */
+.tbl{background:var(--surface-1);border:1px solid var(--border-mid);border-radius:var(--radius-md);overflow-x:auto}
+.row{display:grid;align-items:center;gap:12px;padding:10px 16px}
+.thead{background:var(--surface-2);color:var(--text-muted);font-size:var(--fs-2xs);text-transform:uppercase;letter-spacing:var(--tracking-label);font-weight:var(--fw-semibold)}
+.arow{border-top:1px solid var(--border);align-items:start}
+/* cada CLIENTE é um bloco (dados + diretriz) separado por uma linha nítida */
+.acct{border-top:1px solid var(--border-strong);align-items:start;padding:13px 16px}
+.acct:hover,.arow:hover{background:var(--surface-2)}
+.tbl-alerts .row{grid-template-columns:minmax(280px,1fr) 130px 200px 100px}
+/* contas: 7 colunas que CABEM na página (sem scroll lateral); a diretriz ocupa
+   a largura inteira numa 2ª linha da mesma conta */
+.tbl-acct .row{grid-template-columns:minmax(200px,1fr) 66px 96px 150px 78px 96px 100px;row-gap:9px}
+/* colunas 2–7 (Score..Execução) centralizadas — cabeçalho e linhas */
+.tbl-acct .row>div:nth-child(n+2):nth-child(-n+7){text-align:center}
+.c-full{grid-column:1/-1}
+.pager{display:flex;align-items:center;gap:10px;justify-content:flex-end;margin-top:10px}
+.pager button{cursor:pointer;background:var(--surface-3);border:1px solid var(--border-strong);border-radius:var(--radius-sm);color:var(--text-2);padding:6px 12px;font-size:var(--fs-sm)}
+.pager button:disabled{opacity:.4;cursor:default}
+.pager .pginfo{font-size:var(--fs-sm);color:var(--text-muted)}
+.nm{font-weight:var(--fw-semibold);font-size:var(--fs-md);line-height:1.3}
+.mot{font-size:var(--fs-2xs);color:var(--text-muted);margin-top:3px;line-height:1.4}
+.score{font-family:var(--font-display);font-weight:700;font-size:15px}
+.c-mrr{color:var(--text-2);font-variant-numeric:tabular-nums}
+.c-squad{color:var(--text-muted);font-size:var(--fs-sm)}
+.c-stage{color:var(--text-2);font-size:var(--fs-sm)} .c-status{color:var(--text-muted);font-size:var(--fs-sm)}
+.sdot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--c);margin-right:6px;vertical-align:middle}
+.guide{font-size:var(--fs-sm);color:var(--text-2);line-height:1.5;background:color-mix(in srgb,var(--brand) 5%,transparent);border-left:2px solid color-mix(in srgb,var(--brand) 35%,transparent);border-radius:var(--radius-xs);padding:7px 10px}
+.repbtn{display:inline-block;margin-top:6px;font-size:var(--fs-2xs);font-weight:var(--fw-semibold);color:var(--text-2);background:var(--surface-3);border:1px solid var(--border-strong);border-radius:var(--radius-sm);padding:3px 9px;text-decoration:none}
+.repbtn:hover{border-color:var(--brand);color:var(--brand)}
+.empty{color:var(--text-muted);padding:14px 16px}
+/* --- filtros --- */
+.filters{display:flex;flex-wrap:wrap;gap:10px;align-items:end;background:var(--surface-1);border:1px solid var(--border-mid);border-radius:var(--radius-md);padding:12px 14px;margin-bottom:10px}
+.filters .grp{display:flex;flex-direction:column;gap:3px}
+.filters label{font-size:var(--fs-2xs);color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em}
+.filters input,.filters select{background:var(--bg-panel);border:1px solid var(--border-strong);border-radius:var(--radius-sm);color:var(--text);font-family:var(--font-body);font-size:var(--fs-sm);padding:7px 9px;min-height:32px}
+.filters input:focus,.filters select:focus{outline:none;border-color:var(--brand)}
+#clearf{cursor:pointer;background:var(--surface-3);border:1px solid var(--border-strong);border-radius:var(--radius-sm);color:var(--text-2);padding:7px 12px;font-size:var(--fs-sm);min-height:32px}
+.count{font-size:var(--fs-sm);color:var(--text-muted);margin-left:auto}.count b{color:var(--text)}
+.foot{font-size:var(--fs-xs);color:var(--text-faint);margin-top:18px}
+</style></head><body>
+<div class=app>
+ <aside class=rail>
+   <div class=brand><div class=logo></div><div><div class=bt>Integracomm IA</div><div class=bs>Growth · Saúde de clientes</div></div></div>
+   <nav>__NAV__</nav>
+   <div class=rail-foot>papel: <b>__ROLE__</b> · <a href="/logout" style="color:var(--text-muted);text-decoration:underline">sair</a><br>humano no loop — o agente só sinaliza</div>
+ </aside>
+ <main>__CONTENT__</main>
+</div>
+__SCRIPT__
+</body></html>"""
+
+    # ---- navegação (view ativa; sessão define o papel — sem role na URL) ----
+    nav = "<a class='nav-item' href='/'>← Início (central)</a>"
+    for v, label in (("contas", "Contas"), ("alertas", "Alertas"),
+                     ("playbooks", "Playbooks"), ("relatorios", "Relatórios")):
+        cls = "nav-item active" if v == view else "nav-item"
+        nav += f"<a class='{cls}' href='/growth?view={v}'>{label}</a>"
+    nav += "<a class='nav-item soon'>Configurações <span class=tag>em breve</span></a>"
+
+    foot = ("<p class=foot>Derivados do Postgres próprio (LGPD: sem conteúdo bruto). "
+            "O agente calcula, exibe e sinaliza — nunca age.</p>")
+    sev_counts: dict[str, int] = {}
+    for a in alerts:
+        sev_counts[a["severity"]] = sev_counts.get(a["severity"], 0) + 1
+
+    alerts_tbl = (
+        "<div class='tbl tbl-alerts'>"
+        "<div class='row thead'><div>Conta</div><div>Severidade</div><div>Estágio</div><div>Status</div></div>"
+        + alert_rows + "</div>")
+
+    script = ""
+    if view == "alertas":
+        content = (
+            f"<div class=page-head><h1>Alertas</h1><span class=role-chip>fila de ação — crítico → alto → atenção</span></div>"
+            f"<div class=kpis>"
+            f"<div class=kpi><div class=n style='color:var(--status-critico)'>{sev_counts.get('critico', 0)}</div><div class=l>Crítico</div><div class=s>sinal explícito de saída / faixa crítica</div></div>"
+            f"<div class=kpi><div class=n style='color:var(--status-alto)'>{sev_counts.get('alto', 0)}</div><div class=l>Alto</div><div class=s>insatisfação ativa / risco alto</div></div>"
+            f"<div class=kpi><div class=n style='color:var(--status-medio)'>{sev_counts.get('atencao', 0)}</div><div class=l>Atenção</div><div class=s>churner quieto — começando a cair</div></div>"
+            f"</div><section>{alerts_tbl}"
+            "<div class=pager><button id=pa-prev onclick='paGo(-1)'>‹ anterior</button>"
+            f"<span class=pginfo id=painfo></span><span class=count>total: <b>{len(alerts)}</b></span>"
+            "<button id=pa-next onclick='paGo(1)'>próxima ›</button></div>"
+            "</section>" + foot)
+        script = _ALERTS_JS
+    elif view == "playbooks":
+        content = _playbooks_content(practices or {}, interventions or []) + foot
+    elif view == "relatorios":
+        rep = _report_from(scores, alerts)
+        content = _relatorios_content(rep, scores) + foot
+    else:  # contas
+        content = (
+            f"<div class=page-head><h1>Saúde de clientes</h1><span class=role-chip>papel: <b>{escape(role)}</b></span></div>"
+            f"<div class=kpis>"
+            f"<div class=kpi><div class=n>{len(evaluable)}</div><div class=l>Contas avaliáveis</div><div class=s>de {len(ordered)} contas monitoradas</div></div>"
+            f"<div class=kpi><div class=n style='color:var(--status-critico)'>{len(alerts)}</div><div class=l>Alertas abertos</div><div class=s>ver aba Alertas</div></div>"
+            f"<div class=kpi><div class=n>{len(non_eval)}</div><div class=l>Não avaliáveis</div><div class=s>sem dados suficientes de conversa</div></div>"
+            f"</div>"
+            "<section><div class=sec-head><h2>Contas por risco</h2><span class=sub>menor score = pior</span></div>"
+            "<p class=note>Score e alertas vêm do WhatsApp; <b>MRR</b> desempata a prioridade. "
+            "<b>Squad</b> = time responsável (Bx-Sy do nome do grupo; tag completa no hover). "
+            "<b>Execução</b> = situação das entregas no ClickUp — em dia / atenção / atrasada "
+            "(nota e motivo no hover). A <b>diretriz de ação</b> aparece destacada sob cada conta.</p>"
+            "<div class=filters>"
+            "<div class=grp><label>buscar nome</label><input id=f-name placeholder='cliente…' oninput='applyF()'></div>"
+            "<div class=grp><label>faixa</label><select id=f-band onchange='applyF()'><option value=''>todas</option><option value='baixo'>verde (baixo)</option><option value='medio'>amarelo (médio)</option><option value='alto'>laranja (alto)</option><option value='critico'>vermelho (crítico)</option><option value='sem_dados'>sem dados</option></select></div>"
+            "<div class=grp><label>alerta</label><select id=f-alert onchange='applyF()'><option value=''>todos</option><option value='critico'>crítico</option><option value='alto'>alto</option><option value='atencao'>atenção</option><option value='sem'>sem alerta</option></select></div>"
+            "<div class=grp><label>estágio</label><select id=f-stage onchange='applyF()'><option value=''>todos</option><option value='saudavel'>saudável</option><option value='desengajamento_inicial'>desengajamento</option><option value='insatisfacao_latente'>insatisfação latente</option><option value='insatisfacao_ativa'>insatisfação ativa</option><option value='intencao_de_saida'>intenção de saída</option><option value='nao_avaliavel'>não avaliável</option></select></div>"
+            f"<div class=grp><label>squad</label><select id=f-squad onchange='applyF()'><option value=''>todos</option>{squad_opts}</select></div>"
+            "<div class=grp><label>MRR mínimo (R$)</label><input id=f-mrr type=number min=0 step=100 placeholder='ex.: 3000' oninput='applyF()'></div>"
+            "<button id=clearf onclick='clearF()'>limpar</button>"
+            f"<span class=count>mostrando <b id=vis>0</b> de {len(ordered)}</span>"
+            "</div>"
+            "<div class='tbl tbl-acct'>"
+            "<div class='row thead'><div>Conta / motivos</div><div class=c-score>Score</div><div>Faixa</div><div>Estágio</div><div>Squad</div><div class=c-mrr>MRR</div><div>Execução</div></div>"
+            + rows + "</div>"
+            "<div class=pager><button id=pg-prev onclick='pgGo(-1)'>‹ anterior</button>"
+            "<span class=pginfo id=pginfo></span>"
+            "<button id=pg-next onclick='pgGo(1)'>próxima ›</button></div>"
+            + foot + "</section>")
+        script = _CONTAS_JS
+
+    return (head.replace("__TOKENS__", _tokens_css())
+            .replace("__NAV__", nav).replace("__ROLE__", escape(role))
+            .replace("__CONTENT__", content).replace("__SCRIPT__", script))
+
+
+_CONTAS_JS = """<script>
+var PAGE=10, page=1;
+function _match(d,f){
+  return (!f.n||d.name.indexOf(f.n)>=0)&&(!f.b||d.band===f.b)&&(!f.a||d.alert===f.a)
+    &&(!f.st||d.stage===f.st)&&(!f.sq||d.squad===f.sq)&&(parseFloat(d.mrr)>=f.mrr);
+}
+function renderRows(){
+  var f={n:document.getElementById('f-name').value.toLowerCase().trim(),
+    b:document.getElementById('f-band').value, a:document.getElementById('f-alert').value,
+    st:document.getElementById('f-stage').value, sq:document.getElementById('f-squad').value,
+    mrr:parseFloat(document.getElementById('f-mrr').value)};
+  if(isNaN(f.mrr)) f.mrr=-Infinity;
+  var rows=[].slice.call(document.querySelectorAll('.acct'));
+  var hit=rows.filter(function(r){return _match(r.dataset,f);});
+  rows.forEach(function(r){r.style.display='none';});
+  var pages=Math.max(1,Math.ceil(hit.length/PAGE));
+  if(page>pages)page=pages; if(page<1)page=1;
+  hit.slice((page-1)*PAGE,page*PAGE).forEach(function(r){r.style.display='';});
+  document.getElementById('vis').textContent=hit.length;
+  document.getElementById('pginfo').textContent='página '+page+' de '+pages;
+  document.getElementById('pg-prev').disabled=(page<=1);
+  document.getElementById('pg-next').disabled=(page>=pages);
+}
+function applyF(){page=1;renderRows();}
+function pgGo(d){page+=d;renderRows();window.scrollTo({top:document.querySelector('.tbl-acct').offsetTop-80,behavior:'smooth'});}
+function clearF(){['f-name','f-band','f-alert','f-stage','f-squad','f-mrr'].forEach(function(i){document.getElementById(i).value='';});applyF();}
+if(document.getElementById('f-name'))applyF();
+</script>"""
+
+_ALERTS_JS = """<script>
+var PAGE=25, page=1;
+function renderA(){
+  var rows=[].slice.call(document.querySelectorAll('.arow'));
+  var pages=Math.max(1,Math.ceil(rows.length/PAGE));
+  if(page>pages)page=pages; if(page<1)page=1;
+  rows.forEach(function(r){r.style.display='none';});
+  rows.slice((page-1)*PAGE,page*PAGE).forEach(function(r){r.style.display='';});
+  document.getElementById('painfo').textContent='página '+page+' de '+pages;
+  document.getElementById('pa-prev').disabled=(page<=1);
+  document.getElementById('pa-next').disabled=(page>=pages);
+}
+function paGo(d){page+=d;renderA();window.scrollTo({top:0,behavior:'smooth'});}
+if(document.getElementById('painfo'))renderA();
+</script>"""
+
+_DRIVER_LABEL = {"silencio": "Silêncio (cliente sumindo)", "tom_negativo": "Tom negativo recorrente",
+                 "iniciativa_cliente": "Queda de iniciativa", "comprimento_msg": "Mensagens encurtando",
+                 "fala_em_cancelar": "Falou em cancelar", "critico_recente": "Evento crítico recente",
+                 "tom_claude": "Tom da conversa esfriando (análise Claude)"}
+
+_CARD = ("background:var(--surface-1);border:1px solid var(--border-mid);"
+         "border-radius:var(--radius-md);padding:16px 18px")
+
+
+def _playbooks_content(practices: dict, interventions: list) -> str:
+    h = ("<div class=page-head><h1>Playbooks</h1>"
+         "<span class=role-chip>boas práticas aprendidas com clientes reais</span></div>"
+         "<p class=note style='margin-top:14px'>Toda ação registrada com um cliente vira aprendizado: quando o "
+         "desfecho é <b>retido</b>, a prática entra aqui e passa a ser citada na diretriz de casos "
+         "futuros com a mesma dor. Registro via <b>POST /api/interventions</b> (UI de registro entra "
+         "com o login).</p>")
+    if practices:
+        cards = "".join(
+            f"<div style='{_CARD}'><div style='font-size:var(--fs-2xs);color:var(--text-muted);"
+            f"text-transform:uppercase;letter-spacing:var(--tracking-label)'>{escape(_DRIVER_LABEL.get(d, d))}</div>"
+            f"<div style='font-family:var(--font-display);font-weight:600;font-size:15px;margin-top:8px'>“{escape(a)}”</div>"
+            f"<div style='margin-top:8px'>{_chip(f'reteve {n}×', '--status-baixo', dot=True)}</div></div>"
+            for d, (a, n) in practices.items())
+        h += ("<section><div class=sec-head><h2>Práticas de referência</h2><span class=sub>a ação que mais reteve, por dor</span></div>"
+              f"<div style='display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px'>{cards}</div></section>")
+    else:
+        h += (f"<section><div style='{_CARD};text-align:center;padding:34px'>"
+              "<div style='font-size:15px;font-weight:600'>Nenhuma prática validada ainda</div>"
+              "<div style='color:var(--text-muted);font-size:var(--fs-sm);margin-top:6px;line-height:1.6'>"
+              "Registre as ações tomadas com cada cliente e feche o desfecho (retido / cancelou / sem efeito).<br>"
+              "As que retiveram aparecem aqui e passam a orientar os próximos casos parecidos.</div></div></section>")
+    if interventions:
+        rows_i = "".join(
+            f"<div class='row arow' style='grid-template-columns:minmax(220px,1fr) minmax(240px,1.4fr) 110px 130px'>"
+            f"<div class='nm' style='font-size:var(--fs-sm)'>{escape((i.get('name') or '')[:44])}</div>"
+            f"<div style='font-size:var(--fs-sm);color:var(--text-2)'>{escape((i.get('action_text') or '')[:90])}</div>"
+            f"<div>{_chip(i.get('result') or 'pendente', {'retido': '--status-baixo', 'cancelou': '--status-critico', 'sem_efeito': '--status-semdados'}.get(i.get('result'), '--status-medio'))}</div>"
+            f"<div class=c-status>{escape(str(i.get('taken_at'))[:10])}</div></div>"
+            for i in interventions)
+        h += ("<section><div class=sec-head><h2>Ações recentes</h2><span class=sub>últimos registros</span></div>"
+              "<div class='tbl'><div class='row thead' style='grid-template-columns:minmax(220px,1fr) minmax(240px,1.4fr) 110px 130px'>"
+              "<div>Conta</div><div>Ação</div><div>Desfecho</div><div>Quando</div></div>"
+              + rows_i + "</div></section>")
+    return h
+
+
+def _report_from(scores: list[dict], alerts: list[dict]) -> dict:
+    """Relatório do estado atual — mesmo dado que alimentará o envio ao Slack."""
+    ev = [s for s in scores if s["evaluable"]]
+    nev = [s for s in scores if not s["evaluable"]]
+    sev: dict[str, int] = {}
+    for a in alerts:
+        sev[a["severity"]] = sev.get(a["severity"], 0) + 1
+    dist = lambda key: _count_by(scores, key)  # noqa: E731
+    with_alert = [s for s in scores if s.get("alert_sev")]
+    crit_accts = [s for s in scores if s.get("alert_sev") == "critico"]
+    top10 = sorted(ev, key=lambda s: (float(s["score"]), -_mrr_val(s)))[:10]
+    squad_alerts: dict[str, int] = {}
+    for s in with_alert:
+        sq = _squad(s["name"])
+        squad_alerts[sq] = squad_alerts.get(sq, 0) + 1
+    return {
+        "data": dt.date.today().isoformat(),
+        "monitoradas": len(scores), "avaliaveis": len(ev), "sem_dados": len(nev),
+        "alertas": sev, "alertas_total": sum(sev.values()),
+        "mrr_risco": sum(_mrr_val(s) for s in with_alert if _mrr_val(s) > 0),
+        "mrr_critico": sum(_mrr_val(s) for s in crit_accts if _mrr_val(s) > 0),
+        "faixa": dist("risk_band"), "estagio": dist("stage"), "trajetoria": dist("trajectory"),
+        "piores": [{"nome": s["name"], "score": float(s["score"]), "estagio": s["stage"],
+                    "mrr": (_mrr_val(s) if _mrr_val(s) > 0 else None)} for s in top10],
+        "criticos": [{"nome": s["name"], "mrr": (_mrr_val(s) if _mrr_val(s) > 0 else None)} for s in crit_accts],
+        "nao_avaliaveis": [s["name"] for s in nev],
+        "alertas_por_squad": dict(sorted(squad_alerts.items(), key=lambda x: -x[1])),
+        "exec_atrasada": sum(1 for s in scores if (s.get("exec_score") or 100) < 40),
+    }
+
+
+def _count_by(scores: list[dict], key: str) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for s in scores:
+        out[str(s.get(key))] = out.get(str(s.get(key)), 0) + 1
+    return out
+
+
+def _report_text(rep: dict) -> str:
+    """Versão texto do relatório — formato pronto para postar no Slack."""
+    sev = rep["alertas"]
+    lines = [
+        f"*Integracomm IA · Growth — resumo do estado* ({rep['data']})",
+        f"• Contas monitoradas: {rep['monitoradas']} ({rep['avaliaveis']} avaliáveis, {rep['sem_dados']} sem dados)",
+        f"• Alertas abertos: {rep['alertas_total']} — crítico {sev.get('critico', 0)} · alto {sev.get('alto', 0)} · atenção {sev.get('atencao', 0)}",
+        f"• MRR em risco: {_fmt_brl(rep['mrr_risco'])} (só críticos: {_fmt_brl(rep['mrr_critico'])})",
+        f"• Execução atrasada (ClickUp): {rep['exec_atrasada']} contas",
+        "",
+        "*Piores contas (score):*",
+    ]
+    for i, p in enumerate(rep["piores"][:5], 1):
+        mrr = f", {_fmt_brl(p['mrr'])}" if p.get("mrr") else ""
+        lines.append(f"{i}. {p['nome'][:48]} — {p['score']:.1f} ({_STAGE_LABEL.get(p['estagio'], p['estagio'])}{mrr})")
+    if rep["criticos"]:
+        lines += ["", f"*Alertas críticos ({len(rep['criticos'])}):*"]
+        for i, c in enumerate(rep["criticos"], 1):
+            mrr = f" — {_fmt_brl(c['mrr'])}" if c.get("mrr") else ""
+            lines.append(f"{i}. {c['nome'][:48]}{mrr}")
+    if rep["nao_avaliaveis"]:
+        lines += ["", f"*Sem dados (revisar manualmente):* {len(rep['nao_avaliaveis'])} contas"]
+    lines += ["", "_o agente só sinaliza — a decisão é do gestor_"]
+    return "\n".join(lines)
+
+
+def _assessoria_block(scores: list[dict]) -> str:
+    """Bloco 'Relatório de Assessoria' da aba Relatórios: seletor de clientes
+    (múltiplos) + mês de referência -> gera relatórios individuais sob demanda
+    (POST /api/reports/batch) e lista os gerados NA SESSÃO (ver/exportar)."""
+    import datetime as _dt
+    prev = (_dt.date.today().replace(day=1) - _dt.timedelta(days=1)).strftime("%Y-%m")
+    opts = "".join(
+        f"<label class=asschk><input type=checkbox value='{s['account_id']}' "
+        f"data-name=\"{escape(s['name'].lower())}\"><span>{escape(s['name'][:70])}</span></label>"
+        for s in sorted(scores, key=lambda s: s["name"].lower())
+    )
+    return f"""
+<section>
+ <div class=sec-head><h2>Relatório de Assessoria</h2>
+  <span class=sub>relatório mensal individual por cliente — faturamento, atividades e saúde</span></div>
+ <div style='{_CARD}'>
+  <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
+   <div style="flex:1;min-width:280px">
+    <label class=asslbl>clientes</label>
+    <input id=ass-search placeholder="filtrar por nome…" oninput="assFilter()"
+      style="width:100%;background:var(--bg-panel);border:1px solid var(--border-strong);border-radius:var(--radius-sm);color:var(--text);font-family:var(--font-body);font-size:var(--fs-sm);padding:7px 9px;margin-bottom:6px">
+    <div id=ass-accts>{opts}</div>
+    <div style="font-size:var(--fs-2xs);color:var(--text-faint);margin-top:4px">
+      <a href="#" onclick="assAll(true);return false" style="color:var(--text-muted)">marcar visíveis</a> ·
+      <a href="#" onclick="assAll(false);return false" style="color:var(--text-muted)">desmarcar todos</a> ·
+      <span id=ass-count>0 selecionados</span></div>
+   </div>
+   <div>
+    <label class=asslbl>mês de referência</label>
+    <input id=ass-month type=month value="{prev}" max="{prev}"
+      style="background:var(--bg-panel);border:1px solid var(--border-strong);border-radius:var(--radius-sm);color:var(--text);font-family:var(--font-body);font-size:var(--fs-sm);padding:7px 9px">
+    <div style="margin-top:12px">
+      <button id=ass-btn onclick="assGerar()" style="cursor:pointer;background:var(--brand);color:var(--brand-ink);border:none;border-radius:var(--radius-sm);font-family:var(--font-body);font-weight:600;font-size:var(--fs-sm);padding:9px 16px">Gerar Relatório(s)</button>
+    </div>
+    <div id=ass-msg style="font-size:var(--fs-sm);color:var(--text-muted);margin-top:10px;max-width:260px;line-height:1.5"></div>
+   </div>
+  </div>
+  <div id=ass-out style="display:none;margin-top:16px">
+   <div class=asslbl style="margin-bottom:6px">relatórios gerados nesta sessão</div>
+   <div id=ass-list></div>
+  </div>
+ </div>
+</section>
+<style>
+.asslbl{{display:block;font-size:var(--fs-2xs);color:var(--text-muted);text-transform:uppercase;letter-spacing:var(--tracking-label);margin-bottom:5px}}
+#ass-accts{{max-height:230px;overflow-y:auto;background:var(--bg-panel);border:1px solid var(--border-strong);border-radius:var(--radius-sm);padding:4px 0}}
+.asschk{{display:flex;gap:8px;align-items:center;padding:5px 10px;font-size:var(--fs-sm);color:var(--text-2);cursor:pointer}}
+.asschk:hover{{background:var(--surface-2)}}
+.asschk input{{accent-color:var(--brand)}}
+.assitem{{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:8px 0;border-top:1px solid var(--border);font-size:var(--fs-sm)}}
+.assitem:first-child{{border-top:none}}
+.assitem a{{color:var(--brand);text-decoration:none;font-weight:var(--fw-semibold)}}
+.assitem .err{{color:var(--status-critico)}}
+</style>
+<script>
+function assChecks(){{return [].slice.call(document.querySelectorAll('#ass-accts input'));}}
+function assCount(){{var n=assChecks().filter(function(c){{return c.checked;}}).length;
+  document.getElementById('ass-count').textContent=n+' selecionados';}}
+document.getElementById('ass-accts').addEventListener('change',assCount);
+function assFilter(){{var q=document.getElementById('ass-search').value.toLowerCase().trim();
+  assChecks().forEach(function(c){{c.parentNode.style.display=(!q||c.dataset.name.indexOf(q)>=0)?'':'none';}});}}
+function assAll(v){{assChecks().forEach(function(c){{if(c.parentNode.style.display!=='none')c.checked=v;}});assCount();}}
+function assGerar(){{
+  var ids=assChecks().filter(function(c){{return c.checked;}}).map(function(c){{return c.value;}});
+  var month=document.getElementById('ass-month').value;
+  var msg=document.getElementById('ass-msg'), btn=document.getElementById('ass-btn');
+  if(!ids.length){{msg.textContent='selecione ao menos um cliente.';return;}}
+  if(!month){{msg.textContent='informe o mês de referência.';return;}}
+  btn.disabled=true; msg.textContent='gerando '+ids.length+' relatório(s)… (busca planilha + ClickUp + sinais; pode levar alguns segundos por cliente)';
+  fetch('/api/reports/batch',{{method:'POST',headers:{{'Content-Type':'application/json'}},
+    body:JSON.stringify({{account_ids:ids,month:month}})}})
+  .then(function(r){{return r.json().then(function(j){{return [r.ok,j];}});}})
+  .then(function(x){{
+    btn.disabled=false;
+    if(!x[0]){{msg.textContent=x[1].error||x[1].detail||'falha na geração';return;}}
+    var ok=x[1].reports.filter(function(r){{return r.status==='ok';}}).length;
+    msg.textContent=ok+' de '+x[1].reports.length+' relatório(s) gerado(s) para '+x[1].month+'.';
+    var list=document.getElementById('ass-list');
+    x[1].reports.forEach(function(r){{
+      var d=document.createElement('div'); d.className='assitem';
+      if(r.status==='ok'){{
+        d.innerHTML='<span>'+r.account_name.replace(/</g,'&lt;')+' · '+x[1].month+'</span>'
+          +'<span><a href="/growth/report?report_id='+r.report_id+'" target=_blank>visualizar</a>'
+          +' · <a href="/growth/report?report_id='+r.report_id+'" target=_blank title="abra e use Exportar/Imprimir">exportar</a></span>';
+      }} else {{
+        d.innerHTML='<span>'+r.account_id+'</span><span class=err>erro: '+(r.error||'falha')+'</span>';
+      }}
+      list.insertBefore(d,list.firstChild);
+    }});
+    document.getElementById('ass-out').style.display='';
+  }})
+  .catch(function(){{btn.disabled=false;msg.textContent='falha de rede na geração.';}});
+}}
+</script>"""
+
+
+def _relatorios_content(rep: dict, scores: list[dict]) -> str:
+    sev = rep["alertas"]
+
+    def block(title, sub, inner):
+        return (f"<section><div class=sec-head><h2>{title}</h2><span class=sub>{sub}</span></div>"
+                f"<div style='{_CARD}'>{inner}</div></section>")
+
+    def dl(pairs):
+        return "".join(
+            f"<div style='display:flex;justify-content:space-between;padding:6px 0;"
+            f"border-bottom:1px solid var(--border);font-size:var(--fs-sm)'>"
+            f"<span style='color:var(--text-muted)'>{escape(str(k))}</span><b>{escape(str(v))}</b></div>"
+            for k, v in pairs)
+
+    resumo = dl([
+        ("Contas monitoradas", rep["monitoradas"]),
+        ("Avaliáveis", rep["avaliaveis"]), ("Sem dados (revisar manual)", rep["sem_dados"]),
+        ("Alertas abertos", f"{rep['alertas_total']}  (crítico {sev.get('critico', 0)} · alto {sev.get('alto', 0)} · atenção {sev.get('atencao', 0)})"),
+        ("MRR em risco", _fmt_brl(rep["mrr_risco"])), ("MRR em risco crítico", _fmt_brl(rep["mrr_critico"])),
+        ("Execução atrasada (ClickUp)", f"{rep['exec_atrasada']} contas"),
+    ])
+    piores = dl([(f"{i}. {p['nome'][:44]}", f"{p['score']:.1f} · {_STAGE_LABEL.get(p['estagio'], p['estagio'])}"
+                  + (f" · {_fmt_brl(p['mrr'])}" if p.get("mrr") else ""))
+                 for i, p in enumerate(rep["piores"], 1)])
+    dists = dl([("— Faixa —", "")] + sorted(rep["faixa"].items(), key=lambda x: -x[1])
+               + [("— Estágio —", "")] + sorted(rep["estagio"].items(), key=lambda x: -x[1])
+               + [("— Trajetória —", "")] + sorted(rep["trajetoria"].items(), key=lambda x: -x[1]))
+    squads = dl(list(rep["alertas_por_squad"].items()) or [("sem alertas", "")])
+
+    return (
+        "<div class=page-head><h1>Relatórios</h1>"
+        "<span class=role-chip>estado atual — mesma base do envio ao Slack</span></div>"
+        "<p class=note style='margin-top:14px;display:flex;align-items:center;gap:12px;flex-wrap:wrap'>"
+        "<button id=slackbtn onclick=\"sendSlack()\" style='cursor:pointer;background:var(--brand);"
+        "color:var(--brand-ink);border:none;border-radius:var(--radius-sm);font-family:var(--font-body);"
+        "font-weight:600;font-size:var(--fs-sm);padding:8px 14px'>Enviar ao Slack agora</button>"
+        "<span id=slackmsg style='font-size:var(--fs-sm);color:var(--text-muted)'>"
+        "posta este resumo no grupo dos gestores (webhook do .env)</span></p>"
+        "<script>function sendSlack(){var b=document.getElementById('slackbtn'),m=document.getElementById('slackmsg');"
+        "b.disabled=true;m.textContent='enviando…';"
+        "fetch('/api/reports/send-slack',{method:'POST'}).then(function(r){return r.json().then(function(j){return [r.ok,j];});})"
+        ".then(function(x){m.textContent=x[0]?'enviado ao grupo ✓':(x[1].error||'falha no envio');b.disabled=false;})"
+        ".catch(function(){m.textContent='falha de rede';b.disabled=false;});}</script>"
+        + _assessoria_block(scores)
+        + block("Resumo executivo", rep["data"], resumo)
+        + block("Piores contas", "menor score = pior; MRR quando conhecido", piores)
+        + block("Distribuições", "faixa · estágio · trajetória", dists)
+        + block("Alertas por squad", "onde o risco está concentrado", squads))

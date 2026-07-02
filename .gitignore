@@ -1,0 +1,42 @@
+# --- Segredos / ambiente (NUNCA versionar) ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# --- Código de referência (repos Lovable clonados só para inspeção) ---
+reference/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Node / frontend ---
+node_modules/
+dist/
+.vite/
+
+# --- Dados derivados locais / dumps ---
+data/
+*.dump
+*.sqlite
+
+# --- OS / editores ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# --- Claude Code: estado local da máquina (permissões) — não versionar ---
+.claude/settings.local.json
+
+# --- Logs de execução ---
+logs/
+*.log

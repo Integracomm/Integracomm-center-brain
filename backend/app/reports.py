@@ -1,0 +1,327 @@
+"""Relatório mensal de assessoria por cliente — composição e persistência.
+
+Junta as 3 fontes num objeto único e AUDITÁVEL, salvo em `reports` (JSONB):
+  1. Faturamento — planilha individual do cliente (link na mestre de NPS);
+  2. Atividades — subtarefas concluídas no período (ClickUp API → mirror);
+  3. Saúde — score/faixa/trajetória + sinais do Postgres próprio (agente Growth).
+
+"Observações e próximos passos": por enquanto TEMPLATES determinísticos sobre
+os dados (sem chamada de LLM — créditos de API indisponíveis); quando liberados,
+esta seção passa a ser gerada via Claude mantendo o mesmo contrato de dados.
+"""
+from __future__ import annotations
+
+import datetime as dt
+import json
+import uuid
+from typing import Any
+
+from .agents.growth.scoring import action_guideline
+from .sources import clickup_activities as CU
+from .sources import nps_sheets as NPS
+from .sources import squads_sheet as SQ
+
+_STAGE_LABEL = {"saudavel": "saudável", "desengajamento_inicial": "desengajamento inicial",
+                "insatisfacao_latente": "insatisfação latente", "insatisfacao_ativa": "insatisfação ativa",
+                "intencao_de_saida": "intenção de saída", "nao_avaliavel": "não avaliável"}
+_TRAJ_LABEL = {"subindo": "melhorando", "estavel": "estável", "caindo": "piorando",
+               "desconhecida": "desconhecida"}
+
+_MONTH_NAMES = ["janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho",
+                "agosto", "setembro", "outubro", "novembro", "dezembro"]
+
+_REPORTS_DDL = """
+CREATE TABLE IF NOT EXISTS reports (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    account_id TEXT NOT NULL,
+    account_name TEXT NOT NULL,
+    reference_month DATE NOT NULL,
+    generated_at TIMESTAMPTZ DEFAULT NOW(),
+    generated_by TEXT,
+    status TEXT DEFAULT 'generated',
+    data JSONB NOT NULL,
+    notes TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_reports_account ON reports(account_id, reference_month DESC);
+"""
+
+
+def ensure_reports_table(conn: Any) -> None:
+    with conn.cursor() as cur:
+        cur.execute(_REPORTS_DDL)
+
+
+def month_label(iso: str) -> str:
+    y, m = iso.split("-")
+    return f"{_MONTH_NAMES[int(m) - 1]}/{y}"
+
+
+def default_ref_month(today: dt.date | None = None) -> str:
+    d = (today or dt.date.today()).replace(day=1) - dt.timedelta(days=1)
+    return d.strftime("%Y-%m")
+
+
+def _month_bounds(ref: str) -> tuple[dt.datetime, dt.datetime, str]:
+    """(início, fim-exclusivo, mês-anterior 'YYYY-MM') do mês de referência."""
+    y, m = int(ref[:4]), int(ref[5:7])
+    start = dt.datetime(y, m, 1, tzinfo=dt.timezone.utc)
+    end = dt.datetime(y + (m == 12), (m % 12) + 1, 1, tzinfo=dt.timezone.utc)
+    prev = start - dt.timedelta(days=1)
+    return start, end, prev.strftime("%Y-%m")
+
+
+def _account_row(conn: Any, account_id: str) -> dict | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT a.id, a.name, a.plan_category, a.manager_name, a.is_legacy,
+                      a.recurring_revenue,
+                      s.score, s.risk_band, s.stage, s.trajectory, s.evaluable,
+                      s.confidence, s.computed_at, s.id AS score_id
+                 FROM accounts a
+            LEFT JOIN LATERAL (SELECT * FROM scores s WHERE s.account_id = a.id
+                               ORDER BY s.computed_at DESC LIMIT 1) s ON TRUE
+                WHERE a.id = %s""", (account_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        cols = [d[0] for d in cur.description]
+        acc = dict(zip(cols, row))
+        acc["reasons"] = []
+        if acc.get("score_id"):
+            cur.execute("SELECT text, is_leading, weight FROM score_reasons "
+                        "WHERE score_id=%s ORDER BY weight DESC", (acc["score_id"],))
+            acc["reasons"] = [{"text": t, "leading": l, "weight": float(w)}
+                              for t, l, w in cur.fetchall()]
+        return acc
+
+
+def _signals(conn: Any, account_id: str, start: dt.datetime, end: dt.datetime) -> dict:
+    """Sinais p/ a seção de saúde: preferimos os capturados DENTRO do mês; se não
+    houver (a série começou depois), caímos para o mais recente, sinalizando."""
+    keys = ("tom_negativo", "fala_em_cancelar", "critico_recente", "exec_score")
+    out: dict[str, dict] = {}
+    with conn.cursor() as cur:
+        for key in keys:
+            cur.execute(
+                """SELECT value_num, value_text, captured_at FROM signal_snapshots
+                    WHERE account_id=%s AND signal_key=%s AND captured_at >= %s AND captured_at < %s
+                    ORDER BY captured_at DESC LIMIT 1""", (account_id, key, start, end))
+            row = cur.fetchone()
+            in_month = row is not None
+            if not row:
+                cur.execute(
+                    """SELECT value_num, value_text, captured_at FROM signal_snapshots
+                        WHERE account_id=%s AND signal_key=%s
+                        ORDER BY captured_at DESC LIMIT 1""", (account_id, key))
+                row = cur.fetchone()
+            if row:
+                out[key] = {"value": (float(row[0]) if row[0] is not None else None),
+                            "text": row[1], "captured_at": row[2].date().isoformat(),
+                            "in_month": in_month}
+    return out
+
+
+def _tone_label(sig: dict) -> tuple[str, str]:
+    """(rótulo, detalhe) do tom predominante a partir dos sinais derivados."""
+    if sig.get("fala_em_cancelar"):
+        return "crítico", "houve menção a cancelamento no período analisado"
+    if sig.get("critico_recente"):
+        return "negativo", "evento crítico recente nas conversas"
+    tom = sig.get("tom_negativo", {}).get("value")
+    if tom is None:
+        return "sem dados", "sem sinal de tom no período"
+    pct = tom * 100 if tom <= 1 else tom  # tolera escala 0-1 ou 0-100
+    if pct >= 50:
+        return "negativo", f"{pct:.0f}% dos dias de conversa com tom negativo"
+    if pct >= 20:
+        return "atenção", f"{pct:.0f}% dos dias de conversa com tom negativo"
+    return "estável", f"apenas {pct:.0f}% dos dias de conversa com tom negativo"
+
+
+def _observacoes(acc: dict, fat: dict, atv: dict, tone: tuple[str, str], ref: str) -> dict:
+    """Seção 'Observações e próximos passos' — determinística (ver docstring)."""
+    partes: list[str] = []
+    sug: list[str] = []
+    nome_mes = month_label(ref)
+
+    if acc.get("evaluable") and acc.get("score") is not None:
+        partes.append(
+            f"A conta encerrou {nome_mes} com score de relacionamento "
+            f"{float(acc['score']):.1f}/100 (faixa {acc['risk_band']}, "
+            f"{_STAGE_LABEL.get(acc['stage'], acc['stage'])}), com trajetória "
+            f"{_TRAJ_LABEL.get(acc['trajectory'], acc['trajectory'])}.")
+    else:
+        partes.append(f"A conta não tinha dados de conversa suficientes para score em {nome_mes} "
+                      "— vale revisão manual do relacionamento.")
+
+    totals = fat.get("comparativo") or []
+    t_ref = sum(b["total_ref"] for b in totals)
+    t_prev = sum(b["total_prev"] for b in totals)
+    ref_lancado = any(b.get("ref_lancado") for b in totals)
+    if fat.get("available") and totals:
+        if not ref_lancado:
+            partes.append(f"O faturamento de {nome_mes} ainda não estava lançado na planilha "
+                          "na data de geração (a planilha é atualizada todo dia 1º) — "
+                          "regerar o relatório após a atualização.")
+        elif t_prev > 0:
+            var = (t_ref - t_prev) / t_prev * 100
+            direcao = "cresceu" if var >= 0 else "caiu"
+            partes.append(f"O faturamento nos marketplaces {direcao} {abs(var):.1f}% vs o mês anterior "
+                          f"(R$ {t_ref:,.0f} vs R$ {t_prev:,.0f}).".replace(",", "."))
+            if var <= -20:
+                sug.append("Faturamento caiu mais de 20% no mês — investigar causa com o cliente "
+                           "(estoque, reputação da conta, sazonalidade) e alinhar plano de recuperação.")
+        else:
+            partes.append(f"Faturamento registrado no mês: R$ {t_ref:,.0f} (sem base comparável no mês anterior).".replace(",", "."))
+    elif not fat.get("available"):
+        partes.append("Sem planilha de faturamento disponível para esta conta no período.")
+        sug.append("Regularizar a planilha de NPS/faturamento do cliente (link ausente ou acesso restrito na mestre).")
+
+    n_atv = len(atv.get("tasks") or [])
+    if n_atv:
+        partes.append(f"Foram concluídas {n_atv} atividades de assessoria no período.")
+    else:
+        partes.append("Nenhuma atividade concluída registrada no período.")
+        sug.append("Sem entregas concluídas no mês — revisar o plano de ação no ClickUp e "
+                   "comunicar o andamento ao cliente.")
+
+    tone_lbl, tone_det = tone
+    if tone_lbl in ("crítico", "negativo"):
+        partes.append(f"O tom das conversas está {tone_lbl} ({tone_det}).")
+        sug.append("Tom de conversa deteriorado — priorizar contato pessoal do GC nesta semana.")
+
+    guia = action_guideline(
+        acc.get("stage") or "nao_avaliavel", is_legacy=bool(acc.get("is_legacy")),
+        recurring_revenue=(float(acc["recurring_revenue"]) if acc.get("recurring_revenue") is not None else None),
+        evaluable=bool(acc.get("evaluable")),
+        reasons=acc.get("reasons"), exec_score=(acc.get("exec_score")),
+    )
+    if guia:
+        sug.append(guia)
+
+    return {"texto": " ".join(partes), "sugestoes": sug,
+            "gerado_por": "template determinístico (LLM entra quando os créditos de API forem liberados)"}
+
+
+def build_report(conn: Any, account_id: str, ref_month: str, generated_by: str | None) -> dict:
+    """Gera o relatório completo de UMA conta para o mês de referência e salva
+    em `reports`. Retorna o payload (com `report_id`)."""
+    acc = _account_row(conn, account_id)
+    if not acc:
+        raise LookupError(f"conta {account_id} não encontrada")
+    start, end, prev_month = _month_bounds(ref_month)
+
+    # --- faturamento (planilha individual via mestre) ---
+    fat: dict[str, Any] = {"available": False, "aviso": None, "comparativo": [],
+                           "match_note": None, "sheet_link": None, "months_meta": None}
+    master, match_note = NPS.find_master_row(acc["name"])
+    fat["match_note"] = match_note
+    sheet_info: dict = {}
+    if master is None:
+        fat["aviso"] = "Planilha não disponível — conta não encontrada na planilha mestre de NPS."
+    elif not master["sheet_id"]:
+        fat["aviso"] = (f"Planilha não disponível — na mestre consta: “{master['link_raw'] or 'sem link'}”.")
+    else:
+        fat["sheet_link"] = master["link_raw"]
+        try:
+            parsed = NPS.fetch_individual(master["sheet_id"], master["gid"])
+            sheet_info = parsed.get("info") or {}
+            fat["comparativo"] = NPS.faturamento_compare(parsed, ref_month, prev_month)
+            fat["available"] = True
+            fat["months_meta"] = parsed.get("base_year_source")
+            if not fat["comparativo"]:
+                fat["aviso"] = f"Planilha encontrada, mas sem faturamento lançado em {month_label(ref_month)}."
+            elif not any(b.get("ref_lancado") for b in fat["comparativo"]):
+                fat["aviso"] = (f"Faturamento de {month_label(ref_month)} ainda não lançado na planilha "
+                                "(atualizada todo dia 1º) — valores exibidos são do mês anterior.")
+        except Exception as e:  # noqa: BLE001 — planilha privada/fora do ar não derruba o relatório
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            if status in (401, 403):
+                fat["aviso"] = ("Planilha não disponível — acesso restrito. Pedir ao dono para "
+                                "compartilhar como “qualquer pessoa com o link: leitor” e regerar o relatório.")
+            else:
+                fat["aviso"] = f"Planilha não disponível — acesso falhou ({type(e).__name__})."
+
+    # --- atividades (ClickUp API -> fallback mirror) ---
+    atv = CU.completed_activities(acc["name"], start, end)
+    grupos: dict[str, list] = {}
+    for t in atv["tasks"]:
+        grupos.setdefault(t.get("categoria") or t.get("responsavel") or "Geral", []).append(t)
+    atv["grupos"] = [{"categoria": k, "tarefas": v} for k, v in sorted(grupos.items())]
+
+    # --- saúde do relacionamento ---
+    sig = _signals(conn, str(acc["id"]), start, end)
+    acc["exec_score"] = sig.get("exec_score", {}).get("value")
+    tone = _tone_label(sig)
+    saude = {
+        "score": (float(acc["score"]) if acc.get("score") is not None else None),
+        "faixa": acc.get("risk_band"), "estagio": _STAGE_LABEL.get(acc.get("stage"), acc.get("stage")),
+        "trajetoria": _TRAJ_LABEL.get(acc.get("trajectory"), acc.get("trajectory")),
+        "evaluable": bool(acc.get("evaluable")),
+        "motivos": [r["text"] for r in acc.get("reasons", [])[:5]],
+        "tom": {"rotulo": tone[0], "detalhe": tone[1]},
+        "exec_score": acc["exec_score"],
+        "sinais_do_mes": all(v.get("in_month") for v in sig.values()) if sig else False,
+        "score_computado_em": (acc["computed_at"].date().isoformat() if acc.get("computed_at") else None),
+    }
+
+    # --- equipe do squad (planilha de composição dos SQUADs); contas sem
+    # Bx-Sy no tag (ex.: [ADS-GU]) usam a equipe do mirror como fallback ---
+    mirror_info = CU.mirror_client_info(acc["name"]) or {}
+    equipe_squad = None
+    squad_gc = None
+    try:
+        hit = SQ.team_for_account(acc["name"], fallback_key=mirror_info.get("equipe"))
+        if hit:
+            equipe_squad = {"squad": hit[0], "membros": hit[1]}
+            squad_gc = SQ.gc_of_team(hit[1])
+    except Exception:  # noqa: BLE001 — planilha de squads fora do ar não derruba o relatório
+        pass
+
+    # --- cabeçalho (planilha > mirror > squad > banco, nesta ordem) ---
+    header = {
+        "account_id": str(acc["id"]), "account_name": acc["name"],
+        "cliente": (sheet_info.get("cliente") or acc["name"]),
+        "plano": sheet_info.get("plano") or mirror_info.get("contrato") or acc.get("plan_category"),
+        "gc": (sheet_info.get("gc") or mirror_info.get("gerente_de_contas")
+               or squad_gc or acc.get("manager_name")),
+        "equipe": (sheet_info.get("equipe") or mirror_info.get("equipe")
+                   or (equipe_squad and equipe_squad["squad"])),
+        "reference_month": ref_month, "reference_month_label": month_label(ref_month),
+        "prev_month": prev_month, "prev_month_label": month_label(prev_month),
+    }
+
+    data = {"header": header, "equipe_squad": equipe_squad, "faturamento": fat,
+            "atividades": {"source": atv["source"], "aviso": atv["aviso"],
+                           "total": len(atv["tasks"]), "grupos": atv["grupos"]},
+            "saude": saude,
+            "observacoes": _observacoes(acc, fat, atv, tone, ref_month)}
+
+    # --- persiste ---
+    ensure_reports_table(conn)
+    rid = str(uuid.uuid4())
+    with conn.cursor() as cur:
+        cur.execute(
+            """INSERT INTO reports (id, account_id, account_name, reference_month, generated_by, data)
+               VALUES (%s,%s,%s,%s,%s,%s)""",
+            (rid, str(acc["id"]), acc["name"], f"{ref_month}-01", generated_by, json.dumps(data)))
+    data["report_id"] = rid
+    data["generated_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
+    data["generated_by"] = generated_by
+    return data
+
+
+def load_report(conn: Any, report_id: str) -> dict | None:
+    ensure_reports_table(conn)
+    with conn.cursor() as cur:
+        cur.execute("SELECT data, generated_at, generated_by, notes FROM reports WHERE id=%s",
+                    (report_id,))
+        row = cur.fetchone()
+    if not row:
+        return None
+    data = row[0] if isinstance(row[0], dict) else json.loads(row[0])
+    data["report_id"] = report_id
+    data["generated_at"] = row[1].isoformat() if row[1] else None
+    data["generated_by"] = row[2]
+    data["notes"] = row[3]
+    return data

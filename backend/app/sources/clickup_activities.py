@@ -1,0 +1,269 @@
+"""Atividades CONCLUÍDAS por conta/mês — para o relatório mensal de assessoria.
+
+Fonte primária: API oficial do ClickUp (token do .env, lista de assessoria) —
+cards de cliente na lista `CLICKUP_LIST_ASSESSORIA`, subtarefas concluídas no
+período. Fallback: o MIRROR Supabase da Operação (mesma base já usada pelo
+score de execução — `clientes` + `subtarefas` com data_conclusao), para quando
+o token estiver inválido/expirado (hoje é o caso: OAUTH_025) ou a API falhar.
+A fonte usada vai no payload (`source`) + aviso quando cai no fallback.
+"""
+from __future__ import annotations
+
+import datetime as dt
+import re
+import time
+from pathlib import Path
+from typing import Any
+
+import httpx
+
+from ..config import get_settings
+from .mirror import MirrorReader, parse_dt
+from .nps_sheets import norm_account
+
+_CLICKUP_BASE = "https://api.clickup.com/api/v2"
+_TTL = 600.0
+_cache: dict[str, tuple[float, Any]] = {}
+
+
+def _cached(key: str, fn):
+    hit = _cache.get(key)
+    if hit and time.monotonic() - hit[0] < _TTL:
+        return hit[1]
+    val = fn()
+    _cache[key] = (time.monotonic(), val)
+    return val
+
+
+# --- caminho 1: API oficial do ClickUp --------------------------------------
+def _clickup_list_tasks(token: str, list_id: str) -> list[dict]:
+    """Todas as tasks da lista de assessoria (cards de cliente + subtarefas).
+    Paginação pelo flag `last_page` (a heurística len<100 truncava a lista — um
+    429 no meio devolvia página vazia e parecia fim); 429 espera e retenta."""
+    def load():
+        out: list[dict] = []
+        with httpx.Client(timeout=60.0) as cli:
+            page = 0
+            while page < 300:
+                r = cli.get(f"{_CLICKUP_BASE}/list/{list_id}/task",
+                            params={"page": page, "subtasks": "true",
+                                    "include_closed": "true", "archived": "false"},
+                            headers={"Authorization": token})
+                if r.status_code == 429:
+                    time.sleep(float(r.headers.get("Retry-After") or 5))
+                    continue
+                r.raise_for_status()
+                j = r.json()
+                tasks = j.get("tasks", [])
+                out.extend(tasks)
+                if j.get("last_page") or not tasks:
+                    break
+                page += 1
+        return out
+    return _cached(f"cu:{list_id}", load)
+
+
+def _mk_item(t: dict, start: dt.datetime, end: dt.datetime) -> dict | None:
+    """Task da API -> item de atividade, se CONCLUÍDA dentro do período."""
+    done_ms = t.get("date_done") or t.get("date_closed")
+    if not done_ms:
+        return None
+    done = dt.datetime.fromtimestamp(int(done_ms) / 1000, tz=dt.timezone.utc)
+    if not (start <= done < end):
+        return None
+    tags = [g.get("name") for g in (t.get("tags") or []) if g.get("name")]
+    assg = ", ".join(a.get("username", "") for a in (t.get("assignees") or [])) or None
+    return {"id": t.get("id"), "nome": t.get("name"), "concluida_em": done.date().isoformat(),
+            "responsavel": assg, "status": (t.get("status") or {}).get("status"),
+            "categoria": (tags[0] if tags else None)}
+
+
+def _bfs_completed(token: str, root_id: str, start: dt.datetime, end: dt.datetime,
+                   skip_ids: set[str], max_nodes: int = 200) -> list[dict]:
+    """Varre a ÁRVORE de subtarefas de um card via /task/{id}?include_subtasks=true
+    — cobre cards que não estão na lista configurada (ex.: card apontado pelo
+    mirror, ou card de assessoria vivendo em outra lista). O root não vira item."""
+    out: list[dict] = []
+    visited = {root_id}
+    frontier = [root_id]
+    with httpx.Client(timeout=60.0) as cli:
+        while frontier and len(visited) <= max_nodes:
+            tid = frontier.pop(0)
+            r = cli.get(f"{_CLICKUP_BASE}/task/{tid}",
+                        params={"include_subtasks": "true"},
+                        headers={"Authorization": token})
+            if r.status_code == 401:
+                r.raise_for_status()  # token inválido -> aviso específico no chamador
+            if r.status_code != 200:
+                continue
+            t = r.json()
+            if tid != root_id and tid not in skip_ids:
+                item = _mk_item(t, start, end)
+                if item:
+                    out.append(item)
+            for s2 in (t.get("subtasks") or []):
+                sid = s2.get("id")
+                if sid and sid not in visited:
+                    visited.add(sid)
+                    frontier.append(sid)
+    return out
+
+
+def _from_clickup_api(account_name: str, start: dt.datetime, end: dt.datetime) -> list[dict] | None:
+    """Duas rotas somadas (dedup por id): (1) lista de assessoria — cards de
+    cliente por nome + subtarefas retornadas pela própria lista; (2) card
+    apontado pelo mirror (`clientes.clickup_task_id`), que pode viver em OUTRA
+    lista (ex.: Clientes Ativos) — varrido por BFS. O caso SOLUTION STORE provou
+    que um cliente pode ter cards distintos por lista."""
+    s = get_settings()
+    if not s.clickup_api_token:
+        return None
+    token = s.clickup_api_token
+    out: list[dict] = []
+    by_id: dict[str, dict] = {}
+    card_ids: set[str] = set()
+
+    if s.clickup_list_assessoria:
+        tasks = _clickup_list_tasks(token, s.clickup_list_assessoria)
+        by_id = {t["id"]: t for t in tasks}
+        want = norm_account(account_name)
+        card_ids = {t["id"] for t in tasks
+                    if not t.get("parent") and norm_account(t.get("name")) == want}
+
+        def root_of(t: dict) -> str | None:
+            seen: set[str] = set()
+            cur = t
+            while cur.get("parent") and cur["parent"] not in seen:
+                seen.add(cur["parent"])
+                nxt = by_id.get(cur["parent"])
+                if not nxt:
+                    return cur["parent"]
+                cur = nxt
+            return cur["id"]
+
+        for t in tasks:
+            if not t.get("parent") or root_of(t) not in card_ids:
+                continue
+            item = _mk_item(t, start, end)
+            if item:
+                out.append(item)
+
+    # rota 2: cards fora da lista configurada (mirror; cards homônimos idem)
+    extra_roots: set[str] = set()
+    try:
+        info = _mirror_clientes().get(norm_account(account_name)) or {}
+        if info.get("clickup_task_id"):
+            extra_roots.add(info["clickup_task_id"])
+    except Exception:  # noqa: BLE001 — mirror fora do ar não bloqueia a rota da API
+        pass
+    seen_ids = set(by_id) | {i["id"] for i in out}
+    for root in extra_roots:
+        if root in by_id:
+            continue  # já coberto pela varredura da lista
+        for item in _bfs_completed(token, root, start, end, skip_ids=seen_ids):
+            if item["id"] not in seen_ids:
+                seen_ids.add(item["id"])
+                out.append(item)
+
+    for i in out:
+        i.pop("id", None)
+    return out
+
+
+# --- caminho 2 (fallback): mirror Supabase da Operação ----------------------
+def _mirror_creds() -> tuple[str, str]:
+    """Mesmas credenciais públicas (anon, read-only) usadas pelo score de
+    execução — extraídas do exec_signals.ps1 para não duplicar o segredo."""
+    ps1 = (Path(__file__).resolve().parents[2] / "scripts" / "exec_signals.ps1").read_text(encoding="utf-8")
+    return (re.search(r'\$base="([^"]+)"', ps1).group(1),
+            re.search(r'\$anon="([^"]+)"', ps1).group(1))
+
+
+def _mirror_clientes() -> dict[str, dict]:
+    """{nome_normalizado: cliente} do mirror (id, GC, plano/contrato, equipe)."""
+    def load():
+        base, anon = _mirror_creds()
+        with httpx.Client(timeout=60.0) as cli:
+            r = cli.get(f"{base}/clientes",
+                        params={"select": "id,nome_cliente,clickup_task_id,gerente_de_contas,contrato,equipe,status",
+                                "limit": "10000"},
+                        headers={"apikey": anon, "Authorization": f"Bearer {anon}"})
+            r.raise_for_status()
+            out: dict[str, dict] = {}
+            for c in r.json():
+                n = norm_account(c.get("nome_cliente"))
+                if n and n not in out:
+                    out[n] = c
+            return out
+    return _cached("mirror:clientes", load)
+
+
+def _from_mirror(account_name: str, start: dt.datetime, end: dt.datetime) -> list[dict] | None:
+    cli = _mirror_clientes().get(norm_account(account_name))
+    if not cli:
+        return None
+    base, anon = _mirror_creds()
+    rows: list[dict] = []
+    with httpx.Client(timeout=60.0) as http:
+        offset = 0
+        while True:  # PostgREST corta em 1000 linhas/resposta — paginar sempre
+            r = http.get(f"{base}/subtarefas",
+                         params={"select": "nome_subtarefa,status,responsavel,data_conclusao",
+                                 "cliente_id": f"eq.{cli['id']}",
+                                 "data_conclusao": f"gte.{start.date().isoformat()}",
+                                 "order": "data_conclusao.asc",
+                                 "limit": "1000", "offset": str(offset)},
+                         headers={"apikey": anon, "Authorization": f"Bearer {anon}"})
+            r.raise_for_status()
+            page = r.json()
+            rows.extend(page)
+            if len(page) < 1000:
+                break
+            offset += 1000
+    out = []
+    for s in rows:
+        done = parse_dt(s.get("data_conclusao"))
+        if not done or not (start <= done < end):
+            continue
+        out.append({"nome": s.get("nome_subtarefa"), "concluida_em": done.date().isoformat(),
+                    "responsavel": s.get("responsavel"), "status": s.get("status"),
+                    "categoria": None})
+    return out
+
+
+def mirror_client_info(account_name: str) -> dict | None:
+    """GC/plano/equipe do mirror — enriquece o cabeçalho quando a planilha não traz."""
+    try:
+        return _mirror_clientes().get(norm_account(account_name))
+    except Exception:  # noqa: BLE001 — enriquecimento é opcional
+        return None
+
+
+def completed_activities(account_name: str, start: dt.datetime, end: dt.datetime) -> dict:
+    """Atividades concluídas da conta no período [start, end).
+    {source, aviso|None, tasks: [{nome, concluida_em, responsavel, status, categoria}]}"""
+    aviso = None
+    try:
+        tasks = _from_clickup_api(account_name, start, end)
+        if tasks is not None:
+            return {"source": "clickup_api", "aviso": None,
+                    "tasks": sorted(tasks, key=lambda t: t["concluida_em"])}
+        aviso = "token/lista ClickUp não configurados — usando espelho da Operação"
+    except Exception as e:  # noqa: BLE001 — fallback deliberado p/ o mirror
+        status = getattr(getattr(e, "response", None), "status_code", None)
+        if status == 401:
+            aviso = ("token ClickUp do .env inválido/expirado (a API recusou com 401) — gerar novo "
+                     "token pessoal no ClickUp e atualizar CLICKUP_API_TOKEN; usando espelho da Operação "
+                     "(mesmos dados do ClickUp, atualizados pelo HUB)")
+        else:
+            aviso = f"API ClickUp indisponível ({type(e).__name__}) — usando espelho da Operação"
+    try:
+        tasks = _from_mirror(account_name, start, end)
+    except Exception as e:  # noqa: BLE001
+        return {"source": "nenhuma", "tasks": [],
+                "aviso": f"{aviso}; espelho também indisponível ({type(e).__name__})"}
+    if tasks is None:
+        return {"source": "mirror", "tasks": [],
+                "aviso": f"{aviso}; conta não encontrada no espelho da Operação"}
+    return {"source": "mirror", "aviso": aviso,
+            "tasks": sorted(tasks, key=lambda t: t["concluida_em"])}

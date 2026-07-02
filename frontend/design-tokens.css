@@ -1,0 +1,90 @@
+/* =====================================================================
+   Integracomm IA — DESIGN TOKENS (fonte da verdade da identidade visual)
+   Extraídos do painel de Growth desenhado pelo Claude Design.
+   Toda a UI (Growth e áreas futuras: Marketing, Pré-vendas, etc.) deve
+   consumir estas variáveis — não hardcodar cores/fontes/espaçamentos.
+   Tema: DARK. Marca: amarelo Integracomm.
+   ===================================================================== */
+:root {
+  /* ---- Marca ---- */
+  --brand:            #F5C518;   /* amarelo Integracomm (acento primário) */
+  --brand-ink:        #0B0B0C;   /* texto sobre o amarelo */
+
+  /* ---- Superfícies (camadas do tema dark, do mais fundo ao mais alto) ---- */
+  --bg-app:           #0B0B0C;   /* fundo da aplicação */
+  --bg-rail:          #060607;   /* sidebar / trilho */
+  --bg-panel:         #111113;   /* painéis/seções */
+  --surface-1:        #18181B;   /* cartão base */
+  --surface-2:        #1C1C1F;   /* cartão elevado / cabeçalho de tabela */
+  --surface-3:        #232326;   /* hover / realce */
+  --surface-hover:    #2A2A2E;
+
+  /* ---- Bordas ---- */
+  --border:           #1C1C1F;   /* divisórias sutis */
+  --border-mid:       #2A2A2E;
+  --border-strong:    #35353A;
+
+  /* ---- Texto ---- */
+  --text:             #F4F4F2;   /* primário */
+  --text-2:           #C9C9CC;   /* secundário */
+  --text-muted:       #8A8A93;   /* rótulos/legendas */
+  --text-faint:       #5C5C63;   /* desabilitado */
+
+  /* ---- Status: faixa de risco / severidade de alerta ---- */
+  --status-baixo:     #3DDC84;   /* saudável (verde) */
+  --status-medio:     #F5C518;   /* atenção (amarelo) */
+  --status-alto:      #FF8A3D;   /* alto (laranja) */
+  --status-critico:   #FF4D5E;   /* crítico (vermelho) */
+  --status-semdados:  #77777E;   /* sem dados (cinza) */
+
+  /* ---- Tipografia ---- */
+  --font-display: 'Poppins', system-ui, -apple-system, Segoe UI, sans-serif; /* títulos/números */
+  --font-body:    'DM Sans', system-ui, -apple-system, Segoe UI, sans-serif; /* corpo/UI */
+  --fs-hero:      34px;
+  --fs-h1:        26px;
+  --fs-kpi:       40px;
+  --fs-lg:        17px;
+  --fs-md:        13.5px;
+  --fs-base:      13px;
+  --fs-sm:        12px;
+  --fs-xs:        11px;
+  --fs-2xs:       10.5px;
+  --fw-regular:   400;
+  --fw-medium:    500;
+  --fw-semibold:  600;
+  --fw-bold:      700;
+  --tracking-label: 0.1em;   /* rótulos em CAIXA ALTA */
+  --tracking-tight: -0.02em; /* títulos grandes */
+
+  /* ---- Raios ---- */
+  --radius-xs:    4px;
+  --radius-sm:    6px;
+  --radius:       8px;
+  --radius-md:    12px;
+  --radius-pill:  999px;
+
+  /* ---- Espaçamento (base 4) ---- */
+  --space-1: 4px;  --space-2: 8px;  --space-3: 10px;
+  --space-4: 12px; --space-5: 14px; --space-6: 20px; --space-7: 28px; --space-8: 34px;
+
+  /* ---- Layout ---- */
+  --rail-width:   232px;
+  --content-max:  1440px;
+
+  /* ---- Elevação ---- */
+  --shadow-1: 0 1px 3px rgba(0,0,0,.45);
+  --shadow-2: 0 6px 24px rgba(0,0,0,.35);
+}
+
+/* Chip/badge de status — bg translúcido + borda + texto na cor (padrão dark).
+   Uso: <span class="chip" style="--c:var(--status-critico)">crítico</span> */
+.chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 2px 9px; border-radius: var(--radius-pill);
+  font-family: var(--font-body); font-size: var(--fs-xs); font-weight: var(--fw-semibold);
+  color: var(--c, var(--text-2));
+  background: color-mix(in srgb, var(--c, var(--text-muted)) 15%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c, var(--text-muted)) 38%, transparent);
+  white-space: nowrap;
+}
+.chip .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--c, var(--text-muted)); }
