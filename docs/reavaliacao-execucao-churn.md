@@ -1,9 +1,10 @@
 # Reavaliação: execução prediz churn? (2026-07-02)
 
 ## Contexto
-A conclusão original do modelo — **"execução não prediz churn"** (AUC ~0,49/0,44 em
-churn−30/−60) — foi levantada como suspeita pelo Otávio: ela saiu do espelho
-(mirror Supabase) da Operação, que se descobriu **incompleto**. Duas falhas:
+A conclusão original do modelo — **"execução não prediz churn"** (AUC ~0,49/0,44
+em churn−30/−60) — foi levantada como suspeita pelo Otávio: ela saiu do espelho
+(mirror Supabase) da Operação, que se descobriu **incompleto**. Duas falhas
+confirmadas e corrigidas:
 
 1. **Truncamento silencioso**: o PostgREST do mirror corta toda resposta em 1.000
    linhas mesmo pedindo mais — o leitor de subtarefas recebia lotes cortados sem
@@ -12,49 +13,52 @@ churn−30/−60) — foi levantada como suspeita pelo Otávio: ela saiu do espe
    ClickUp, o mirror tinha só **~51% das subtarefas** (mediana 90% por card, mas
    vários clientes com 0 — ex.: Supley 431 reais vs 0 no mirror).
 
+## Onde está o histórico dos cancelados (correção importante)
+A 1ª tentativa buscou os cancelados na lista Assessoria e concluiu errado que o
+ClickUp não retinha o histórico. **Correção do Otávio**: quando o contrato
+encerra, o card é **movido para a lista CS/Cancelados (900700953811), levando a
+árvore de atividades junto** (44+/61 da coorte casam lá; mediana de 17
+subtarefas por card; cobertura de vencimento 77%, simétrica aos 80% da
+Assessoria — sem viés estrutural entre coortes). Listas mapeadas para
+calibração: CS/Cancelados `900700953811` (churn orgânico 2025→, principal),
+Funil CS `900700895737` (onda de transição 2023-24, cards sem árvore de
+atividades), Sem Renovação (id não registrado).
+
 ## O que foi testado
-Repetição do experimento caso-controle (script
-`backend/scripts/offline_exec_clickup_full.py`), mantendo tudo idêntico ao
-original — mesma coorte (61 cancelados + 200 controles), mesmos metadados de
-cliente do mirror, mesma lógica `execution_asof` (as-of, sem vazamento) —
-**trocando só a fonte das subtarefas** por: (a) mirror com paginação corrigida e
-(b) lista Assessoria completa via API oficial do ClickUp.
+Script `backend/scripts/offline_exec_clickup_full.py`: mesma coorte (61
+cancelados + 200 controles), mesma lógica `execution_asof` (as-of, sem
+vazamento), trocando só a fonte das subtarefas — (a) mirror com paginação
+corrigida vs (b) ClickUp completo via API oficial (cancelados: CS/Cancelados;
+controles: Assessoria).
 
 ## Resultado
 
 | horizonte | fonte | AUC | cancelados | controles |
 |-----------|-------|-----|-----------|-----------|
-| churn−30 | mirror (paginado) | **0,419** | n=45, μ=81,2 | n=120, μ=76,2 |
-| churn−30 | clickup ao vivo | 0,372 | **n=4** ⚠️ | n=120, μ=71,9 |
-| churn−60 | mirror (paginado) | **0,361** | n=45, μ=83,5 | n=120, μ=76,2 |
-| churn−60 | clickup ao vivo | 0,525 | **n=4** ⚠️ | n=120, μ=71,9 |
+| churn−30 | mirror (paginado) | 0,410 | n=45, μ=81,5 | n=120, μ=76,3 |
+| churn−30 | **ClickUp completo** | **0,529** | n=48, μ=69,1 | n=121, μ=71,8 |
+| churn−60 | mirror (paginado) | 0,351 | n=45, μ=83,8 | n=120, μ=76,3 |
+| churn−60 | **ClickUp completo** | **0,455** | n=48, μ=71,8 | n=121, μ=71,8 |
 
-## Achado principal
-**O ClickUp ao vivo não pode reconstruir a execução histórica da coorte de churn.**
-Os cards dos clientes que cancelaram são removidos/movidos ao encerrar o contrato
-— a lista Assessoria tem apenas 76 tarefas arquivadas (1 card raiz). Por isso só
-~4 dos 61 cancelados casam (amostra sem valor). **O mirror é a única fonte
-histórica** de quem já saiu.
-
-Com a paginação do mirror corrigida (mais dados que antes), a execução continua
-**não-preditiva — e levemente invertida**: cancelados tinham score de execução
-até um pouco MELHOR que os controles (μ ~82 vs ~76), AUC abaixo de 0,5.
-
-## Por que execução não antecede o churn (hipótese)
-O score de execução tem penalidades relativas às "últimas 2 semanas". Um cliente
-desengajando gera **menos** tarefas — menos entregas atrasadas recentes, menos
-lotes suspeitos — então o score paradoxalmente **sobe** perto do churn. Execução
-**confirma** insatisfação já instalada; não a antecipa. Isso é coerente com o
-sinal líder ser a conversa (WhatsApp/tom), não a entrega.
+## Leitura
+1. **A suspeita de dados era procedente e materialmente relevante**: com dados
+   completos, some o paradoxo do mirror (cancelados aparentando execução MELHOR,
+   μ~82-84 → μ~69-72). O dado incompleto distorcia as médias.
+2. **Mas a conclusão de modelagem não muda**: AUC ~0,53/0,46 ≈ moeda ao ar.
+   Mesmo com o histórico completo, a saúde de execução 30-60 dias antes do churn
+   não separa quem cancela de quem fica. O sinal líder continua sendo a conversa
+   (WhatsApp/tom); a execução **confirma** insatisfação, não a antecipa.
 
 ## Decisão
-**Mantida**: execução entra no score como **confirmador** (bloco 15%, flag
-`EXECUTION_IN_SCORE`), não como preditor. A correção de cobertura de dados tem
-valor **para o relatório mensal** (atividades de clientes ATIVOS agora completas
-via API), mas **não altera o modelo de churn**.
+**Mantida, agora sobre dados completos**: execução entra no score como
+**confirmador** (bloco 15%, flag `EXECUTION_IN_SCORE`), não como preditor.
+As correções de cobertura beneficiam o **relatório mensal** (atividades de
+ativos completas via API) e qualquer análise futura sobre o mirror.
 
-## Limite honesto
-Não é possível validar a completude do mirror para a coorte de churn (o ClickUp
-já não tem esses clientes para comparar). A conclusão vale sobre a melhor fonte
-histórica disponível. Se no futuro a Operação passar a reter o histórico de
-cancelados no ClickUp (ou o mirror for auditado como completo), vale reabrir.
+## Notas de método
+- Cards no CS/Cancelados incluem etapas do funil ("Entrada/Saída de Cliente");
+  o corte as-of por `data_criacao` já exclui as criadas após o ponto de medição.
+- Clientes fora do mirror usam metadados sintéticos (sem serviço/venda) — caem
+  no caminho normal do score, sem as penalidades de onboarding.
+- Rate-limit do ClickUp (~100 req/min) torna a rodada completa lenta (~10-15
+  min nas duas listas); o retry de 429 está em `_clickup_list_tasks`.

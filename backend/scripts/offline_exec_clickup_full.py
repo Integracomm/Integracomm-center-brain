@@ -13,17 +13,19 @@ Saída: AUC(cancelado, controle) do exec_score puro, as-of churn−30 e churn−
 (controles as-of 2026-06-26). AUC>0,5 = cancelados com execução PIOR = prediz.
 Compara mirror vs ClickUp lado a lado para medir o efeito da cobertura.
 
-RESULTADO (2026-07-02): o ClickUp ao vivo casa só ~4 cancelados — os cards de
-quem CANCELOU são removidos/arquivados fora desta lista (a lista Assessoria tem
-só 76 tasks arquivadas, 1 card raiz). Logo o ClickUp NÃO serve p/ reconstruir a
-execução histórica da coorte de churn; o mirror é a única fonte histórica. Com a
-paginação do mirror já corrigida, execução segue NÃO-preditiva (AUC 0,42/0,36 em
-churn−30/−60 — cancelados até com score de execução um pouco MELHOR que controles,
-μ~82 vs ~76). Provável causa: cliente desengajando gera MENOS tarefas, então as
-penalidades relativas ("últimas 2 semanas") caem e o score sobe — execução
-confirma insatisfação, não a antecede. Decisão mantida: execução = confirmador
-(peso 15), não preditor. A correção de cobertura vale p/ o RELATÓRIO (clientes
-ativos), não muda o modelo de churn.
+NOTA (correção do Otávio): os cards de quem cancelou NÃO somem do ClickUp — são
+movidos p/ a lista CS/Cancelados (900700953811), LEVANDO a árvore de atividades
+(44/61 da coorte casam lá; mediana 17 subtarefas; cobertura de vencimento 77%,
+simétrica aos 80% da Assessoria). Então o teste completo é: cancelados com
+subtarefas do CS/Cancelados, controles com subtarefas da Assessoria — mesma API,
+mesmos campos. A 1ª versão deste script errou ao buscar cancelados só na lista
+Assessoria (casava ~4) e concluir que o ClickUp não retinha o histórico.
+
+RESULTADO FINAL (2026-07-02, ver docs/reavaliacao-execucao-churn.md): com dados
+COMPLETOS, AUC 0,529 (churn−30) e 0,455 (churn−60) — moeda ao ar. O paradoxo do
+mirror (cancelados c/ execução "melhor", μ~82-84) some (μ~69-72 ≈ controles):
+a suspeita de dados era procedente, mas a conclusão não muda — execução segue
+CONFIRMADOR (bloco 15%), não preditor. Sinal líder continua sendo a conversa.
 """
 from __future__ import annotations
 
@@ -35,7 +37,7 @@ from pathlib import Path
 
 from app.agents.growth.execution_collector import execution_asof
 from app.sources.clickup_activities import _clickup_list_tasks
-from app.sources.mirror import MirrorReader
+from app.sources.mirror import ClienteRow, MirrorReader
 from app.sources.nps_sheets import norm_account
 from app.config import get_settings
 from scripts.offline_abs_vs_rel import DATA, rows, norm
@@ -58,11 +60,14 @@ def _epoch_iso(ms) -> str | None:
         return None
 
 
-def clickup_subs_by_card() -> dict[str, list[dict]]:
+CS_CANCELADOS_LIST = "900700953811"  # registro vivo do churn 2025→ (cards movidos COM a árvore)
+
+
+def clickup_subs_by_card(list_id: str) -> tuple[dict[str, list[dict]], dict[str, str]]:
     """{root_card_id: [subtarefa-dict no formato do mirror]} — TODOS os
-    descendentes (qualquer profundidade) de cada card da lista Assessoria."""
+    descendentes (qualquer profundidade) de cada card da lista."""
     s = get_settings()
-    tasks = _clickup_list_tasks(s.clickup_api_token, s.clickup_list_assessoria)
+    tasks = _clickup_list_tasks(s.clickup_api_token, list_id)
     by_id = {t["id"]: t for t in tasks}
 
     def root_of(t: dict) -> str:
@@ -127,12 +132,19 @@ def main():
     reader.close()
 
     # --- subtarefas COMPLETAS do ClickUp, por card, casadas por nome ---
-    cu_by_card, name_by_root = clickup_subs_by_card()
-    cu_by_name: dict[str, list[dict]] = {}
-    for rid, subs in cu_by_card.items():
-        n = norm_account(name_by_root.get(rid, ""))
-        if n:
-            cu_by_name.setdefault(n, subs)
+    # controles = lista Assessoria (ativos); cancelados = lista CS/Cancelados
+    # (o card é MOVIDO p/ lá com a árvore quando o contrato encerra)
+    s = get_settings()
+    def name_map(list_id: str) -> dict[str, list[dict]]:
+        by_card, name_by_root = clickup_subs_by_card(list_id)
+        out: dict[str, list[dict]] = {}
+        for rid, subs in by_card.items():
+            n = norm_account(name_by_root.get(rid, ""))
+            if n:
+                out.setdefault(n, subs)
+        return out
+    cu_ativos = name_map(s.clickup_list_assessoria)
+    cu_cancelados = name_map(CS_CANCELADOS_LIST)
 
     def asof_dt(d: dt.date) -> dt.datetime:
         return dt.datetime.combine(d, dt.time.max, tzinfo=dt.timezone.utc)
@@ -146,17 +158,28 @@ def main():
             asof_eff = asof - dt.timedelta(days=lag) if label == "cancelado" else asof
             now = asof_dt(asof_eff)
             cli = cli_by_name.get(norm(nome))
-            if not cli:
-                continue
-            # mirror
-            ms = mir_subs.get(cli.id, [])
-            if ms:
-                er = execution_asof(cli, ms, now)
-                if er.score is not None:
-                    res["mirror"][label].append(er.score)
-                    matched["mirror"] += 1
-            # clickup completo
-            cs = cu_by_name.get(norm_account(cli.nome_cliente))
+            # mirror (exige o cliente no mirror — fonte antiga)
+            if cli:
+                ms = mir_subs.get(cli.id, [])
+                if ms:
+                    er = execution_asof(cli, ms, now)
+                    if er.score is not None:
+                        res["mirror"][label].append(er.score)
+                        matched["mirror"] += 1
+            else:
+                # sem metadados do mirror: cliente sintético (servico/venda
+                # desconhecidos -> caminho normal do score, sem penal. onboarding)
+                cli = ClienteRow(id="", nome_cliente=nome, servico=None, data_venda=None,
+                                 data_onboarding=None, status=None, valor_assessoria=None)
+            # clickup completo: cancelado busca no CS/Cancelados (fallback
+            # Assessoria); controle, na Assessoria
+            key_cli = norm_account(cli.nome_cliente)
+            key_nm = norm_account(nome)
+            if label == "cancelado":
+                cs = (cu_cancelados.get(key_cli) or cu_cancelados.get(key_nm)
+                      or cu_ativos.get(key_cli) or cu_ativos.get(key_nm))
+            else:
+                cs = cu_ativos.get(key_cli) or cu_ativos.get(key_nm)
             if cs:
                 er = execution_asof(cli, cs, now)
                 if er.score is not None:
