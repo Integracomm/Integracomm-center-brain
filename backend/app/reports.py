@@ -226,12 +226,23 @@ def build_report(conn: Any, account_id: str, ref_month: str, generated_by: str |
         try:
             parsed = NPS.fetch_individual(master["sheet_id"], master["gid"])
             sheet_info = parsed.get("info") or {}
+            # guarda: a mestre pode linkar a planilha de OUTRO cliente — se o
+            # nome declarado na individual divergir da conta, não confiar nos
+            # dados de cabeçalho dela e sinalizar o link p/ correção
+            sheet_cli = NPS.norm_account(sheet_info.get("cliente"))
+            if sheet_cli and sheet_cli != NPS.norm_account(acc["name"]):
+                fat["aviso"] = (f"Atenção: a planilha linkada na mestre declara outro cliente "
+                                f"(“{sheet_info.get('cliente')}”) — o faturamento abaixo pode não ser "
+                                f"desta conta; verificar o link na coluna C da mestre.")
+                fat["match_note"] = ((fat["match_note"] or "") + " ⚠ planilha declara outro cliente").strip()
+                sheet_info = {}
             fat["comparativo"] = NPS.faturamento_compare(parsed, ref_month, prev_month)
             fat["available"] = True
             fat["months_meta"] = parsed.get("base_year_source")
-            if not fat["comparativo"]:
+            # não sobrescrever o aviso de link errado (mais grave que falta de lançamento)
+            if not fat["comparativo"] and not fat["aviso"]:
                 fat["aviso"] = f"Planilha encontrada, mas sem faturamento lançado em {month_label(ref_month)}."
-            elif not any(b.get("ref_lancado") for b in fat["comparativo"]):
+            elif fat["comparativo"] and not any(b.get("ref_lancado") for b in fat["comparativo"]) and not fat["aviso"]:
                 fat["aviso"] = (f"Faturamento de {month_label(ref_month)} ainda não lançado na planilha "
                                 "(atualizada todo dia 1º) — valores exibidos são do mês anterior.")
         except Exception as e:  # noqa: BLE001 — planilha privada/fora do ar não derruba o relatório
@@ -248,6 +259,9 @@ def build_report(conn: Any, account_id: str, ref_month: str, generated_by: str |
     for t in atv["tasks"]:
         grupos.setdefault(t.get("categoria") or t.get("responsavel") or "Geral", []).append(t)
     atv["grupos"] = [{"categoria": k, "tarefas": v} for k, v in sorted(grupos.items())]
+    # próximas previstas: sempre relativas a HOJE (insumo p/ a reunião do GC),
+    # independente do mês de referência do relatório
+    proximas = CU.upcoming_activities(acc["name"])
 
     # --- saúde do relacionamento ---
     sig = _signals(conn, str(acc["id"]), start, end)
@@ -293,7 +307,10 @@ def build_report(conn: Any, account_id: str, ref_month: str, generated_by: str |
 
     data = {"header": header, "equipe_squad": equipe_squad, "faturamento": fat,
             "atividades": {"source": atv["source"], "aviso": atv["aviso"],
-                           "total": len(atv["tasks"]), "grupos": atv["grupos"]},
+                           "total": len(atv["tasks"]), "grupos": atv["grupos"],
+                           "proximas": {"source": proximas["source"], "aviso": proximas["aviso"],
+                                        "tasks": proximas["tasks"],
+                                        "geradas_em": dt.date.today().isoformat()}},
             "saude": saude,
             "observacoes": _observacoes(acc, fat, atv, tone, ref_month)}
 

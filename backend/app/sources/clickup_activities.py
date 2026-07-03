@@ -239,6 +239,96 @@ def mirror_client_info(account_name: str) -> dict | None:
         return None
 
 
+def _upcoming_from_clickup(account_name: str, now: dt.datetime, limit: int = 20) -> list[dict] | None:
+    """Atividades EM ABERTO com vencimento >= agora, na árvore do card do
+    cliente (lista assessoria). None = API não configurada."""
+    s = get_settings()
+    if not (s.clickup_api_token and s.clickup_list_assessoria):
+        return None
+    tasks = _clickup_list_tasks(s.clickup_api_token, s.clickup_list_assessoria)
+    by_id = {t["id"]: t for t in tasks}
+    want = norm_account(account_name)
+    card_ids = {t["id"] for t in tasks
+                if not t.get("parent") and norm_account(t.get("name")) == want}
+    if not card_ids:
+        return []
+
+    def root_of(t: dict) -> str | None:
+        seen: set[str] = set()
+        cur = t
+        while cur.get("parent") and cur["parent"] not in seen:
+            seen.add(cur["parent"])
+            nxt = by_id.get(cur["parent"])
+            if not nxt:
+                return cur["parent"]
+            cur = nxt
+        return cur["id"]
+
+    out = []
+    for t in tasks:
+        if not t.get("parent") or root_of(t) not in card_ids:
+            continue
+        if t.get("date_done") or t.get("date_closed") or not t.get("due_date"):
+            continue
+        due = dt.datetime.fromtimestamp(int(t["due_date"]) / 1000, tz=dt.timezone.utc)
+        if due < now - dt.timedelta(days=1):  # vencidas antigas ficam de fora
+            continue
+        assg = ", ".join(a.get("username", "") for a in (t.get("assignees") or [])) or None
+        out.append({"nome": t.get("name"), "vence_em": due.date().isoformat(),
+                    "responsavel": assg, "status": (t.get("status") or {}).get("status")})
+    return sorted(out, key=lambda x: x["vence_em"])[:limit]
+
+
+def _upcoming_from_mirror(account_name: str, now: dt.datetime, limit: int = 20) -> list[dict] | None:
+    cli = _mirror_clientes().get(norm_account(account_name))
+    if not cli:
+        return None
+    base, anon = _mirror_creds()
+    with httpx.Client(timeout=60.0) as http:
+        r = http.get(f"{base}/subtarefas",
+                     params={"select": "nome_subtarefa,status,responsavel,data_vencimento,data_conclusao",
+                             "cliente_id": f"eq.{cli['id']}", "data_conclusao": "is.null",
+                             "data_vencimento": f"gte.{(now - dt.timedelta(days=1)).date().isoformat()}",
+                             "order": "data_vencimento.asc", "limit": "1000"},
+                     headers={"apikey": anon, "Authorization": f"Bearer {anon}"})
+        r.raise_for_status()
+        rows = r.json()
+    out = []
+    for s in rows[:limit]:
+        due = parse_dt(s.get("data_vencimento"))
+        out.append({"nome": s.get("nome_subtarefa"),
+                    "vence_em": due.date().isoformat() if due else None,
+                    "responsavel": s.get("responsavel"), "status": s.get("status")})
+    return out
+
+
+def upcoming_activities(account_name: str, now: dt.datetime | None = None) -> dict:
+    """Próximas atividades previstas (abertas, com vencimento a partir de hoje)
+    — insumo p/ o GC antes da reunião com o cliente. Mesmo contrato de
+    completed_activities: {source, aviso|None, tasks}."""
+    now = now or dt.datetime.now(dt.timezone.utc)
+    aviso = None
+    try:
+        tasks = _upcoming_from_clickup(account_name, now)
+        if tasks is not None:
+            return {"source": "clickup_api", "aviso": None, "tasks": tasks}
+        aviso = "token/lista ClickUp não configurados — usando espelho da Operação"
+    except Exception as e:  # noqa: BLE001 — fallback deliberado p/ o mirror
+        status = getattr(getattr(e, "response", None), "status_code", None)
+        aviso = ("token ClickUp do .env inválido/expirado — usando espelho da Operação"
+                 if status == 401 else
+                 f"API ClickUp indisponível ({type(e).__name__}) — usando espelho da Operação")
+    try:
+        tasks = _upcoming_from_mirror(account_name, now)
+    except Exception as e:  # noqa: BLE001
+        return {"source": "nenhuma", "tasks": [],
+                "aviso": f"{aviso}; espelho também indisponível ({type(e).__name__})"}
+    if tasks is None:
+        return {"source": "mirror", "tasks": [],
+                "aviso": f"{aviso}; conta não encontrada no espelho da Operação"}
+    return {"source": "mirror", "aviso": aviso, "tasks": tasks}
+
+
 def completed_activities(account_name: str, start: dt.datetime, end: dt.datetime) -> dict:
     """Atividades concluídas da conta no período [start, end).
     {source, aviso|None, tasks: [{nome, concluida_em, responsavel, status, categoria}]}"""

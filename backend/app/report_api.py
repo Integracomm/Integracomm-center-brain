@@ -272,6 +272,18 @@ function render(d){
   });
   html+='</div></section>';
 
+  // --- próximas atividades previstas ---
+  var px=a.proximas||{tasks:[]};
+  html+='<section><h2>Próximas atividades previstas</h2><p class=secsub>em aberto com vencimento a partir de '+esc(px.geradas_em||'hoje')+' — insumo para a reunião com o cliente</p><div class=card>';
+  if(px.aviso) html+='<div class=warn style="margin-bottom:10px">'+esc(px.aviso)+'</div>';
+  if(!px.tasks.length) html+='<div style="color:var(--text-muted);font-size:var(--fs-sm)">Nenhuma atividade futura com vencimento agendado no ClickUp.</div>';
+  px.tasks.forEach(function(t){
+    html+='<div class=task><span>'+esc(t.nome)+(t.responsavel?' <span style="color:var(--text-faint)">· '+esc(t.responsavel)+'</span>':'')
+        +(t.status?' <span style="color:var(--text-faint)">· '+esc(t.status)+'</span>':'')
+        +'</span><span class=d>vence '+esc(t.vence_em||'—')+'</span></div>';
+  });
+  html+='</div></section>';
+
   // --- saúde ---
   html+='<section><h2>Saúde do relacionamento</h2><p class=secsub>score do agente de Growth + tom das conversas</p><div class=card>';
   html+='<div style="display:flex;gap:26px;flex-wrap:wrap;align-items:center">';

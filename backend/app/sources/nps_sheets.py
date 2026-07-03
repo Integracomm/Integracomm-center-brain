@@ -178,6 +178,11 @@ def parse_individual_csv(rows: list[list[str]]) -> dict:
             break
     if hdr_i is not None:
         for r in rows[hdr_i + 1:hdr_i + 6]:
+            # a linha de dados vem ANTES das seções (Mês/CNPJ/Faturamento…);
+            # sem ela (planilha com cabeçalho vazio), não confundir seção com cliente
+            first = _norm_label(r[0] if r else "")
+            if first in _METRIC_LABELS or first == "mês" or first.startswith(("cnpj", "faturamento")):
+                break
             vals = {k: (r[j].strip() if j < len(r) else "") for k, j in hdr_map.items()}
             if any(vals.values()):
                 info = {k: (v or None) for k, v in vals.items()}

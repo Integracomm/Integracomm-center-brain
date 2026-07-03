@@ -84,6 +84,13 @@ Mercado Livre,,,,,,,,,,,,,,"R$ 72.907,00","R$ 80.968,00"
 """
 
 
+def test_linha_de_cliente_vazia_nao_pega_secao():
+    # planilha sem a linha de dados do cliente: 'Mês' NÃO pode virar cliente
+    sheet = 'Cliente,Equipe,GC Responsável,Plano\n,,,\nMês,Jan,Fev,Mar\nNPS GC,,,\n'
+    p = parse_individual_csv(_rows(sheet))
+    assert p["info"] == {}
+
+
 def test_rotulo_de_ano_ancorado_no_segundo_bloco():
     # "2026" sobre a coluna do 2º Jan => 1º Jan é 2025; valores caem em 2026-02/03
     p = parse_individual_csv(_rows(SHEET_C))
