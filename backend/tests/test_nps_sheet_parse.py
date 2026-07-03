@@ -74,6 +74,24 @@ def test_parse_coluna_extra_e_virada_de_ano():
     assert p["cnpjs"][0]["cnpj"] == "LA BELLA TAVOLA"
 
 
+SHEET_C = """Cliente,,Equipe,GC Responsável,Plano,Início,Término,Meta,Status,Observações,,,,,,
+,,B2-S2,Flávia,Traction,,,,,,,,,,,
+,,,,,,,,,,,,,2026,,
+Mês,Jan,Fev,Mar,Abr,Mai,Jun,Jul,Ago,Set,Out,Nov,Dez,Jan,Fev,Mar
+CNPJ 1,,,,,,,,,,,,,,,
+Faturamento,,,,,,,,,,,,,,,
+Mercado Livre,,,,,,,,,,,,,,"R$ 72.907,00","R$ 80.968,00"
+"""
+
+
+def test_rotulo_de_ano_ancorado_no_segundo_bloco():
+    # "2026" sobre a coluna do 2º Jan => 1º Jan é 2025; valores caem em 2026-02/03
+    p = parse_individual_csv(_rows(SHEET_C))
+    assert p["months"][0] == "2025-01" and p["months"][-1] == "2026-03"
+    ml = p["cnpjs"][0]["marketplaces"]["Mercado Livre"]
+    assert ml["2026-02"] == 72907.0 and ml["2026-03"] == 80968.0
+
+
 def test_norm_match_banco_vs_mestre():
     # nome do banco (grupo WhatsApp) casa com a coluna B da mestre
     assert norm_account("[ST-B1-S2] SWEET LIFE | MARCELO ID: 9") == norm_account("SWEET LIFE | MARCELO")

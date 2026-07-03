@@ -183,9 +183,10 @@ def parse_individual_csv(rows: list[list[str]]) -> dict:
                 info = {k: (v or None) for k, v in vals.items()}
                 break
 
-    # --- meses: ano-base vem (1) de uma linha de ANO acima do `Mês` (algumas
-    # planilhas trazem "2025" solto ali), (2) do ano do Início, (3) fallback 2025;
-    # avança quando o mês dá a volta (…Dez, Jan…). ---
+    # --- meses: o ano avança quando o mês dá a volta (…Dez, Jan…). Ano-base:
+    # (1) rótulo de ANO acima do `Mês`, ancorado pela COLUNA — o rótulo pode
+    #     marcar o 2º bloco (ex.: "2026" sobre a coluna do 2º Jan ⇒ 1º Jan=2025);
+    # (2) ano do Início; (3) fallback 2025. ---
     base_year = 2025
     m = re.search(r"(20\d\d)", info.get("inicio") or "")
     if m:
@@ -196,21 +197,26 @@ def parse_individual_csv(rows: list[list[str]]) -> dict:
             mes_i = i
             break
     if mes_i is not None:
-        for r in rows[max(0, mes_i - 3):mes_i]:
-            years = [c.strip() for c in r if re.fullmatch(r"20\d\d", c.strip())]
-            if years:
-                base_year, base_year_source = int(years[0]), "linha de ano da planilha"
-                break
-    if mes_i is not None:
-        year, prev_num = base_year, 0
+        # colunas de mês com índice RELATIVO de ano (k=0 no 1º bloco, +1 por volta)
+        month_cols: list[tuple[int, int, int]] = []  # (col, mês, k)
+        k, prev_num = 0, 0
         for j, cell in enumerate(rows[mes_i][1:], start=1):
             num = _MONTHS.get(_norm_label(cell)[:3])
             if not num:
                 continue
             if num <= prev_num:
-                year += 1
+                k += 1
             prev_num = num
-            months.append((j, f"{year:04d}-{num:02d}"))
+            month_cols.append((j, num, k))
+        labels = [(j, int(c.strip()))
+                  for r in rows[max(0, mes_i - 3):mes_i]
+                  for j, c in enumerate(r) if re.fullmatch(r"20\d\d", c.strip())]
+        if labels and month_cols:
+            j0, y0 = labels[0]
+            anchor = next((mc for mc in month_cols if mc[0] >= j0), month_cols[-1])
+            base_year = y0 - anchor[2]
+            base_year_source = f"rótulo {y0} na coluna {j0} (ancora o bloco {anchor[2] + 1})"
+        months = [(j, f"{base_year + kk:04d}-{num:02d}") for j, num, kk in month_cols]
 
     # --- blocos de CNPJ / faturamento por marketplace ---
     cnpjs: list[dict] = []

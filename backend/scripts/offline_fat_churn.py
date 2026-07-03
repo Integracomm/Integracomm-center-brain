@@ -61,6 +61,34 @@ def signals(series: dict[str, float], m0: str) -> dict[str, float | None]:
     return {"mom": mom, "base3": base3, "slide2": slide2}
 
 
+def _fix_mojibake(s: str) -> str:
+    """Repara nomes gravados com dupla decodificação nos CSVs da coorte
+    (ex.: 'CALÃ\x87ADOS' -> 'CALÇADOS')."""
+    try:
+        fixed = s.encode("latin-1").decode("utf-8")
+        return fixed if fixed != s else s
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return s
+
+
+def _lookup(by_name: dict[str, dict], nome: str) -> dict | None:
+    """Match exato pelo nome-base; fallback: sobreposição de tokens ≥ 2/3 do
+    lado mais curto (cobre 'LOONEY BABY CONFECÇÕES' vs 'Looney Baby | Renato')."""
+    n = norm_account(_fix_mojibake(nome))
+    if n in by_name:
+        return by_name[n]
+    tc = set(n.split())
+    if not tc:
+        return None
+    best, best_score = None, 0.0
+    for mn, series in by_name.items():
+        tm = set(mn.split())
+        score = len(tc & tm) / max(1, min(len(tc), len(tm)))
+        if score > best_score:
+            best_score, best = score, series
+    return best if best_score >= 0.67 else None
+
+
 def main():
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -86,7 +114,7 @@ def main():
         matched = {"cancelado": 0, "controle": 0}
         no_sheet = 0
         for label, nome, ev_month in cohort:
-            series = by_name.get(norm_account(nome))
+            series = _lookup(by_name, nome)
             if not series:
                 no_sheet += 1
                 continue
