@@ -136,6 +136,36 @@ def main():
             print(f"  {k:7s}: AUC={a:.3f}  canc n={len(c)} mediana={statistics.median(c):.2f}  "
                   f"ctrl n={len(t)} mediana={statistics.median(t):.2f}")
 
+        # --- AUC PAREADO POR MÊS: cada caso comparado só com controles no MESMO
+        # m0 (mata o confound de sazonalidade — os controles do desenho simples
+        # são todos medidos em 2026-05, os casos espalham pelo ano) ---
+        ctrl_series = [(_lookup(by_name, nome), nome) for l, nome, _ in cohort if l == "controle"]
+        ctrl_series = [s for s, _ in ctrl_series if s]
+        for k in ("mom", "base3", "slide2"):
+            wins = ties = tot = 0
+            n_cases = 0
+            for label, nome, ev_month in cohort:
+                if label != "cancelado":
+                    continue
+                series = _lookup(by_name, nome)
+                if not series:
+                    continue
+                m0 = month_add(ev_month, -lead)
+                v = signals(series, m0).get(k)
+                if v is None:
+                    continue
+                ctl = [signals(s, m0).get(k) for s in ctrl_series]
+                ctl = [x for x in ctl if x is not None]
+                if len(ctl) < 10:
+                    continue
+                n_cases += 1
+                for x in ctl:
+                    tot += 1
+                    wins += v < x
+                    ties += v == x
+            if tot:
+                print(f"  {k:7s} PAREADO/mês: AUC={(wins + 0.5 * ties) / tot:.3f}  (casos={n_cases})")
+
 
 if __name__ == "__main__":
     main()
