@@ -211,6 +211,7 @@ tr.total td{font-weight:700;border-top:1px solid var(--border-strong)}
 var BAND={critico:'--status-critico',alto:'--status-alto',medio:'--status-medio',baixo:'--status-baixo',sem_dados:'--status-semdados'};
 var TOM={'crítico':'--status-critico','negativo':'--status-alto','atenção':'--status-medio','estável':'--status-baixo','sem dados':'--status-semdados'};
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+function fmtD(s){var m=String(s||'').match(/^(\d{4})-(\d{2})-(\d{2})/);return m?(m[3]+'-'+m[2]+'-'+m[1]):(s?String(s):'—');}
 function brl(v){if(v==null)return '<span style="color:var(--text-faint)">—</span>';
   return 'R$ '+v.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});}
 function delta(r){if(r.delta_abs==null)return '—';
@@ -267,20 +268,20 @@ function render(d){
   a.grupos.forEach(function(g){
     html+='<div class=grp-h>'+esc(g.categoria)+' ('+g.tarefas.length+')</div>';
     g.tarefas.forEach(function(t){
-      html+='<div class=task><span>'+esc(t.nome)+(t.responsavel&&g.categoria!==t.responsavel?' <span style="color:var(--text-faint)">· '+esc(t.responsavel)+'</span>':'')+'</span><span class=d>'+esc(t.concluida_em)+'</span></div>';
+      html+='<div class=task><span>'+esc(t.nome)+(t.responsavel&&g.categoria!==t.responsavel?' <span style="color:var(--text-faint)">· '+esc(t.responsavel)+'</span>':'')+'</span><span class=d>'+fmtD(t.concluida_em)+'</span></div>';
     });
   });
   html+='</div></section>';
 
   // --- próximas atividades previstas ---
   var px=a.proximas||{tasks:[]};
-  html+='<section><h2>Próximas atividades previstas</h2><p class=secsub>em aberto com vencimento a partir de '+esc(px.geradas_em||'hoje')+' — insumo para a reunião com o cliente</p><div class=card>';
+  html+='<section><h2>Próximas atividades previstas</h2><p class=secsub>em aberto com vencimento a partir de '+(px.geradas_em?fmtD(px.geradas_em):'hoje')+' — insumo para a reunião com o cliente</p><div class=card>';
   if(px.aviso) html+='<div class=warn style="margin-bottom:10px">'+esc(px.aviso)+'</div>';
   if(!px.tasks.length) html+='<div style="color:var(--text-muted);font-size:var(--fs-sm)">Nenhuma atividade futura com vencimento agendado no ClickUp.</div>';
   px.tasks.forEach(function(t){
     html+='<div class=task><span>'+esc(t.nome)+(t.responsavel?' <span style="color:var(--text-faint)">· '+esc(t.responsavel)+'</span>':'')
         +(t.status?' <span style="color:var(--text-faint)">· '+esc(t.status)+'</span>':'')
-        +'</span><span class=d>vence '+esc(t.vence_em||'—')+'</span></div>';
+        +'</span><span class=d>vence '+fmtD(t.vence_em)+'</span></div>';
   });
   html+='</div></section>';
 
@@ -296,7 +297,7 @@ function render(d){
   html+='</div>';
   if(s.motivos.length){ html+='<div class=grp-h style="margin-top:16px">Principais motivos do score</div><ul class=motivos style="margin:4px 0 0;padding-left:18px">';
     s.motivos.forEach(function(m){html+='<li>'+esc(m)+'</li>';}); html+='</ul>'; }
-  html+='<div class=meta>'+esc(s.tom.detalhe)+(s.score_computado_em?' · score computado em '+esc(s.score_computado_em):'')
+  html+='<div class=meta>'+esc(s.tom.detalhe)+(s.score_computado_em?' · score computado em '+fmtD(s.score_computado_em):'')
       +(s.sinais_do_mes?'':' · sinais mais recentes disponíveis (sem série completa dentro do mês)')+'</div>';
   html+='</div></section>';
 
@@ -308,7 +309,7 @@ function render(d){
   html+='<div class=meta>'+esc(o.gerado_por)+'</div>';
   html+='</div></section>';
 
-  html+='<p class=meta>Relatório '+esc(d.report_id||'')+' · gerado em '+esc((d.generated_at||'').slice(0,16).replace('T',' '))
+  html+='<p class=meta>Relatório '+esc(d.report_id||'')+' · gerado em '+fmtD(d.generated_at)+' '+esc((d.generated_at||'').slice(11,16))
       +(d.generated_by?(' por '+esc(d.generated_by)):'')+' · Integracomm IA — dados derivados; a decisão é sempre do gestor.</p>';
   document.getElementById('report').innerHTML=html;
   document.getElementById('loading').style.display='none';

@@ -28,12 +28,6 @@ from .db import persistence as P
 
 app = FastAPI(title="Integracomm IA — Growth", docs_url="/api/docs")
 
-# Relatório mensal de assessoria por cliente (endpoints + página /growth/report).
-# Import tardio dentro do módulo evita ciclo (report_api usa _conn/_require_api daqui).
-from .report_api import router as _report_router  # noqa: E402
-
-app.include_router(_report_router)
-
 _ROLES = {"admin", "gestor_growth"}
 _ROOT = Path(__file__).resolve().parents[1].parent  # raiz do projeto (onde vive o .env)
 
@@ -412,6 +406,16 @@ def _hub_stats(conn: Any) -> dict:
 
 def _fmt_brl(v: float) -> str:
     return f"R$ {v:,.0f}".replace(",", ".")
+
+
+def _fmt_date_br(v: Any) -> str:
+    """Data para EXIBIÇÃO no padrão DD-MM-AAAA (decisão do Otávio, 2026-07-03).
+    O dado interno (banco/JSON/API) permanece ISO — ordena e consulta certo."""
+    s = str(v)[:10]
+    try:
+        return dt.date.fromisoformat(s).strftime("%d-%m-%Y")
+    except ValueError:
+        return s
 
 
 def _render_hub(role: str, st: dict) -> str:
@@ -941,7 +945,7 @@ def _playbooks_content(practices: dict, interventions: list) -> str:
             f"<div class='nm' style='font-size:var(--fs-sm)'>{escape((i.get('name') or '')[:44])}</div>"
             f"<div style='font-size:var(--fs-sm);color:var(--text-2)'>{escape((i.get('action_text') or '')[:90])}</div>"
             f"<div>{_chip(i.get('result') or 'pendente', {'retido': '--status-baixo', 'cancelou': '--status-critico', 'sem_efeito': '--status-semdados'}.get(i.get('result'), '--status-medio'))}</div>"
-            f"<div class=c-status>{escape(str(i.get('taken_at'))[:10])}</div></div>"
+            f"<div class=c-status>{escape(_fmt_date_br(i.get('taken_at')))}</div></div>"
             for i in interventions)
         h += ("<section><div class=sec-head><h2>Ações recentes</h2><span class=sub>últimos registros</span></div>"
               "<div class='tbl'><div class='row thead' style='grid-template-columns:minmax(220px,1fr) minmax(240px,1.4fr) 110px 130px'>"
@@ -992,7 +996,7 @@ def _report_text(rep: dict) -> str:
     """Versão texto do relatório — formato pronto para postar no Slack."""
     sev = rep["alertas"]
     lines = [
-        f"*Integracomm IA · Growth — resumo do estado* ({rep['data']})",
+        f"*Integracomm IA · Growth — resumo do estado* ({_fmt_date_br(rep['data'])})",
         f"• Contas monitoradas: {rep['monitoradas']} ({rep['avaliaveis']} avaliáveis, {rep['sem_dados']} sem dados)",
         f"• Alertas abertos: {rep['alertas_total']} — crítico {sev.get('critico', 0)} · alto {sev.get('alto', 0)} · atenção {sev.get('atencao', 0)}",
         f"• MRR em risco: {_fmt_brl(rep['mrr_risco'])} (só críticos: {_fmt_brl(rep['mrr_critico'])})",
@@ -1090,12 +1094,13 @@ function assGerar(){{
     btn.disabled=false;
     if(!x[0]){{msg.textContent=x[1].error||x[1].detail||'falha na geração';return;}}
     var ok=x[1].reports.filter(function(r){{return r.status==='ok';}}).length;
-    msg.textContent=ok+' de '+x[1].reports.length+' relatório(s) gerado(s) para '+x[1].month+'.';
+    var mp=x[1].month.split('-'); var mlabel=mp[1]+'-'+mp[0];
+    msg.textContent=ok+' de '+x[1].reports.length+' relatório(s) gerado(s) para '+mlabel+'.';
     var list=document.getElementById('ass-list');
     x[1].reports.forEach(function(r){{
       var d=document.createElement('div'); d.className='assitem';
       if(r.status==='ok'){{
-        d.innerHTML='<span>'+r.account_name.replace(/</g,'&lt;')+' · '+x[1].month+'</span>'
+        d.innerHTML='<span>'+r.account_name.replace(/</g,'&lt;')+' · '+mlabel+'</span>'
           +'<span><a href="/growth/report?report_id='+r.report_id+'" target=_blank>visualizar</a>'
           +' · <a href="/growth/report?report_id='+r.report_id+'" target=_blank title="abra e use Exportar/Imprimir">exportar</a></span>';
       }} else {{
@@ -1154,7 +1159,17 @@ def _relatorios_content(rep: dict, scores: list[dict]) -> str:
         ".then(function(x){m.textContent=x[0]?'enviado ao grupo ✓':(x[1].error||'falha no envio');b.disabled=false;})"
         ".catch(function(){m.textContent='falha de rede';b.disabled=false;});}</script>"
         + _assessoria_block(scores)
-        + block("Resumo executivo", rep["data"], resumo)
+        + block("Resumo executivo", _fmt_date_br(rep["data"]), resumo)
         + block("Piores contas", "menor score = pior; MRR quando conhecido", piores)
         + block("Distribuições", "faixa · estágio · trajetória", dists)
         + block("Alertas por squad", "onde o risco está concentrado", squads))
+
+
+# ---------------------------------------------------------------------------
+# Relatório mensal de assessoria (endpoints + página /growth/report).
+# Incluído por ÚLTIMO: a rota genérica GET /api/reports/{report_id} não pode
+# capturar as rotas fixas /api/reports/summary e /send-slack definidas acima
+# (FastAPI casa na ordem de registro). Import tardio evita ciclo.
+from .report_api import router as _report_router  # noqa: E402
+
+app.include_router(_report_router)
