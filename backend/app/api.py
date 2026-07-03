@@ -195,8 +195,10 @@ def _latest_scores(conn: Any) -> list[dict]:
 
 def _open_alerts(conn: Any) -> list[dict]:
     with conn.cursor() as cur:
+        cur.execute("ALTER TABLE alerts ADD COLUMN IF NOT EXISTS notes TEXT")  # idempotente
         cur.execute(
-            """SELECT a.name, al.severity, al.risk_band, al.stage, al.created_at, al.status
+            """SELECT al.id, a.name, al.severity, al.risk_band, al.stage, al.created_at,
+                      al.status, al.notes
                  FROM alerts al JOIN accounts a ON a.id = al.account_id
                 WHERE al.status = 'aberto' ORDER BY
                   CASE al.severity WHEN 'critico' THEN 0 WHEN 'alto' THEN 1 ELSE 2 END,
@@ -687,13 +689,25 @@ def _render(role: str, scores: list[dict], alerts: list[dict],
         )
 
     rows = "".join(row(s) for s in ordered)
-    alert_rows = "".join(
-        f"<div class='row arow'><div class='c-name'><div class='nm'>{escape(a['name'][:60])}</div></div>"
-        f"<div>{_chip(a['severity'], _SEV_VAR.get(a['severity'], '--status-semdados'), dot=True)}</div>"
-        f"<div class='c-stage'>{escape(_STAGE_LABEL.get(a['stage'], a['stage']))}</div>"
-        f"<div class='c-status'>{escape(str(a['status']))}</div></div>"
-        for a in alerts
-    ) or "<div class='row empty'>sem alertas abertos</div>"
+    def _alert_row(a: dict) -> str:
+        nota = ""
+        if a.get("notes"):
+            ultima = str(a["notes"]).strip().splitlines()[-1]
+            nota = f"<div class='mot'>{escape(ultima[:120])}</div>"
+        aid = a.get("id")
+        return (
+            f"<div class='row arow'><div class='c-name'><div class='nm'>{escape(a['name'][:60])}</div>{nota}</div>"
+            f"<div>{_chip(a['severity'], _SEV_VAR.get(a['severity'], '--status-semdados'), dot=True)}</div>"
+            f"<div class='c-stage'>{escape(_STAGE_LABEL.get(a['stage'], a['stage']))}</div>"
+            f"<div class='c-status'>{escape(str(a['status']))}</div>"
+            f"<div class='c-acts'>"
+            f"<button class=abtn onclick=\"alertAct('{aid}','reconhecido')\" title='marca que o gestor viu e está tratando'>reconhecer</button>"
+            f"<button class=abtn onclick=\"alertAct('{aid}','resolvido')\" title='fecha o alerta (pede nota do desfecho)'>resolver</button>"
+            f"<button class=abtn onclick=\"alertAct('{aid}',null)\" title='só adicionar nota, sem mudar status'>nota</button>"
+            f"</div></div>"
+        )
+
+    alert_rows = "".join(_alert_row(a) for a in alerts) or "<div class='row empty'>sem alertas abertos</div>"
     squad_opts = "".join(f"<option value='{escape(q)}'>{escape(q)}</option>" for q in squads)
 
     head = """<!doctype html><html lang=pt-br><head><meta charset=utf-8>
@@ -745,7 +759,10 @@ section{margin-top:var(--space-8)}
 /* cada CLIENTE é um bloco (dados + diretriz) separado por uma linha nítida */
 .acct{border-top:1px solid var(--border-strong);align-items:start;padding:13px 16px}
 .acct:hover,.arow:hover{background:var(--surface-2)}
-.tbl-alerts .row{grid-template-columns:minmax(280px,1fr) 130px 200px 100px}
+.tbl-alerts .row{grid-template-columns:minmax(260px,1fr) 120px 170px 90px 230px}
+.c-acts{display:flex;gap:6px;flex-wrap:wrap}
+.abtn{cursor:pointer;background:var(--surface-3);border:1px solid var(--border-strong);border-radius:var(--radius-sm);color:var(--text-2);font-family:var(--font-body);font-size:var(--fs-2xs);padding:4px 9px}
+.abtn:hover{border-color:var(--brand);color:var(--brand)}
 /* contas: 7 colunas que CABEM na página (sem scroll lateral); a diretriz ocupa
    a largura inteira numa 2ª linha da mesma conta */
 .tbl-acct .row{grid-template-columns:minmax(200px,1fr) 66px 96px 150px 78px 96px 100px;row-gap:9px}
@@ -804,7 +821,7 @@ __SCRIPT__
 
     alerts_tbl = (
         "<div class='tbl tbl-alerts'>"
-        "<div class='row thead'><div>Conta</div><div>Severidade</div><div>Estágio</div><div>Status</div></div>"
+        "<div class='row thead'><div>Conta / última nota</div><div>Severidade</div><div>Estágio</div><div>Status</div><div>Ações</div></div>"
         + alert_rows + "</div>")
 
     script = ""
@@ -893,6 +910,20 @@ if(document.getElementById('f-name'))applyF();
 </script>"""
 
 _ALERTS_JS = """<script>
+function alertAct(id, status){
+  var note=window.prompt(status==='resolvido'
+    ? 'Nota do desfecho (obrigatória p/ resolver — ex.: reunião feita, cliente retido com plano X):'
+    : 'Nota (opcional'+(status?'':' — obrigatória p/ registrar')+'):');
+  if(note===null) return;                       // cancelou
+  note=note.trim();
+  if(status==='resolvido' && !note){alert('informe a nota do desfecho.');return;}
+  if(!status && !note){alert('escreva a nota.');return;}
+  var body={}; if(status)body.status=status; if(note)body.note=note;
+  fetch('/api/alerts/'+id+'/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+  .then(function(r){return r.json().then(function(j){return [r.ok,j];});})
+  .then(function(x){ if(!x[0]){alert(x[1].error||'falha');return;} location.reload(); })
+  .catch(function(){alert('falha de rede');});
+}
 var PAGE=25, page=1;
 function renderA(){
   var rows=[].slice.call(document.querySelectorAll('.arow'));
@@ -1115,6 +1146,115 @@ function assGerar(){{
 </script>"""
 
 
+_DRIVER_CURTO = {"silencio": "silêncio (cliente some)", "tom_negativo": "tom negativo",
+                 "iniciativa_cliente": "queda de iniciativa", "comprimento_msg": "respostas encurtando",
+                 "fala_em_cancelar": "fala em cancelar", "critico_recente": "evento crítico",
+                 "tom_claude": "tom esfriando"}
+
+_SQUAD_ACAO = {
+    "silencio": "Instituir rotina de check-in PROATIVO semanal: nenhuma conta do squad sem conversa há mais de 7 dias; GC abre com conteúdo de valor, não com cobrança.",
+    "tom_negativo": "Fazer war-room quinzenal das contas com tom negativo: Growth + GC revisam caso a caso, com 1 ação de reversão datada por conta.",
+    "iniciativa_cliente": "Inverter o fluxo nas contas passivas: levar 2 propostas prontas por conta/mês (o cliente que parou de pedir precisa reencontrar valor sem esforço).",
+    "execucao": "Mutirão de fila no ClickUp: repriorizar atrasadas com datas realistas e revisão semanal de fila com o time — atraso de entrega é o atrito que alimenta o resto.",
+    "trajetoria": "Revisar as contas com trajetória caindo ANTES que virem alerta: 15 min por conta na reunião semanal do squad, com dono e próxima ação.",
+}
+
+
+def _squad_analysis(scores: list[dict]) -> list[dict]:
+    """Análise por squad: subscores (relacionamento/execução/risco), dores
+    dominantes, score composto 0-100 e plano de ação — base do ranking."""
+    import statistics as st
+    from collections import Counter
+
+    by: dict[str, list[dict]] = {}
+    for s in scores:
+        by.setdefault(_squad(s["name"]), []).append(s)
+    out = []
+    for sq, contas in by.items():
+        if sq == "—":
+            continue
+        ev = [s for s in contas if s["evaluable"]]
+        execs = [float(s["exec_score"]) for s in contas if s.get("exec_score") is not None]
+        n_alert = sum(1 for s in contas if s.get("alert_sev"))
+        rel = st.mean(float(s["score"]) for s in ev) if ev else None
+        exe = st.mean(execs) if execs else None
+        risco_pct = n_alert / len(contas) if contas else 0
+        caindo_pct = (sum(1 for s in ev if s["trajectory"] == "caindo") / len(ev)) if ev else 0
+        drivers = Counter(d for d in (_top_driver(s.get("reasons") or []) for s in ev) if d)
+        dor = drivers.most_common(1)[0][0] if drivers else None
+        base = rel if rel is not None else 50.0
+        composto = (0.5 * base + 0.25 * (exe if exe is not None else base)
+                    + 0.25 * (100 * (1 - risco_pct)))
+        # pontos fortes/fracos por dimensão
+        fortes, fracos = [], []
+        (fortes if (rel or 0) >= 60 else fracos).append(
+            f"relacionamento (score médio {rel:.0f})" if rel is not None else "relacionamento (sem dados)")
+        if exe is not None:
+            (fortes if exe >= 70 else fracos).append(f"execução (média {exe:.0f}/100)")
+        (fortes if risco_pct <= 0.35 else fracos).append(f"risco ({n_alert} de {len(contas)} contas em alerta)")
+        if caindo_pct > 0.3:
+            fracos.append(f"trajetória ({caindo_pct * 100:.0f}% das contas piorando)")
+        # plano de ação: das dimensões mais fracas + dor dominante
+        acoes = []
+        if dor and dor in _SQUAD_ACAO:
+            acoes.append(_SQUAD_ACAO[dor])
+        if exe is not None and exe < 70 and _SQUAD_ACAO["execucao"] not in acoes:
+            acoes.append(_SQUAD_ACAO["execucao"])
+        if caindo_pct > 0.3:
+            acoes.append(_SQUAD_ACAO["trajetoria"])
+        if not acoes:
+            acoes.append("Squad saudável: manter a rotina e documentar as práticas que funcionam — "
+                         "elas viram referência de playbook para os squads abaixo no ranking.")
+        out.append({"squad": sq, "n": len(contas), "score": composto, "rel": rel, "exe": exe,
+                    "risco_pct": risco_pct, "n_alert": n_alert, "caindo_pct": caindo_pct,
+                    "dor": dor, "drivers": drivers, "fortes": fortes, "fracos": fracos,
+                    "acoes": acoes,
+                    "mrr_risco": sum(_mrr_val(s) for s in contas if s.get("alert_sev") and _mrr_val(s) > 0)})
+    out.sort(key=lambda x: -x["score"])
+    return out
+
+
+def _squads_html(analysis: list[dict]) -> str:
+    """Ranking + card de análise/plano por squad (substitui 'Alertas por squad')."""
+    rows = ""
+    for i, a in enumerate(analysis, 1):
+        rel = f"{a['rel']:.0f}" if a["rel"] is not None else "—"
+        exe = f"{a['exe']:.0f}" if a["exe"] is not None else "—"
+        rows += (f"<div class='row srow'><div class='rk'>{i}º</div><div class='sq'>{escape(a['squad'])}</div>"
+                 f"<div class='num'><b>{a['score']:.0f}</b></div><div class='num'>{rel}</div>"
+                 f"<div class='num'>{exe}</div><div class='num'>{a['n_alert']}/{a['n']}</div>"
+                 f"<div class='num'>{_fmt_brl(a['mrr_risco'])}</div>"
+                 f"<div>{escape(_DRIVER_CURTO.get(a['dor'] or '', a['dor'] or '—'))}</div></div>")
+    cards = ""
+    for i, a in enumerate(analysis, 1):
+        team = None
+        try:
+            from .sources.squads_sheet import team_for_key
+            team = team_for_key(a["squad"])
+        except Exception:  # noqa: BLE001 — planilha de squads fora não derruba a aba
+            pass
+        equipe = (" · ".join(f"{m['funcao']}: {m['nome']}" for m in team[1]) if team else "")
+        fortes = ", ".join(a["fortes"]) or "—"
+        fracos = ", ".join(a["fracos"]) or "nenhum ponto fraco relevante"
+        acoes = "".join(f"<div class='sug'><span class='b'>→</span><span>{escape(x)}</span></div>" for x in a["acoes"])
+        cards += (f"<div style='{_CARD};margin-top:10px'>"
+                  f"<div style='display:flex;gap:10px;align-items:baseline;flex-wrap:wrap'>"
+                  f"<span style='font-family:var(--font-display);font-weight:700;font-size:16px'>{i}º · {escape(a['squad'])}</span>"
+                  f"<span style='font-family:var(--font-display);font-weight:700;color:var(--brand)'>{a['score']:.0f}/100</span>"
+                  f"<span style='font-size:var(--fs-xs);color:var(--text-muted)'>{escape(equipe[:120])}</span></div>"
+                  f"<div style='font-size:var(--fs-sm);margin-top:8px'><span style='color:var(--status-baixo)'>fortes:</span> {escape(fortes)}</div>"
+                  f"<div style='font-size:var(--fs-sm);margin-top:3px'><span style='color:var(--status-critico)'>fracos:</span> {escape(fracos)}</div>"
+                  f"<div class='asslbl' style='margin:10px 0 2px'>plano de ação do squad</div>{acoes}</div>")
+    head = ("<div class='tbl'><div class='row thead srow'><div>#</div><div>Squad</div><div>Score</div>"
+            "<div>Relac.</div><div>Exec.</div><div>Alertas</div><div>MRR risco</div><div>Dor dominante</div></div>"
+            + rows + "</div>"
+            "<style>.srow{grid-template-columns:36px 76px 64px 64px 64px 72px 110px minmax(140px,1fr)}"
+            ".srow .rk{font-family:var(--font-display);font-weight:700}"
+            ".srow .num{text-align:center;font-variant-numeric:tabular-nums}"
+            ".srow .sq{font-weight:var(--fw-semibold)}</style>")
+    return head + cards
+
+
 def _relatorios_content(rep: dict, scores: list[dict]) -> str:
     sev = rep["alertas"]
 
@@ -1142,7 +1282,7 @@ def _relatorios_content(rep: dict, scores: list[dict]) -> str:
     dists = dl([("— Faixa —", "")] + sorted(rep["faixa"].items(), key=lambda x: -x[1])
                + [("— Estágio —", "")] + sorted(rep["estagio"].items(), key=lambda x: -x[1])
                + [("— Trajetória —", "")] + sorted(rep["trajetoria"].items(), key=lambda x: -x[1]))
-    squads = dl(list(rep["alertas_por_squad"].items()) or [("sem alertas", "")])
+    squads_html = _squads_html(_squad_analysis(scores))
 
     return (
         "<div class=page-head><h1>Relatórios</h1>"
@@ -1162,7 +1302,10 @@ def _relatorios_content(rep: dict, scores: list[dict]) -> str:
         + block("Resumo executivo", _fmt_date_br(rep["data"]), resumo)
         + block("Piores contas", "menor score = pior; MRR quando conhecido", piores)
         + block("Distribuições", "faixa · estágio · trajetória", dists)
-        + block("Alertas por squad", "onde o risco está concentrado", squads))
+        + "<section><div class=sec-head><h2>Análise por squad</h2>"
+          "<span class=sub>score composto (50% relacionamento · 25% execução · 25% risco), "
+          "ranking, dores dominantes e plano de ação por equipe</span></div>"
+        + squads_html + "</section>")
 
 
 # ---------------------------------------------------------------------------

@@ -113,10 +113,23 @@ def _mirror_creds():
     return (re.search(r'base="([^"]+)"', ps1).group(1), re.search(r'anon="([^"]+)"', ps1).group(1))
 
 
+def monthly_mrr(valor: float | None, servico: str | None) -> float | None:
+    """MRR MENSAL real: plano B1-START é pago em parcela única SEMESTRAL —
+    valor registrado / 6 (regra do Otávio, 2026-07-03). Demais planos: valor
+    registrado já é mensal."""
+    if valor is None:
+        return None
+    if servico and "start" in servico.lower():
+        return round(valor / 6, 2)
+    return valor
+
+
 def mirror_enrich(sample, audit, run_id):
-    """Contexto do mirror (NÃO-pontuador): casa cada conta ao cliente por nome,
-    seta MRR (valor_assessoria) na priorização e devolve (cli_por_conta,
-    subs_por_cliente) p/ o score de execução diagnóstico. Falha graciosa."""
+    """Contexto NÃO-pontuador: casa cada conta ao cliente por nome, seta MRR
+    (valor_assessoria, mensalizado p/ Start) e devolve (cli_por_conta,
+    subs_por_cliente) p/ o score de execução. Subtarefas: preferimos a lista
+    Assessoria COMPLETA via API oficial do ClickUp (o mirror cobre só ~51%);
+    mirror entra como fallback por conta. Falha graciosa."""
     try:
         base, anon = _mirror_creds()
         reader = MirrorReader(base, anon, audit=audit, run_id=run_id)
@@ -134,10 +147,25 @@ def mirror_enrich(sample, audit, run_id):
             c = by_name.get(norm(s["name"]))
             if c:
                 cli_por_conta[s["account_id"]] = c
-                if c.valor_assessoria:  # MRR do mirror manda na priorização
-                    s["recurring_revenue"] = c.valor_assessoria
+                mrr = monthly_mrr(c.valor_assessoria or None, c.servico)
+                if mrr:  # MRR mensalizado manda na priorização
+                    s["recurring_revenue"] = mrr
         subs = reader.subtarefas_by_cliente([c.id for c in cli_por_conta.values()])
         print(f"  [mirror] {len(cli_por_conta)}/{len(sample)} contas casadas ao cliente", file=sys.stderr)
+        # subtarefas completas via API oficial (quando o token permite)
+        try:
+            from app.sources.clickup_activities import api_subs_by_norm
+            api_subs = api_subs_by_norm()
+            n_api = 0
+            for aid, cli in cli_por_conta.items():
+                full = api_subs.get(norm(cli.nome_cliente))
+                if full:
+                    subs[cli.id] = full
+                    n_api += 1
+            print(f"  [exec] subtarefas via API ClickUp (lista completa) p/ {n_api} contas; "
+                  f"mirror cobre o restante", file=sys.stderr)
+        except Exception as e:  # noqa: BLE001 — API fora -> segue 100% mirror
+            print(f"  [exec] API ClickUp indisponível ({type(e).__name__}) — usando só o mirror", file=sys.stderr)
         return cli_por_conta, subs
     finally:
         reader.close()
@@ -159,9 +187,10 @@ def persist_exec(conn_factory, cli_por_conta, subs, asof, run_id):
                 row = cur.fetchone()
                 if not row:
                     continue
-                if cli.valor_assessoria:  # MRR do mirror na priorização
+                mrr = monthly_mrr(cli.valor_assessoria or None, cli.servico)
+                if mrr:  # MRR mensalizado (Start = semestral/6) na priorização
                     cur.execute("UPDATE accounts SET recurring_revenue=%s WHERE id=%s",
-                                (cli.valor_assessoria, row[0]))
+                                (mrr, row[0]))
                 P.record_signal_snapshots(
                     conn, account_id=row[0], run_id=run_id,
                     captured_at=dt.datetime.combine(asof.date() if isinstance(asof, dt.datetime) else asof, dt.time.max, tzinfo=dt.timezone.utc),

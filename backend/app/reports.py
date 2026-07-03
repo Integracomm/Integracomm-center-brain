@@ -43,7 +43,40 @@ CREATE TABLE IF NOT EXISTS reports (
     notes TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_reports_account ON reports(account_id, reference_month DESC);
+
+-- Atualizações de caso escritas pelo GESTOR (ex.: "reunião feita, contornei o
+-- cancelamento propondo X"). Alimentam o plano de ação da conta e podem estar
+-- ligadas a um alerta específico (aba Alertas).
+CREATE TABLE IF NOT EXISTS case_updates (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    alert_id UUID REFERENCES alerts(id) ON DELETE SET NULL,
+    author TEXT,
+    text TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_case_updates_acct ON case_updates(account_id, created_at DESC);
+ALTER TABLE alerts ADD COLUMN IF NOT EXISTS notes TEXT;
 """
+
+
+def list_case_updates(conn: Any, account_id: str, limit: int = 20) -> list[dict]:
+    ensure_reports_table(conn)
+    with conn.cursor() as cur:
+        cur.execute("""SELECT id, author, text, created_at, alert_id FROM case_updates
+                        WHERE account_id=%s ORDER BY created_at DESC LIMIT %s""",
+                    (account_id, limit))
+        return [{"id": str(i), "author": a, "text": t,
+                 "created_at": c.isoformat(), "alert_id": (str(al) if al else None)}
+                for i, a, t, c, al in cur.fetchall()]
+
+
+def add_case_update(conn: Any, account_id: str, author: str | None, text: str,
+                    alert_id: str | None = None) -> None:
+    ensure_reports_table(conn)
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO case_updates (account_id, alert_id, author, text) VALUES (%s,%s,%s,%s)",
+                    (account_id, alert_id, author, text))
 
 
 def ensure_reports_table(conn: Any) -> None:
@@ -209,6 +242,8 @@ def build_report(conn: Any, account_id: str, ref_month: str, generated_by: str |
     acc = _account_row(conn, account_id)
     if not acc:
         raise LookupError(f"conta {account_id} não encontrada")
+    if acc.get("recurring_revenue") is not None:
+        acc["recurring_revenue"] = float(acc["recurring_revenue"])
     start, end, prev_month = _month_bounds(ref_month)
 
     # --- faturamento (planilha individual via mestre) ---
@@ -313,6 +348,12 @@ def build_report(conn: Any, account_id: str, ref_month: str, generated_by: str |
                                         "geradas_em": dt.date.today().isoformat()}},
             "saude": saude,
             "observacoes": _observacoes(acc, fat, atv, tone, ref_month)}
+
+    # --- plano de ação individual (gestor de CS sênior) + histórico do caso ---
+    from .agents.growth.action_plan import generate_plan
+    updates = list_case_updates(conn, str(acc["id"]))
+    data["case_updates"] = updates
+    data["plano_acao"] = generate_plan(data, updates, acc)
 
     # --- persiste ---
     ensure_reports_table(conn)

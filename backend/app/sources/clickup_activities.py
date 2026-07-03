@@ -63,6 +63,56 @@ def _clickup_list_tasks(token: str, list_id: str) -> list[dict]:
     return _cached(f"cu:{list_id}", load)
 
 
+def _epoch_iso(ms) -> str | None:
+    if not ms:
+        return None
+    try:
+        return dt.datetime.fromtimestamp(int(ms) / 1000, tz=dt.timezone.utc).isoformat()
+    except (ValueError, TypeError):
+        return None
+
+
+def api_subs_by_norm() -> dict[str, list[dict]]:
+    """Subtarefas COMPLETAS por nome-base do card (lista Assessoria via API
+    oficial), no MESMO formato do mirror — fonte preferida do score de EXECUÇÃO
+    p/ clientes ativos (o mirror cobre só ~51% das subtarefas). Levanta exceção
+    se a API estiver indisponível — o chamador decide o fallback."""
+    s = get_settings()
+    if not (s.clickup_api_token and s.clickup_list_assessoria):
+        return {}
+    tasks = _clickup_list_tasks(s.clickup_api_token, s.clickup_list_assessoria)
+    by_id = {t["id"]: t for t in tasks}
+
+    def root_of(t: dict) -> str:
+        seen: set[str] = set()
+        cur = t
+        while cur.get("parent") and cur["parent"] not in seen:
+            seen.add(cur["parent"])
+            nxt = by_id.get(cur["parent"])
+            if not nxt:
+                return cur["parent"]
+            cur = nxt
+        return cur["id"]
+
+    name_by_root = {t["id"]: (t.get("name") or "") for t in tasks if not t.get("parent")}
+    out: dict[str, list[dict]] = {}
+    for t in tasks:
+        if not t.get("parent"):
+            continue
+        n = norm_account(name_by_root.get(root_of(t), ""))
+        if not n:
+            continue
+        out.setdefault(n, []).append({
+            "data_criacao": _epoch_iso(t.get("date_created")),
+            "data_conclusao": _epoch_iso(t.get("date_done") or t.get("date_closed")),
+            "data_vencimento": _epoch_iso(t.get("due_date")),
+            "status": (t.get("status") or {}).get("status"),
+            "recorrente": False,           # a lista não expõe recorrência
+            "proximo_vencimento": None,
+        })
+    return out
+
+
 def _mk_item(t: dict, start: dt.datetime, end: dt.datetime) -> dict | None:
     """Task da API -> item de atividade, se CONCLUÍDA dentro do período."""
     done_ms = t.get("date_done") or t.get("date_closed")
