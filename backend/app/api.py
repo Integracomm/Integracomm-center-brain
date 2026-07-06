@@ -1171,19 +1171,44 @@ _SQUAD_ACAO = {
 }
 
 
-def _squad_analysis(scores: list[dict]) -> list[dict]:
+def _resolve_squad(name: str, mirror: dict | None) -> str | None:
+    """Squad VÁLIDO da conta = só os da planilha de composição. Resolve pela
+    convenção Bx-Sy do nome; se não bater (planos antigos, ADS, [PAUSADO]…),
+    tenta o campo `equipe` do espelho da Operação. None = sem squad conhecido
+    (nome do grupo a atualizar). NÃO inventa squad a partir de tag de plano."""
+    from .sources.squads_sheet import team_for_account
+    fb = None
+    if mirror is not None:
+        from .sources.nps_sheets import norm_account
+        fb = (mirror.get(norm_account(name)) or {}).get("equipe")
+    hit = team_for_account(name, fallback_key=fb)
+    return hit[0] if hit else None
+
+
+def _squad_analysis(scores: list[dict]) -> tuple[list[dict], int]:
     """Análise por squad: subscores (relacionamento/execução/risco), dores
-    dominantes, score composto 0-100 e plano de ação — base do ranking."""
+    dominantes, score composto 0-100 e plano de ação — base do ranking.
+    Só entram os squads da PLANILHA de composição; contas sem squad conhecido
+    ficam de fora (contadas à parte). Retorna (análise, n_sem_squad)."""
     import statistics as st
     from collections import Counter
 
+    try:
+        from .sources.clickup_activities import _mirror_clientes
+        mirror = _mirror_clientes()
+    except Exception:  # noqa: BLE001 — sem espelho, resolve só pelo nome
+        mirror = None
+
     by: dict[str, list[dict]] = {}
+    sem_squad = 0
     for s in scores:
-        by.setdefault(_squad(s["name"]), []).append(s)
+        sq = _resolve_squad(s["name"], mirror)
+        if sq is None:
+            sem_squad += 1
+            continue
+        by.setdefault(sq, []).append(s)
     out = []
     for sq, contas in by.items():
-        if sq == "—":
-            continue
         ev = [s for s in contas if s["evaluable"]]
         execs = [float(s["exec_score"]) for s in contas if s.get("exec_score") is not None]
         n_alert = sum(1 for s in contas if s.get("alert_sev"))
@@ -1222,10 +1247,10 @@ def _squad_analysis(scores: list[dict]) -> list[dict]:
                     "acoes": acoes,
                     "mrr_risco": sum(_mrr_val(s) for s in contas if s.get("alert_sev") and _mrr_val(s) > 0)})
     out.sort(key=lambda x: -x["score"])
-    return out
+    return out, sem_squad
 
 
-def _squads_html(analysis: list[dict]) -> str:
+def _squads_html(analysis: list[dict], sem_squad: int = 0) -> str:
     """Ranking + card de análise/plano por squad (substitui 'Alertas por squad')."""
     rows = ""
     for i, a in enumerate(analysis, 1):
@@ -1263,7 +1288,13 @@ def _squads_html(analysis: list[dict]) -> str:
             ".srow .rk{font-family:var(--font-display);font-weight:700}"
             ".srow .num{text-align:center;font-variant-numeric:tabular-nums}"
             ".srow .sq{font-weight:var(--fw-semibold)}</style>")
-    return head + cards
+    nota = ""
+    if sem_squad:
+        nota = (f"<p class=note style='margin-top:10px'>{sem_squad} conta(s) ficaram fora do ranking por "
+                "<b>não ter squad identificado</b> — o nome do grupo não traz o padrão <b>Bx-Sy</b> "
+                "(planos antigos, ADS) e o espelho da Operação também não tem a equipe. "
+                "Atualizar o nome do grupo (ou a equipe no ClickUp) para incluí-las.</p>")
+    return head + nota + cards
 
 
 def _relatorios_content(rep: dict, scores: list[dict]) -> str:
@@ -1293,7 +1324,8 @@ def _relatorios_content(rep: dict, scores: list[dict]) -> str:
     dists = dl([("— Faixa —", "")] + sorted(rep["faixa"].items(), key=lambda x: -x[1])
                + [("— Estágio —", "")] + sorted(rep["estagio"].items(), key=lambda x: -x[1])
                + [("— Trajetória —", "")] + sorted(rep["trajetoria"].items(), key=lambda x: -x[1]))
-    squads_html = _squads_html(_squad_analysis(scores))
+    _squad_an, _sem_squad = _squad_analysis(scores)
+    squads_html = _squads_html(_squad_an, _sem_squad)
 
     return (
         "<div class=page-head><h1>Relatórios</h1>"
