@@ -28,6 +28,17 @@ from .db import persistence as P
 
 app = FastAPI(title="Integracomm IA — Growth", docs_url="/api/docs")
 
+
+@app.on_event("startup")
+def _prewarm() -> None:
+    """Aquece o cache da lista do ClickUp em background já no boot — a 1ª
+    geração de relatório não paga o download (~min) de ~10,8 mil tasks."""
+    try:
+        from .sources.clickup_activities import prewarm_clickup
+        prewarm_clickup()
+    except Exception:  # noqa: BLE001 — nunca bloquear o boot por causa disto
+        pass
+
 _ROLES = {"admin", "gestor_growth"}
 _ROOT = Path(__file__).resolve().parents[1].parent  # raiz do projeto (onde vive o .env)
 

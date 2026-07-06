@@ -18,6 +18,10 @@ class Settings(BaseSettings):
 
     # Claude — cérebro dos agentes
     anthropic_api_key: str | None = Field(None, alias="ANTHROPIC_API_KEY")
+    # Planos de ação via LLM (gestor de CS sênior). DESLIGADO por padrão: sem
+    # créditos de API, cada chamada falha e só adiciona latência ao relatório.
+    # Ligar (GROWTH_LLM_PLANS=1) quando os créditos estiverem disponíveis.
+    growth_llm_plans: bool = Field(False, alias="GROWTH_LLM_PLANS")
 
     # ClickUp (RO)
     clickup_api_token: str | None = Field(None, alias="CLICKUP_API_TOKEN")

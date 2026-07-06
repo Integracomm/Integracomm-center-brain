@@ -67,12 +67,14 @@ def _dossie(data: dict, updates: list[dict]) -> str:
 
 
 def _via_claude(dossie: str) -> str | None:
+    # Só tenta o LLM quando explicitamente ligado (GROWTH_LLM_PLANS=1) E com
+    # chave — evita pagar ~1s (e retries) numa chamada que hoje falha sem créditos.
     s = get_settings()
-    if not s.anthropic_api_key:
+    if not (s.growth_llm_plans and s.anthropic_api_key):
         return None
     try:
         import anthropic
-        cli = anthropic.Anthropic(api_key=s.anthropic_api_key)
+        cli = anthropic.Anthropic(api_key=s.anthropic_api_key, max_retries=0, timeout=30.0)
         msg = cli.messages.create(
             model="claude-sonnet-5", max_tokens=1200,
             system=[{"type": "text", "text": _SYSTEM, "cache_control": {"type": "ephemeral"}}],

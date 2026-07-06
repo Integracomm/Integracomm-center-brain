@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -23,12 +25,17 @@ from .nps_sheets import norm_account
 
 _CLICKUP_BASE = "https://api.clickup.com/api/v2"
 _TTL = 600.0
+# A lista de assessoria é grande (~10,8 mil tasks, ~108 páginas). É cara de
+# baixar (minutos), mas muda devagar — cache mais longo + pré-aquecimento em
+# background (prewarm) para que NENHUMA geração de relatório espere pelo download.
+_LIST_TTL = 1800.0            # 30 min
 _cache: dict[str, tuple[float, Any]] = {}
+_cache_lock = threading.Lock()  # evita 2 downloads simultâneos da mesma lista
 
 
-def _cached(key: str, fn):
+def _cached(key: str, fn, ttl: float = _TTL):
     hit = _cache.get(key)
-    if hit and time.monotonic() - hit[0] < _TTL:
+    if hit and time.monotonic() - hit[0] < ttl:
         return hit[1]
     val = fn()
     _cache[key] = (time.monotonic(), val)
@@ -36,31 +43,102 @@ def _cached(key: str, fn):
 
 
 # --- caminho 1: API oficial do ClickUp --------------------------------------
-def _clickup_list_tasks(token: str, list_id: str) -> list[dict]:
-    """Todas as tasks da lista de assessoria (cards de cliente + subtarefas).
-    Paginação pelo flag `last_page` (a heurística len<100 truncava a lista — um
-    429 no meio devolvia página vazia e parecia fim); 429 espera e retenta."""
-    def load():
-        out: list[dict] = []
-        with httpx.Client(timeout=60.0) as cli:
-            page = 0
-            while page < 300:
-                r = cli.get(f"{_CLICKUP_BASE}/list/{list_id}/task",
-                            params={"page": page, "subtasks": "true",
-                                    "include_closed": "true", "archived": "false"},
-                            headers={"Authorization": token})
-                if r.status_code == 429:
-                    time.sleep(float(r.headers.get("Retry-After") or 5))
-                    continue
-                r.raise_for_status()
-                j = r.json()
-                tasks = j.get("tasks", [])
+def _fetch_list_page(token: str, list_id: str, page: int) -> list[dict]:
+    """Uma página da lista; trata 429 com espera+retry. [] se a página é vazia."""
+    with httpx.Client(timeout=60.0) as cli:
+        for _ in range(6):
+            r = cli.get(f"{_CLICKUP_BASE}/list/{list_id}/task",
+                        params={"page": page, "subtasks": "true",
+                                "include_closed": "true", "archived": "false"},
+                        headers={"Authorization": token})
+            if r.status_code == 429:
+                time.sleep(float(r.headers.get("Retry-After") or 3))
+                continue
+            r.raise_for_status()
+            return r.json().get("tasks", [])
+    return []
+
+
+def _download_list(token: str, list_id: str) -> list[dict]:
+    """Baixa a lista inteira com páginas EM PARALELO (pool=8) por lotes até vir
+    página curta (fim) — ~3x mais rápido que serial."""
+    out: list[dict] = []
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        page, done = 0, False
+        while not done and page < 300:
+            batch = list(range(page, page + 8))
+            for tasks in ex.map(lambda p: _fetch_list_page(token, list_id, p), batch):
                 out.extend(tasks)
-                if j.get("last_page") or not tasks:
-                    break
-                page += 1
+                if len(tasks) < 100:  # página curta = última
+                    done = True
+            page += 8
+    return out
+
+
+def _clickup_list_tasks(token: str, list_id: str) -> list[dict]:
+    """Tasks da lista de assessoria. SERVE-STALE: se há QUALQUER valor cacheado,
+    devolve na hora (mesmo velho) — o prewarm o mantém fresco em background. Só
+    bloqueia p/ baixar quando NÃO há nada em cache (uma vez, no arranque). Assim
+    nenhuma geração de relatório espera pelo download de ~10,8 mil tasks."""
+    key = f"cu:{list_id}"
+    hit = _cache.get(key)
+    if hit is not None:
+        return hit[1]
+    with _cache_lock:  # 1º carregamento — outra thread pode ter aquecido enquanto esperávamos
+        hit = _cache.get(key)
+        if hit is not None:
+            return hit[1]
+        out = _download_list(token, list_id)
+        _cache[key] = (time.monotonic(), out)
         return out
-    return _cached(f"cu:{list_id}", load)
+
+
+def _refresh_list(token: str, list_id: str) -> None:
+    """Baixa a lista SEM bloquear leitores e troca o valor do cache (+ reconstrói
+    o índice derivado). Usado só pelo prewarm."""
+    fresh = _download_list(token, list_id)
+    _cache[f"cu:{list_id}"] = (time.monotonic(), fresh)
+    _cache.pop(f"cu-idx:{list_id}", None)  # força reconstrução do índice na próxima leitura
+    _subs_by_norm_raw(token, list_id)      # ...e já reconstrói agora (fora do caminho do usuário)
+
+
+def _warm_aux() -> None:
+    """Aquece os demais caches lidos por relatório (mirror de clientes, planilha
+    mestre de NPS, planilha de squads) — para a 1ª geração não pagar nada disso.
+    Cada um falha em silêncio se a fonte estiver fora."""
+    try:
+        _mirror_clientes()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from . import nps_sheets as _NPS
+        _NPS.master_rows()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from . import squads_sheet as _SQ
+        _SQ.squad_teams()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def prewarm_clickup() -> None:
+    """Aquece a lista de assessoria num thread daemon e a RENOVA periodicamente,
+    sem nunca bloquear as requisições (serve-stale). Chamado no startup. Silencioso:
+    falhas de API não derrubam o servidor."""
+    def loop():
+        s = get_settings()
+        if not (s.clickup_api_token and s.clickup_list_assessoria):
+            return
+        while True:
+            try:
+                _refresh_list(s.clickup_api_token, s.clickup_list_assessoria)
+                _warm_aux()  # mirror de clientes, planilha mestre de NPS, squads
+            except Exception:  # noqa: BLE001 — best-effort; próxima volta tenta de novo
+                time.sleep(120)
+                continue
+            time.sleep(_LIST_TTL - 300)  # renova a cada ~25 min
+    threading.Thread(target=loop, name="clickup-prewarm", daemon=True).start()
 
 
 def _epoch_iso(ms) -> str | None:
@@ -72,45 +150,52 @@ def _epoch_iso(ms) -> str | None:
         return None
 
 
+def _subs_by_norm_raw(token: str, list_id: str) -> dict[str, list[dict]]:
+    """Índice DERIVADO e cacheado: nome-base do card → subtarefas cruas (task
+    dicts). A resolução de card-raiz sobre ~10 mil tasks roda UMA vez por
+    atualização da lista (não por relatório) — o gargalo de CPU que sobrava."""
+    def build():
+        tasks = _clickup_list_tasks(token, list_id)
+        by_id = {t["id"]: t for t in tasks}
+
+        def root_of(t: dict) -> str:
+            seen: set[str] = set()
+            cur = t
+            while cur.get("parent") and cur["parent"] not in seen:
+                seen.add(cur["parent"])
+                nxt = by_id.get(cur["parent"])
+                if not nxt:
+                    return cur["parent"]
+                cur = nxt
+            return cur["id"]
+
+        name_by_root = {t["id"]: (t.get("name") or "") for t in tasks if not t.get("parent")}
+        out: dict[str, list[dict]] = {}
+        for t in tasks:
+            if not t.get("parent"):
+                continue
+            n = norm_account(name_by_root.get(root_of(t), ""))
+            if n:
+                out.setdefault(n, []).append(t)
+        return out
+    return _cached(f"cu-idx:{list_id}", build, ttl=_LIST_TTL)
+
+
 def api_subs_by_norm() -> dict[str, list[dict]]:
-    """Subtarefas COMPLETAS por nome-base do card (lista Assessoria via API
-    oficial), no MESMO formato do mirror — fonte preferida do score de EXECUÇÃO
-    p/ clientes ativos (o mirror cobre só ~51% das subtarefas). Levanta exceção
-    se a API estiver indisponível — o chamador decide o fallback."""
+    """Subtarefas por nome-base no MESMO formato do mirror — fonte preferida do
+    score de EXECUÇÃO p/ clientes ativos (o mirror cobre só ~51%). Levanta
+    exceção se a API estiver indisponível — o chamador decide o fallback."""
     s = get_settings()
     if not (s.clickup_api_token and s.clickup_list_assessoria):
         return {}
-    tasks = _clickup_list_tasks(s.clickup_api_token, s.clickup_list_assessoria)
-    by_id = {t["id"]: t for t in tasks}
-
-    def root_of(t: dict) -> str:
-        seen: set[str] = set()
-        cur = t
-        while cur.get("parent") and cur["parent"] not in seen:
-            seen.add(cur["parent"])
-            nxt = by_id.get(cur["parent"])
-            if not nxt:
-                return cur["parent"]
-            cur = nxt
-        return cur["id"]
-
-    name_by_root = {t["id"]: (t.get("name") or "") for t in tasks if not t.get("parent")}
-    out: dict[str, list[dict]] = {}
-    for t in tasks:
-        if not t.get("parent"):
-            continue
-        n = norm_account(name_by_root.get(root_of(t), ""))
-        if not n:
-            continue
-        out.setdefault(n, []).append({
-            "data_criacao": _epoch_iso(t.get("date_created")),
-            "data_conclusao": _epoch_iso(t.get("date_done") or t.get("date_closed")),
-            "data_vencimento": _epoch_iso(t.get("due_date")),
-            "status": (t.get("status") or {}).get("status"),
-            "recorrente": False,           # a lista não expõe recorrência
-            "proximo_vencimento": None,
-        })
-    return out
+    raw = _subs_by_norm_raw(s.clickup_api_token, s.clickup_list_assessoria)
+    return {n: [{
+        "data_criacao": _epoch_iso(t.get("date_created")),
+        "data_conclusao": _epoch_iso(t.get("date_done") or t.get("date_closed")),
+        "data_vencimento": _epoch_iso(t.get("due_date")),
+        "status": (t.get("status") or {}).get("status"),
+        "recorrente": False, "proximo_vencimento": None,
+    } for t in subs] for n, subs in raw.items()}
 
 
 def _mk_item(t: dict, start: dt.datetime, end: dt.datetime) -> dict | None:
@@ -170,30 +255,14 @@ def _from_clickup_api(account_name: str, start: dt.datetime, end: dt.datetime) -
         return None
     token = s.clickup_api_token
     out: list[dict] = []
-    by_id: dict[str, dict] = {}
-    card_ids: set[str] = set()
+    known_ids: set[str] = set()
 
     if s.clickup_list_assessoria:
-        tasks = _clickup_list_tasks(token, s.clickup_list_assessoria)
-        by_id = {t["id"]: t for t in tasks}
-        want = norm_account(account_name)
-        card_ids = {t["id"] for t in tasks
-                    if not t.get("parent") and norm_account(t.get("name")) == want}
-
-        def root_of(t: dict) -> str | None:
-            seen: set[str] = set()
-            cur = t
-            while cur.get("parent") and cur["parent"] not in seen:
-                seen.add(cur["parent"])
-                nxt = by_id.get(cur["parent"])
-                if not nxt:
-                    return cur["parent"]
-                cur = nxt
-            return cur["id"]
-
-        for t in tasks:
-            if not t.get("parent") or root_of(t) not in card_ids:
-                continue
+        # índice derivado (cacheado): subtarefas da conta já atribuídas ao card
+        idx = _subs_by_norm_raw(token, s.clickup_list_assessoria)
+        subs = idx.get(norm_account(account_name), [])
+        known_ids = {t["id"] for lst in idx.values() for t in lst}
+        for t in subs:
             item = _mk_item(t, start, end)
             if item:
                 out.append(item)
@@ -206,10 +275,10 @@ def _from_clickup_api(account_name: str, start: dt.datetime, end: dt.datetime) -
             extra_roots.add(info["clickup_task_id"])
     except Exception:  # noqa: BLE001 — mirror fora do ar não bloqueia a rota da API
         pass
-    seen_ids = set(by_id) | {i["id"] for i in out}
+    seen_ids = known_ids | {i["id"] for i in out}
     for root in extra_roots:
-        if root in by_id:
-            continue  # já coberto pela varredura da lista
+        if root in known_ids:
+            continue  # já coberto pela lista de assessoria
         for item in _bfs_completed(token, root, start, end, skip_ids=seen_ids):
             if item["id"] not in seen_ids:
                 seen_ids.add(item["id"])
@@ -295,29 +364,10 @@ def _upcoming_from_clickup(account_name: str, now: dt.datetime, limit: int = 20)
     s = get_settings()
     if not (s.clickup_api_token and s.clickup_list_assessoria):
         return None
-    tasks = _clickup_list_tasks(s.clickup_api_token, s.clickup_list_assessoria)
-    by_id = {t["id"]: t for t in tasks}
-    want = norm_account(account_name)
-    card_ids = {t["id"] for t in tasks
-                if not t.get("parent") and norm_account(t.get("name")) == want}
-    if not card_ids:
-        return []
-
-    def root_of(t: dict) -> str | None:
-        seen: set[str] = set()
-        cur = t
-        while cur.get("parent") and cur["parent"] not in seen:
-            seen.add(cur["parent"])
-            nxt = by_id.get(cur["parent"])
-            if not nxt:
-                return cur["parent"]
-            cur = nxt
-        return cur["id"]
-
+    subs = _subs_by_norm_raw(s.clickup_api_token, s.clickup_list_assessoria).get(
+        norm_account(account_name), [])
     out = []
-    for t in tasks:
-        if not t.get("parent") or root_of(t) not in card_ids:
-            continue
+    for t in subs:
         if t.get("date_done") or t.get("date_closed") or not t.get("due_date"):
             continue
         due = dt.datetime.fromtimestamp(int(t["due_date"]) / 1000, tz=dt.timezone.utc)
