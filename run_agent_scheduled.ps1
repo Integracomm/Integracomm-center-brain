@@ -62,4 +62,18 @@ if ($code -ne 0) {
 }
 
 "OK: rodada concluida em $(Get-Date -Format 'HH:mm:ss')" | Add-Content $log
+
+# --- dia 2 do mes: checagem do preenchimento de faturamento nas planilhas NPS ---
+# Avisa no MESMO grupo do Slack quem nao lancou o mes anterior (regra: sem
+# faturamento = lancar R$0; nenhum cliente ativo pode ficar em branco).
+if ((Get-Date).Day -eq 2) {
+    "dia 2: checagem mensal do preenchimento NPS..." | Add-Content $log
+    Push-Location (Join-Path $root 'backend')
+    try {
+        & cmd /c "`"$py`" -m scripts.check_nps_fill --slack >> `"$log`" 2>&1"
+        "checagem NPS: exit $LASTEXITCODE" | Add-Content $log
+    } finally {
+        Pop-Location
+    }
+}
 exit 0
