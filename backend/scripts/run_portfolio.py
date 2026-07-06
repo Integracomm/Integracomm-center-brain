@@ -33,7 +33,7 @@ from app.sources.mirror import MirrorReader
 ROOT = Path(__file__).resolve().parents[2]
 DATA = ROOT / "data"
 TODAY = dt.date.today()
-_FINALIZED = re.compile(r"finaliz|encerrad", re.I)  # cancelado usa as duas grafias
+_FINALIZED = re.compile(r"final\w*z|encerrad", re.I)  # tolera typo (FINALZADO) + finalizado/encerrado
 _HAS_ID = re.compile(r"id\s*:\s*[a-z0-9_-]+", re.I)
 _CLIENT_TAG = re.compile(r"^\s*\[")  # nome de cliente começa com [tag de plano/serviço]
 _BUNDLE = re.compile(r"\bB\d\b", re.I)

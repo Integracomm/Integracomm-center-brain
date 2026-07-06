@@ -625,13 +625,45 @@ def _tag(name: str) -> str:
 
 def _squad(name: str) -> str:
     """Squad = os tokens Bx-Sy da convenção de nome `[TAG-Bx-Sy]` (ex.: B2-S2,
-    B3-S1). Grupos sem Bx-Sy (ex.: ADS puros) caem no prefixo do tag (ADS, MKP…)."""
+    B3-S1). Grupos sem Bx-Sy (ex.: ADS puros) caem no prefixo do tag (ADS, MKP…).
+    Uso interno/legado — para exibição/filtro use `_squad_label` (valida na
+    planilha) e para agregação por squad use `_resolve_squad`."""
     tag = _tag(name)
     m = re.search(r"B(\d)\D*S(\d)", tag)
     if m:
         return f"B{m.group(1)}-S{m.group(2)}"
     p = re.match(r"([A-Z]+)", tag)
     return p.group(1) if p else "—"
+
+
+# status no tag (com tolerância a erros de digitação: FINALZADO, PROROGADO…)
+_STATUS_WORDS = re.compile(r"\b(PAUS\w*|PRORROG\w*|PROROG\w*|ENCERR\w*|FINAL\w*|CANCEL\w*)\b", re.I)
+_SQUAD_TOKEN = re.compile(r"B\d\s*-?\s*S\d")
+
+
+def _service(name: str) -> str | None:
+    """Código do SERVIÇO/plano no tag (ADS, ST, T, S, M, CONF, P, A, MKP, PBP…),
+    ignorando status (PAUSADO/FINALIZADO…). É o prefixo de letras ANTES do
+    Bx-Sy — assim o `B` de `B1-S2` nunca vira 'serviço' quando não há prefixo."""
+    tag = _tag(name)
+    if tag == "—":
+        return None
+    clean = _STATUS_WORDS.sub("", tag).strip(" -")
+    before = _SQUAD_TOKEN.split(clean)[0].strip(" -")  # parte antes do 1º Bx-Sy
+    m = re.match(r"([A-Za-z]+)", before)
+    return m.group(1).upper() if m else None
+
+
+def _squad_label(name: str, mirror: dict | None) -> str:
+    """Rótulo de exibição/filtro: SERVIÇO + squad VÁLIDO (ex.: `ADS-B3-S2`) —
+    mantém o tipo de serviço junto do bundle p/ filtragem, mas o squad é sempre
+    o real da planilha (via `_resolve_squad`, com fallback do espelho). Sem squad
+    conhecido, mostra só o serviço; sem serviço, só o squad; senão `—`."""
+    svc = _service(name)
+    sq = _resolve_squad(name, mirror)
+    if svc and sq:
+        return f"{svc}-{sq}"
+    return sq or svc or "—"
 
 
 def _guide(s: dict, practices: dict | None = None) -> str:
@@ -664,7 +696,13 @@ def _render(role: str, scores: list[dict], alerts: list[dict],
     evaluable.sort(key=lambda s: (float(s["score"]), -_mrr_val(s)))
     non_eval.sort(key=lambda s: -_mrr_val(s))
     ordered = evaluable + non_eval  # tabela única; não-avaliáveis ao fim
-    squads = sorted({_squad(s["name"]) for s in ordered})
+    # mapa do espelho (cacheado/prewarm) p/ resolver squad de nomes sem Bx-Sy
+    try:
+        from .sources.clickup_activities import _mirror_clientes
+        _mirror = _mirror_clientes()
+    except Exception:  # noqa: BLE001 — sem espelho, resolve só pelo nome
+        _mirror = None
+    squads = sorted({_squad_label(s["name"], _mirror) for s in ordered})
 
     def reason_txt(s):
         rs = s.get("reasons", [])[:3]
@@ -675,7 +713,7 @@ def _render(role: str, scores: list[dict], alerts: list[dict],
         stage_key = s["stage"] if ev else "nao_avaliavel"
         band = s["risk_band"]
         sev = s.get("alert_sev") or "sem"
-        sq = _squad(s["name"])
+        sq = _squad_label(s["name"], _mirror)
         mrr = _mrr_val(s)
         score_cell = (f"<span class='score'>{float(s['score']):.1f}</span>" if ev
                       else "<span style='color:var(--text-faint)'>s/ dados</span>")
@@ -864,7 +902,9 @@ __SCRIPT__
             f"</div>"
             "<section><div class=sec-head><h2>Contas por risco</h2><span class=sub>menor score = pior</span></div>"
             "<p class=note>Score e alertas vêm do WhatsApp; <b>MRR</b> desempata a prioridade. "
-            "<b>Squad</b> = time responsável (Bx-Sy do nome do grupo; tag completa no hover). "
+            "<b>Serviço-Squad</b> = tipo de serviço + time responsável (ex.: ADS-B3-S2); o squad é "
+            "o real da planilha de composição, resolvido pelo nome ou pelo espelho da Operação "
+            "(tag completa no hover). "
             "<b>Execução</b> = situação das entregas no ClickUp — em dia / atenção / atrasada "
             "(nota e motivo no hover). A <b>diretriz de ação</b> aparece destacada sob cada conta.</p>"
             "<div class=filters>"
@@ -878,7 +918,7 @@ __SCRIPT__
             f"<span class=count>mostrando <b id=vis>0</b> de {len(ordered)}</span>"
             "</div>"
             "<div class='tbl tbl-acct'>"
-            "<div class='row thead'><div>Conta / motivos</div><div class=c-score>Score</div><div>Faixa</div><div>Estágio</div><div>Squad</div><div class=c-mrr>MRR</div><div>Execução</div></div>"
+            "<div class='row thead'><div>Conta / motivos</div><div class=c-score>Score</div><div>Faixa</div><div>Estágio</div><div>Serviço-Squad</div><div class=c-mrr>MRR</div><div>Execução</div></div>"
             + rows + "</div>"
             "<div class=pager><button id=pg-prev onclick='pgGo(-1)'>‹ anterior</button>"
             "<span class=pginfo id=pginfo></span>"
@@ -1007,9 +1047,14 @@ def _report_from(scores: list[dict], alerts: list[dict]) -> dict:
     with_alert = [s for s in scores if s.get("alert_sev")]
     crit_accts = [s for s in scores if s.get("alert_sev") == "critico"]
     top10 = sorted(ev, key=lambda s: (float(s["score"]), -_mrr_val(s)))[:10]
+    try:
+        from .sources.clickup_activities import _mirror_clientes
+        _mirror = _mirror_clientes()
+    except Exception:  # noqa: BLE001
+        _mirror = None
     squad_alerts: dict[str, int] = {}
     for s in with_alert:
-        sq = _squad(s["name"])
+        sq = _resolve_squad(s["name"], _mirror) or "sem squad"  # squad real da planilha
         squad_alerts[sq] = squad_alerts.get(sq, 0) + 1
     return {
         "data": dt.date.today().isoformat(),
