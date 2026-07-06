@@ -1,22 +1,27 @@
-"""Login + RBAC básico do painel — sessão por cookie HMAC-assinado (stdlib).
+"""Login + RBAC do painel — sessão por cookie HMAC-assinado.
 
-Dois usuários fixos nesta fase: `admin` (vê tudo, inclusive o hub central) e
-`gestor_growth` (só a área de Growth). Senhas e segredo de assinatura vivem no
-`.env` da RAIZ: se ausentes no 1º boot, são GERADOS aleatoriamente e gravados lá
-— nunca impressos nem commitados (mesma higiene do setup do Postgres). Trocar a
-senha = editar o .env e reiniciar.
+Duas camadas de usuário:
+  1. BOOTSTRAP (.env): `admin` e `gestor_growth` fixos — garantem acesso mesmo
+     com o banco vazio (senhas geradas no 1º boot, nunca commitadas);
+  2. MULTIUSUÁRIO (tabela `users`): gestores criam a própria conta na tela de
+     login (nome, e-mail, senha com hash bcrypt), que nasce `pendente` e só
+     entra depois que o ADMIN aprovar no hub. Papel padrão: gestor_growth.
 
-Sem dependências novas: token = "user|role|expiry|hmac_sha256" em cookie
-httponly. TTL 12h. Toda verificação usa compare_digest (timing-safe).
+Proteções para exposição pública: bcrypt nas senhas, rate-limit de tentativas
+de login (5 falhas/5 min por usuário+IP → espera), cookie httponly (e `secure`
+quando servido via HTTPS). Token = "user|role|expiry|hmac_sha256", TTL 12h,
+verificação timing-safe.
 """
 from __future__ import annotations
 
 import hashlib
 import hmac
 import os
+import re
 import secrets
 import time
 from pathlib import Path
+from typing import Any
 
 _ROOT = Path(__file__).resolve().parents[2]
 _ENV = _ROOT / ".env"
@@ -64,7 +69,8 @@ def ensure_auth() -> None:
 
 
 def check_login(user: str | None, password: str | None) -> str | None:
-    """Valida credenciais; retorna o role ou None. Timing-safe."""
+    """Valida credenciais dos usuários de BOOTSTRAP (.env); retorna role ou None.
+    Usuários do banco entram por `authenticate_db`. Timing-safe."""
     ensure_auth()
     u = (user or "").strip().lower()
     role = USERS.get(u)
@@ -72,6 +78,116 @@ def check_login(user: str | None, password: str | None) -> str | None:
         return None
     want = os.environ.get(_PWD_KEY[u], "")
     return role if want and hmac.compare_digest(password or "", want) else None
+
+
+# --------------------------------------------------------------------------
+# Multiusuário (tabela `users`) — cadastro com aprovação do admin
+# --------------------------------------------------------------------------
+_USERS_DDL = """
+CREATE TABLE IF NOT EXISTS users (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email         TEXT UNIQUE NOT NULL,          -- sempre minúsculo
+    name          TEXT NOT NULL,
+    password_hash TEXT NOT NULL,                 -- bcrypt
+    role          TEXT NOT NULL DEFAULT 'gestor_growth',
+    status        TEXT NOT NULL DEFAULT 'pendente',  -- pendente|aprovado|bloqueado
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    approved_by   TEXT,
+    approved_at   TIMESTAMPTZ
+);
+"""
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def ensure_users_table(conn: Any) -> None:
+    with conn.cursor() as cur:
+        cur.execute(_USERS_DDL)
+
+
+def create_user(conn: Any, email: str, name: str, password: str) -> str | None:
+    """Cria conta PENDENTE. Retorna mensagem de erro ou None (sucesso)."""
+    import bcrypt
+
+    email = (email or "").strip().lower()
+    name = (name or "").strip()
+    if not _EMAIL_RE.match(email):
+        return "e-mail inválido"
+    if len(name) < 2:
+        return "informe seu nome"
+    if len(password or "") < 8:
+        return "senha muito curta (mínimo 8 caracteres)"
+    if email in USERS:
+        return "este e-mail já é um usuário do sistema"
+    ensure_users_table(conn)
+    h = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+    with conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM users WHERE email=%s", (email,))
+        if cur.fetchone():
+            return "já existe uma conta com este e-mail"
+        cur.execute("INSERT INTO users (email, name, password_hash) VALUES (%s,%s,%s)",
+                    (email, name, h))
+    return None
+
+
+def authenticate_db(conn: Any, email: str, password: str) -> tuple[str | None, str | None]:
+    """(role, erro) para usuários do banco. role=None com erro explicativo quando
+    a conta existe mas não pode entrar (pendente/bloqueada); (None, None) se não existe."""
+    import bcrypt
+
+    ensure_users_table(conn)
+    email = (email or "").strip().lower()
+    with conn.cursor() as cur:
+        cur.execute("SELECT password_hash, role, status FROM users WHERE email=%s", (email,))
+        row = cur.fetchone()
+    if not row:
+        return None, None
+    pwd_hash, role, status = row
+    if not bcrypt.checkpw((password or "").encode(), pwd_hash.encode()):
+        return None, "senha incorreta"
+    if status == "pendente":
+        return None, "conta aguardando aprovação do administrador"
+    if status != "aprovado":
+        return None, "conta bloqueada — fale com o administrador"
+    return role, None
+
+
+def list_users(conn: Any) -> list[dict]:
+    ensure_users_table(conn)
+    with conn.cursor() as cur:
+        cur.execute("""SELECT id, email, name, role, status, created_at
+                         FROM users ORDER BY (status='pendente') DESC, created_at DESC""")
+        return [{"id": str(i), "email": e, "name": n, "role": r, "status": s,
+                 "created_at": c.isoformat()} for i, e, n, r, s, c in cur.fetchall()]
+
+
+def set_user_status(conn: Any, user_id: str, status: str, actor: str) -> bool:
+    if status not in ("aprovado", "bloqueado", "pendente"):
+        return False
+    ensure_users_table(conn)
+    with conn.cursor() as cur:
+        cur.execute("""UPDATE users SET status=%s, approved_by=%s, approved_at=now()
+                        WHERE id=%s""", (status, actor, user_id))
+        return cur.rowcount > 0
+
+
+# --- rate limit de login (memória do processo; suficiente p/ 1 instância) ---
+_ATTEMPTS: dict[str, list[float]] = {}
+_MAX_FAILS, _WINDOW, _LOCK = 5, 300.0, 60.0
+
+
+def login_blocked(key: str) -> bool:
+    now = time.time()
+    fails = [t for t in _ATTEMPTS.get(key, []) if now - t < _WINDOW]
+    _ATTEMPTS[key] = fails
+    return len(fails) >= _MAX_FAILS and (now - fails[-1]) < _LOCK
+
+
+def record_login_fail(key: str) -> None:
+    _ATTEMPTS.setdefault(key, []).append(time.time())
+
+
+def clear_login_fails(key: str) -> None:
+    _ATTEMPTS.pop(key, None)
 
 
 def _sign(payload: str) -> str:
@@ -97,6 +213,10 @@ def verify_token(token: str | None) -> tuple[str, str] | None:
             return None
     except ValueError:
         return None
-    if USERS.get(user) != role:
+    # a confiança vem da ASSINATURA HMAC; o role só precisa ser um papel válido
+    # (usuários do banco não estão em USERS). Bootstrap segue checado à parte.
+    if role not in ROLE_HOME:
+        return None
+    if user in USERS and USERS[user] != role:
         return None
     return (user, role)

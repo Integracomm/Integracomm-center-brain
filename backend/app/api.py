@@ -23,7 +23,9 @@ from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 
 from .agents.growth.scoring import _top_driver, action_guideline
-from .auth import COOKIE, ROLE_HOME, check_login, make_token, verify_token
+from .auth import (COOKIE, ROLE_HOME, USERS, authenticate_db, check_login,
+                   clear_login_fails, create_user, list_users, login_blocked,
+                   make_token, record_login_fail, set_user_status, verify_token)
 from .db import persistence as P
 
 app = FastAPI(title="Integracomm IA — Growth", docs_url="/api/docs")
@@ -76,9 +78,33 @@ def _visible_agents(role: str) -> list[str]:
 
 
 # --- sessão / login ----------------------------------------------------------
+_DB_USER_CACHE: dict[str, tuple[float, bool]] = {}  # e-mail -> (ts, ativo?)
+
+
+def _db_user_active(email: str) -> bool:
+    """Usuário do BANCO ainda está aprovado? (cache 60s — bloqueio derruba a
+    sessão em até 1 min, sem custo de 1 query por clique)."""
+    import time as _t
+    hit = _DB_USER_CACHE.get(email)
+    if hit and _t.monotonic() - hit[0] < 60:
+        return hit[1]
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("SELECT status FROM users WHERE email=%s", (email,))
+            row = cur.fetchone()
+        ok = bool(row and row[0] == "aprovado")
+    except Exception:  # noqa: BLE001 — banco fora: não derrubar sessões válidas
+        ok = True
+    _DB_USER_CACHE[email] = (_t.monotonic(), ok)
+    return ok
+
+
 def _session(request: Request) -> tuple[str, str] | None:
-    """(user, role) da sessão, ou None."""
-    return verify_token(request.cookies.get(COOKIE))
+    """(user, role) da sessão, ou None. Usuário do banco bloqueado perde a sessão."""
+    s = verify_token(request.cookies.get(COOKIE))
+    if s and s[0] not in USERS and not _db_user_active(s[0]):
+        return None
+    return s
 
 
 def _require_api(request: Request) -> tuple[str, str]:
@@ -88,9 +114,17 @@ def _require_api(request: Request) -> tuple[str, str]:
     return s
 
 
-def _login_html(erro: bool = False) -> str:
-    msg = ("<div style='color:var(--status-critico);font-size:var(--fs-sm);margin-bottom:12px'>"
-           "usuário ou senha inválidos</div>") if erro else ""
+_LOGIN_ERROS = {
+    "1": "usuário ou senha inválidos",
+    "2": "muitas tentativas — aguarde 1 minuto e tente de novo",
+    "3": "sua conta está aguardando aprovação do administrador",
+    "4": "conta bloqueada — fale com o administrador",
+}
+
+
+def _login_html(erro: str = "") -> str:
+    msg = (f"<div style='color:var(--status-critico);font-size:var(--fs-sm);margin-bottom:12px'>"
+           f"{_LOGIN_ERROS.get(erro, _LOGIN_ERROS['1'])}</div>") if erro else ""
     return f"""<!doctype html><html lang=pt-br><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1"><title>Integracomm IA — Entrar</title>
 <link rel=preconnect href="https://fonts.googleapis.com"><link rel=preconnect href="https://fonts.gstatic.com" crossorigin>
@@ -116,7 +150,10 @@ button{{width:100%;margin-top:20px;cursor:pointer;background:var(--brand);color:
   <label>senha</label>
   <input type=password name=password autocomplete=current-password>
   <button type=submit>Entrar</button>
-  <div class=hint>Senhas no <b>.env</b> da raiz (geradas no 1º boot). Humano no loop — a IA só sinaliza.</div>
+  <div class=hint style="text-align:center;margin-top:16px">
+    Primeiro acesso? <a href="/signup" style="color:var(--brand);font-weight:600;text-decoration:none">Criar sua conta</a>
+  </div>
+  <div class=hint>Humano no loop — a IA só sinaliza.</div>
 </form></body></html>"""
 
 
@@ -125,21 +162,111 @@ def login_page(request: Request, erro: str = Query("")):
     s = _session(request)
     if s:
         return RedirectResponse(ROLE_HOME[s[1]], status_code=302)
-    return HTMLResponse(_login_html(bool(erro)))
+    return HTMLResponse(_login_html(erro))
+
+
+def _signup_html(erro: str = "", ok: bool = False) -> str:
+    body = ""
+    if ok:
+        body = ("<div style='color:var(--status-baixo);font-size:var(--fs-md);line-height:1.6'>"
+                "<b>Conta criada!</b><br>Ela está aguardando aprovação do administrador — "
+                "você receberá o aviso do seu gestor e então poderá entrar normalmente.</div>"
+                "<a href='/login' style='display:block;text-align:center;margin-top:20px;"
+                "color:var(--brand);font-weight:600;text-decoration:none'>← voltar ao login</a>")
+    else:
+        msg = (f"<div style='color:var(--status-critico);font-size:var(--fs-sm);margin-bottom:12px'>{escape(erro)}</div>"
+               if erro else "")
+        body = f"""{msg}
+  <label>seu nome</label>
+  <input type=text name=name placeholder="Maria Silva" autofocus>
+  <label>e-mail</label>
+  <input type=email name=email placeholder="maria@integracomm.com.br" autocomplete=username>
+  <label>senha (mínimo 8 caracteres)</label>
+  <input type=password name=password autocomplete=new-password>
+  <label>confirmar senha</label>
+  <input type=password name=password2 autocomplete=new-password>
+  <button type=submit>Criar conta</button>
+  <div class=hint style="text-align:center;margin-top:14px">
+    Já tem conta? <a href="/login" style="color:var(--brand);font-weight:600;text-decoration:none">Entrar</a>
+  </div>
+  <div class=hint>Sua conta entra em análise e é liberada pelo administrador.</div>"""
+    return f"""<!doctype html><html lang=pt-br><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1"><title>Integracomm IA — Criar conta</title>
+<link rel=preconnect href="https://fonts.googleapis.com"><link rel=preconnect href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=Poppins:wght@600;700&display=swap" rel=stylesheet>
+<style>{_tokens_css()}
+*{{box-sizing:border-box}}
+body{{margin:0;background:var(--bg-app);color:var(--text);font-family:var(--font-body);min-height:100vh;display:flex;align-items:center;justify-content:center}}
+.card{{width:360px;background:var(--surface-1);border:1px solid var(--border-mid);border-radius:var(--radius-md);padding:28px}}
+.logo{{width:26px;height:26px;border-radius:50%;background:var(--brand);position:relative;display:inline-block;vertical-align:middle}}
+.logo::after{{content:"";position:absolute;width:11px;height:11px;border-radius:50%;background:var(--surface-1);top:7.5px;left:11px}}
+h1{{font-family:var(--font-display);font-size:17px;font-weight:700;display:inline-block;margin:0 0 0 10px;vertical-align:middle}}
+label{{display:block;font-size:var(--fs-2xs);color:var(--text-muted);text-transform:uppercase;letter-spacing:.08em;margin:14px 0 5px}}
+input{{width:100%;background:var(--bg-panel);border:1px solid var(--border-strong);border-radius:var(--radius-sm);color:var(--text);font-family:var(--font-body);font-size:var(--fs-base);padding:9px 10px}}
+input:focus{{outline:none;border-color:var(--brand)}}
+button{{width:100%;margin-top:20px;cursor:pointer;background:var(--brand);color:var(--brand-ink);border:none;border-radius:var(--radius-sm);font-family:var(--font-body);font-weight:600;font-size:var(--fs-md);padding:10px}}
+.hint{{font-size:var(--fs-xs);color:var(--text-faint);margin-top:14px;line-height:1.5}}
+</style></head><body>
+<form class=card method=post action=/signup>
+  <div style="margin-bottom:18px"><span class=logo></span><h1>Integracomm IA — criar conta</h1></div>
+  {body}
+</form></body></html>"""
+
+
+@app.get("/signup", response_class=HTMLResponse)
+def signup_page(request: Request):
+    s = _session(request)
+    if s:
+        return RedirectResponse(ROLE_HOME[s[1]], status_code=302)
+    return HTMLResponse(_signup_html())
+
+
+@app.post("/signup", response_class=HTMLResponse)
+async def do_signup(request: Request):
+    form = await request.form()
+    email = str(form.get("email") or "")
+    name = str(form.get("name") or "")
+    pwd = str(form.get("password") or "")
+    if pwd != str(form.get("password2") or ""):
+        return HTMLResponse(_signup_html("as senhas não conferem"))
+    ip = (request.client.host if request.client else "?")
+    if login_blocked(f"signup|{ip}"):  # anti-spam de cadastro por IP
+        return HTMLResponse(_signup_html("muitas tentativas — aguarde 1 minuto"))
+    with _conn() as c:
+        err = create_user(c, email, name, pwd)
+        if err:
+            record_login_fail(f"signup|{ip}")
+            return HTMLResponse(_signup_html(err))
+        with c.cursor() as cur:
+            cur.execute("INSERT INTO audit_log (actor, action, scope) VALUES (%s,'signup','painel')",
+                        (email.strip().lower(),))
+    return HTMLResponse(_signup_html(ok=True))
 
 
 @app.post("/login")
 async def do_login(request: Request):
     form = await request.form()
     user = str(form.get("user") or "").strip().lower()  # normaliza (e-mail é case-insensitive)
-    role = check_login(user, str(form.get("password") or ""))
+    pwd = str(form.get("password") or "")
+    ip = (request.client.host if request.client else "?")
+    key = f"{user}|{ip}"
+    if login_blocked(key):  # rate-limit: 5 falhas/5min -> espera 60s
+        return RedirectResponse("/login?erro=2", status_code=303)
+    role = check_login(user, pwd)  # bootstrap (.env)
+    erro_db = None
     if not role:
-        return RedirectResponse("/login?erro=1", status_code=303)
+        with _conn() as c:
+            role, erro_db = authenticate_db(c, user, pwd)  # multiusuário (banco)
+    if not role:
+        record_login_fail(key)
+        q = "3" if (erro_db and "aprova" in erro_db) else ("4" if (erro_db and "bloquead" in erro_db) else "1")
+        return RedirectResponse(f"/login?erro={q}", status_code=303)
+    clear_login_fails(key)
     with _conn() as c, c.cursor() as cur:  # auditoria: quem entrou, quando
         cur.execute("INSERT INTO audit_log (actor, action, scope) VALUES (%s,'login','painel')", (user,))
     resp = RedirectResponse(ROLE_HOME[role], status_code=303)
-    resp.set_cookie(COOKIE, make_token(user, role), max_age=12 * 3600,
-                    httponly=True, samesite="lax")
+    resp.set_cookie(COOKIE, make_token(user, role), max_age=12 * 3600, httponly=True,
+                    samesite="lax", secure=(request.url.scheme == "https"))
     return resp
 
 
@@ -323,7 +450,26 @@ def hub(request: Request):
     with _conn() as c:
         _audit_view(c, user, scope="hub")
         stats = _hub_stats(c)
-    return HTMLResponse(_render_hub(user, stats))
+        users = list_users(c)
+    return HTMLResponse(_render_hub(user, stats, users))
+
+
+@app.post("/api/users/{user_id}/status")
+def api_user_status(user_id: str, request: Request, payload: dict = Body(...)):
+    """Aprova/bloqueia uma conta criada no cadastro. Só admin."""
+    actor, role = _require_api(request)
+    if role != "admin":
+        return JSONResponse({"error": "só o administrador gerencia contas"}, status_code=403)
+    status = payload.get("status")
+    with _conn() as c:
+        ok = set_user_status(c, user_id, status or "", actor)
+        if ok:
+            with c.cursor() as cur:
+                cur.execute("INSERT INTO audit_log (actor, action, scope) VALUES (%s,%s,%s)",
+                            (actor, "user_status", f"usuario:{user_id}:{status}"))
+    _DB_USER_CACHE.clear()  # bloqueio/aprovação vale imediatamente
+    return {"ok": ok} if ok else JSONResponse({"error": "status inválido ou usuário não encontrado"},
+                                              status_code=400)
 
 
 @app.get("/growth", response_class=HTMLResponse)
@@ -431,7 +577,37 @@ def _fmt_date_br(v: Any) -> str:
         return s
 
 
-def _render_hub(role: str, st: dict) -> str:
+def _users_html(users: list[dict]) -> str:
+    """Seção de contas do painel (hub, admin): pendentes primeiro, com ações."""
+    if not users:
+        return "<div class='id_'>nenhuma conta criada ainda — os gestores usam “Criar sua conta” na tela de login</div>"
+    _UST = {"pendente": "--status-medio", "aprovado": "--status-baixo", "bloqueado": "--status-critico"}
+    rows = ""
+    for u in users:
+        acts = ""
+        if u["status"] != "aprovado":
+            acts += f"<button class=abtn onclick=\"userSt('{u['id']}','aprovado')\">aprovar</button> "
+        if u["status"] != "bloqueado":
+            acts += f"<button class=abtn onclick=\"userSt('{u['id']}','bloqueado')\">bloquear</button>"
+        rows += (f"<div class='urow'><div><b>{escape(u['name'][:30])}</b>"
+                 f"<span style='color:var(--text-muted)'> · {escape(u['email'][:36])}</span></div>"
+                 f"<div>{_chip(u['status'], _UST.get(u['status'], '--status-semdados'))}</div>"
+                 f"<div class='uacts'>{acts}</div></div>")
+    js = ("<script>function userSt(id,st){if(st==='bloqueado'&&!confirm('Bloquear esta conta?'))return;"
+          "fetch('/api/users/'+id+'/status',{method:'POST',headers:{'Content-Type':'application/json'},"
+          "body:JSON.stringify({status:st})}).then(function(r){return r.json();})"
+          ".then(function(j){if(j.error)alert(j.error);else location.reload();})"
+          ".catch(function(){alert('falha de rede');});}</script>"
+          "<style>.urow{display:grid;grid-template-columns:minmax(240px,1fr) 110px 170px;gap:10px;"
+          "align-items:center;padding:8px 0;border-top:1px solid var(--border);font-size:var(--fs-sm)}"
+          ".urow:first-child{border-top:none}"
+          ".abtn{cursor:pointer;background:var(--surface-3);border:1px solid var(--border-strong);"
+          "border-radius:var(--radius-sm);color:var(--text-2);font-family:var(--font-body);"
+          "font-size:var(--fs-2xs);padding:4px 9px}.abtn:hover{border-color:var(--brand);color:var(--brand)}</style>")
+    return rows + js
+
+
+def _render_hub(role: str, st: dict, users: list[dict] | None = None) -> str:
     n_alerts = sum(st["sev"].values())
     crit = st["sev"].get("critico", 0)
     # Iniciativas sugeridas pela inteligência central — derivadas dos dados reais
@@ -555,6 +731,11 @@ h2{font-family:var(--font-display);font-weight:600;font-size:var(--fs-lg);margin
     <p class=secsub>cada área tem seu agente e seu painel; o gestor da área entra direto na sua</p>
     <div class=areas>__AREAS__</div>
   </section>
+  <section>
+    <h2>Contas de acesso</h2>
+    <p class=secsub>cadastros feitos na tela de login — pendentes primeiro; aprovar libera o acesso à área de Growth</p>
+    <div class=central>__USERS__</div>
+  </section>
   <p class=foot>Derivados do Postgres próprio (LGPD: sem conteúdo bruto). A IA calcula, exibe e sinaliza — a decisão é sempre humana.</p>
  </main>
 </div>
@@ -562,7 +743,8 @@ h2{font-family:var(--font-display);font-weight:600;font-size:var(--fs-lg);margin
     return (head.replace("__TOKENS__", _tokens_css()).replace("__ROLE__", escape(role))
             .replace("__MON__", str(st["monitored"])).replace("__NALERT__", str(n_alerts))
             .replace("__MRRRISK__", _fmt_brl(st["mrr_risk"]))
-            .replace("__INITS__", init_html).replace("__AREAS__", area_cards))
+            .replace("__INITS__", init_html).replace("__AREAS__", area_cards)
+            .replace("__USERS__", _users_html(users or [])))
 
 
 # mapeamento semântico -> variável de token (design-tokens.css é a fonte da verdade)

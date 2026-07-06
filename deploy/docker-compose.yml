@@ -1,0 +1,56 @@
+# Painel Integracomm IA — app + Postgres + Caddy (HTTPS automático).
+# Rodar da RAIZ do projeto no servidor:
+#     docker compose -f deploy/docker-compose.yml up -d
+# Variáveis DOMAIN e DB_PASSWORD vêm do .env da raiz (compose lê do CWD).
+services:
+  db:
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: integracomm_app
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: integracomm_ia
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./restore:/restore            # dump do banco local (só usado no 1º boot)
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U integracomm_app -d integracomm_ia"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  app:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    env_file: ../.env
+    environment:
+      APP_DATABASE_URL: postgresql://integracomm_app:${DB_PASSWORD}@db:5432/integracomm_ia
+    volumes:
+      - ../.env:/app/.env:ro          # o app lê o .env da raiz do projeto
+      - ../data:/app/data             # caches offline (wa_analyses etc.) + logs de análise
+      - ../logs:/app/logs
+    depends_on:
+      db:
+        condition: service_healthy
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data              # certificados Let's Encrypt (persistir!)
+      - caddy_config:/config
+    depends_on:
+      - app
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

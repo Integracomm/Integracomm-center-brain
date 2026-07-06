@@ -152,6 +152,23 @@ CREATE TABLE IF NOT EXISTS reports (
 CREATE INDEX IF NOT EXISTS idx_reports_account ON reports(account_id, reference_month DESC);
 
 -- ---------------------------------------------------------------------
+-- Usuários do painel (multiusuário: cadastro na tela de login + aprovação
+-- do admin). Bootstrap admin/gestor_growth seguem no .env. Criada de forma
+-- idempotente em runtime (app.auth.ensure_users_table).
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS users (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email         TEXT UNIQUE NOT NULL,
+    name          TEXT NOT NULL,
+    password_hash TEXT NOT NULL,                     -- bcrypt
+    role          TEXT NOT NULL DEFAULT 'gestor_growth',
+    status        TEXT NOT NULL DEFAULT 'pendente',  -- pendente|aprovado|bloqueado
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    approved_by   TEXT,
+    approved_at   TIMESTAMPTZ
+);
+
+-- ---------------------------------------------------------------------
 -- Auditoria — quem/o quê/quando (trilha real e consultável)
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS agent_runs (
