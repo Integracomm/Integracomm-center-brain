@@ -21,12 +21,21 @@ ia.integracomm.com.br  →  <IP estático da instância>
 ```
 (qualquer subdomínio serve; anote o que escolher.)
 
-## 3. Montar o pacote (na SUA máquina)
+## 3. Montar o pacote (na máquina ONDE RODA O SISTEMA HOJE)
 ```powershell
 cd "C:\Users\USUARIO\Desktop\Nova aplicação Integracomm"
 powershell -ExecutionPolicy Bypass -File deploy\make_bundle.ps1
 ```
-Gera `Downloads\integracomm_bundle.tar.gz` (código + dump do banco + .env do servidor).
+Gera `Downloads\integracomm_bundle.tar.gz` — pacote **autossuficiente**: código
+(versão commitada no git) + dump do banco + caches (`data/`) + `.env` do
+servidor com segredos novos. Só esta máquina consegue gerá-lo (o banco e o
+`.env` vivem aqui).
+
+> **Deploy a partir de OUTRA máquina?** Basta transferir esse único arquivo
+> para ela (drive, pendrive etc.) e seguir os passos 4-5 de lá — o git não é
+> necessário na máquina de deploy (e o bundle carrega o que o git de propósito
+> NÃO tem: segredos, dump e caches). Dica: gere o bundle no DIA do deploy para
+> o banco migrar com os dados mais recentes.
 
 ## 4. Enviar ao servidor
 Baixe a chave SSH da instância (console Lightsail → Account → SSH keys → default da região) para `Downloads\lightsail.pem`, então:

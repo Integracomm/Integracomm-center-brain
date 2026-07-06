@@ -11,7 +11,11 @@ if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
 New-Item -ItemType Directory -Path $stage | Out-Null
 
 Write-Host "== [1/4] codigo (arquivos versionados do git) =="
-git archive --format=tar HEAD | tar -xf - -C $stage
+# NUNCA canalizar binario pelo pipe do PowerShell (corrompe): escreve em arquivo
+$codeTar = Join-Path $env:TEMP 'integracomm_code.tar'
+git archive --format=tar -o $codeTar HEAD
+tar -xf $codeTar -C $stage
+Remove-Item $codeTar
 # caches offline necessarios a rodada diaria (data/ e gitignored)
 New-Item -ItemType Directory -Path (Join-Path $stage 'data') -Force | Out-Null
 foreach ($f in @('wa_analyses.csv','wa_groups.csv','nps_fat.csv','cases_expanded.csv','controls_active_bundles.csv')) {
