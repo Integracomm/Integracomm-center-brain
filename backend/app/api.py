@@ -23,9 +23,10 @@ from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 
 from .agents.growth.scoring import _top_driver, action_guideline
-from .auth import (COOKIE, ROLE_HOME, USERS, authenticate_db, check_login,
-                   clear_login_fails, create_user, list_users, login_blocked,
-                   make_token, record_login_fail, set_user_status, verify_token)
+from .auth import (AREA_HOME, AREAS, COOKIE, ROLE_HOME, USERS, authenticate_db,
+                   check_login, clear_login_fails, create_user, list_users,
+                   login_blocked, make_token, record_login_fail, set_user_areas,
+                   set_user_status, user_areas, verify_token)
 from .db import persistence as P
 
 app = FastAPI(title="Integracomm IA — Growth", docs_url="/api/docs")
@@ -105,6 +106,38 @@ def _session(request: Request) -> tuple[str, str] | None:
     if s and s[0] not in USERS and not _db_user_active(s[0]):
         return None
     return s
+
+
+_AREA_CACHE: dict[str, tuple[float, set]] = {}
+
+
+def _areas_of(user: str, role: str) -> set:
+    """Áreas visíveis à conta (cache 60s — mudanças do admin valem em ≤1min)."""
+    import time as _t
+    hit = _AREA_CACHE.get(user)
+    if hit and _t.monotonic() - hit[0] < 60:
+        return hit[1]
+    try:
+        with _conn() as c:
+            areas = user_areas(c, user, role)
+    except Exception:  # noqa: BLE001 — banco fora: cai no padrão do papel
+        from .auth import _ROLE_AREAS
+        areas = set(_ROLE_AREAS.get(role, set()))
+    _AREA_CACHE[user] = (_t.monotonic(), areas)
+    return areas
+
+
+def _require_area(request: Request, area: str):
+    """(sessão, None) com acesso à área, ou (None, redirect) adequado."""
+    s = _session(request)
+    if not s:
+        return None, RedirectResponse("/login", status_code=302)
+    user, role = s
+    if role == "admin" or area in _areas_of(user, role):
+        return s, None
+    minhas = sorted(_areas_of(user, role))
+    destino = AREA_HOME.get(minhas[0], "/login") if minhas else "/login"
+    return None, RedirectResponse(destino, status_code=302)
 
 
 def _require_api(request: Request) -> tuple[str, str]:
@@ -269,7 +302,12 @@ async def do_login(request: Request):
     clear_login_fails(key)
     with _conn() as c, c.cursor() as cur:  # auditoria: quem entrou, quando
         cur.execute("INSERT INTO audit_log (actor, action, scope) VALUES (%s,'login','painel')", (user,))
-    resp = RedirectResponse(ROLE_HOME[role], status_code=303)
+    if user in USERS:
+        home = ROLE_HOME[role]
+    else:  # usuário do banco: 1ª área liberada define a home
+        minhas = sorted(_areas_of(user, role))
+        home = AREA_HOME.get(minhas[0], ROLE_HOME.get(role, "/login")) if minhas else ROLE_HOME.get(role, "/login")
+    resp = RedirectResponse(home, status_code=303)
     resp.set_cookie(COOKIE, make_token(user, role), max_age=12 * 3600, httponly=True,
                     samesite="lax", secure=(request.url.scheme == "https"))
     return resp
@@ -477,11 +515,30 @@ def api_user_status(user_id: str, request: Request, payload: dict = Body(...)):
                                               status_code=400)
 
 
+@app.post("/api/users/{user_id}/areas")
+def api_user_areas(user_id: str, request: Request, payload: dict = Body(...)):
+    """Define as ÁREAS que a conta enxerga (checkboxes do hub). Só admin."""
+    actor, role = _require_api(request)
+    if role != "admin":
+        return JSONResponse({"error": "só o administrador gerencia contas"}, status_code=403)
+    areas = payload.get("areas")
+    if not isinstance(areas, list):
+        return JSONResponse({"error": "areas (lista de slugs) é obrigatório"}, status_code=400)
+    with _conn() as c:
+        ok = set_user_areas(c, user_id, [str(a) for a in areas])
+        if ok:
+            with c.cursor() as cur:
+                cur.execute("INSERT INTO audit_log (actor, action, scope) VALUES (%s,%s,%s)",
+                            (actor, "user_areas", f"usuario:{user_id}:{','.join(sorted(map(str, areas)))}"))
+    _AREA_CACHE.clear()  # mudança de acesso vale imediatamente
+    return {"ok": ok} if ok else JSONResponse({"error": "usuário não encontrado"}, status_code=400)
+
+
 @app.get("/growth", response_class=HTMLResponse)
 def dashboard(request: Request, view: str = Query("contas")):
-    s = _session(request)
-    if not s:
-        return RedirectResponse("/login", status_code=302)
+    s, redir = _require_area(request, "growth")
+    if redir:
+        return redir
     user, role = s
     if view not in ("contas", "alertas", "playbooks", "relatorios"):
         view = "contas"
@@ -594,16 +651,31 @@ def _users_html(users: list[dict]) -> str:
             acts += f"<button class=abtn onclick=\"userSt('{u['id']}','aprovado')\">aprovar</button> "
         if u["status"] != "bloqueado":
             acts += f"<button class=abtn onclick=\"userSt('{u['id']}','bloqueado')\">bloquear</button>"
+        chks = "".join(
+            f"<label class=uchk><input type=checkbox data-uid='{u['id']}' value='{slug}' "
+            f"{'checked' if slug in (u.get('areas') or []) else ''}>{nome.split(' /')[0]}</label>"
+            for slug, nome in AREAS.items())
+        areas_ui = (f"<div class='uareas'>{chks}"
+                    f"<button class=abtn onclick=\"userAreas('{u['id']}')\">salvar áreas</button></div>")
         rows += (f"<div class='urow'><div><b>{escape(u['name'][:30])}</b>"
                  f"<span style='color:var(--text-muted)'> · {escape(u['email'][:36])}</span></div>"
                  f"<div>{_chip(u['status'], _UST.get(u['status'], '--status-semdados'))}</div>"
-                 f"<div class='uacts'>{acts}</div></div>")
+                 f"<div class='uacts'>{acts}</div>"
+                 f"{areas_ui}</div>")
     js = ("<script>function userSt(id,st){if(st==='bloqueado'&&!confirm('Bloquear esta conta?'))return;"
           "fetch('/api/users/'+id+'/status',{method:'POST',headers:{'Content-Type':'application/json'},"
           "body:JSON.stringify({status:st})}).then(function(r){return r.json();})"
           ".then(function(j){if(j.error)alert(j.error);else location.reload();})"
+          ".catch(function(){alert('falha de rede');});}"
+          "function userAreas(id){var areas=[].slice.call(document.querySelectorAll(\"input[data-uid='\"+id+\"']:checked\")).map(function(c){return c.value;});"
+          "fetch('/api/users/'+id+'/areas',{method:'POST',headers:{'Content-Type':'application/json'},"
+          "body:JSON.stringify({areas:areas})}).then(function(r){return r.json();})"
+          ".then(function(j){if(j.error)alert(j.error);else location.reload();})"
           ".catch(function(){alert('falha de rede');});}</script>"
-          "<style>.urow{display:grid;grid-template-columns:minmax(240px,1fr) 110px 170px;gap:10px;"
+          "<style>.urow{display:grid;grid-template-columns:minmax(240px,1fr) 110px 170px;gap:6px 10px;"
+          ".uareas{grid-column:1/-1;display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:2px 0 6px;font-size:var(--fs-xs);color:var(--text-2)}"
+          ".uchk{display:inline-flex;gap:5px;align-items:center;cursor:pointer}"
+          ".uchk input{accent-color:var(--brand)}"
           "align-items:center;padding:8px 0;border-top:1px solid var(--border);font-size:var(--fs-sm)}"
           ".urow:first-child{border-top:none}"
           ".abtn{cursor:pointer;background:var(--surface-3);border:1px solid var(--border-strong);"

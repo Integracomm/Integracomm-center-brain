@@ -41,6 +41,15 @@ _PWD_KEY: dict[str, str] = {
 }
 ROLE_HOME: dict[str, str] = {"admin": "/", "gestor_growth": "/growth",
                              "gestor_marketing": "/marketing"}
+
+# Áreas do produto (controle de acesso POR CONTA — admin marca no hub quais
+# áreas cada conta enxerga). Chave = slug usado na coluna users.areas (csv).
+AREAS: dict[str, str] = {"growth": "Growth / Assessoria", "marketing": "Marketing",
+                         "prevendas": "Pré-vendas", "financeiro": "Financeiro",
+                         "operacoes": "Operações"}
+AREA_HOME: dict[str, str] = {"growth": "/growth", "marketing": "/marketing"}
+_ROLE_AREAS: dict[str, set[str]] = {"admin": set(AREAS), "gestor_growth": {"growth"},
+                                    "gestor_marketing": {"marketing"}}
 COOKIE = "iasession"
 
 
@@ -96,6 +105,7 @@ CREATE TABLE IF NOT EXISTS users (
     approved_by   TEXT,
     approved_at   TIMESTAMPTZ
 );
+ALTER TABLE users ADD COLUMN IF NOT EXISTS areas TEXT;  -- csv de slugs (ver AREAS)
 """
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -158,10 +168,37 @@ def authenticate_db(conn: Any, email: str, password: str) -> tuple[str | None, s
 def list_users(conn: Any) -> list[dict]:
     ensure_users_table(conn)
     with conn.cursor() as cur:
-        cur.execute("""SELECT id, email, name, role, status, created_at
+        cur.execute("""SELECT id, email, name, role, status, created_at, areas
                          FROM users ORDER BY (status='pendente') DESC, created_at DESC""")
         return [{"id": str(i), "email": e, "name": n, "role": r, "status": s,
-                 "created_at": c.isoformat()} for i, e, n, r, s, c in cur.fetchall()]
+                 "created_at": c.isoformat(),
+                 "areas": sorted(a.split(",")) if a else sorted(_ROLE_AREAS.get(r, set()))}
+                for i, e, n, r, s, c, a in cur.fetchall()]
+
+
+def user_areas(conn: Any, email: str, role: str) -> set[str]:
+    """Áreas que a conta enxerga: coluna `areas` (se o admin configurou) ou o
+    padrão do papel escolhido no cadastro. Bootstrap (.env) usa só o papel."""
+    if email in USERS:
+        return set(_ROLE_AREAS.get(role, set()))
+    ensure_users_table(conn)
+    with conn.cursor() as cur:
+        cur.execute("SELECT areas, role FROM users WHERE email=%s", (email,))
+        row = cur.fetchone()
+    if not row:
+        return set()
+    areas, r = row
+    if areas:
+        return {a for a in areas.split(",") if a in AREAS}
+    return set(_ROLE_AREAS.get(r, set()))
+
+
+def set_user_areas(conn: Any, user_id: str, areas: list[str]) -> bool:
+    clean = sorted({a for a in areas if a in AREAS})
+    ensure_users_table(conn)
+    with conn.cursor() as cur:
+        cur.execute("UPDATE users SET areas=%s WHERE id=%s", (",".join(clean) or None, user_id))
+        return cur.rowcount > 0
 
 
 def set_user_status(conn: Any, user_id: str, status: str, actor: str) -> bool:

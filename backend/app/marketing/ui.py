@@ -17,8 +17,9 @@ from . import analysis as AN
 
 router = APIRouter()
 
-_VIEWS = [("visao", "Visão Geral"), ("canais", "Ranking de Canais"),
-          ("origens", "Origem de Leads"), ("lag", "Tempo até Resultado"),
+_VIEWS = [("visao", "Visão Geral"), ("funil", "Funil de Prospecção"),
+          ("canais", "Ranking de Canais"), ("origens", "Origem de Leads"),
+          ("midia", "Mídia Paga"), ("lag", "Tempo até Resultado"),
           ("planejador", "Planejador"), ("criativos", "Criativos e Públicos"),
           ("q3", "Canais Q3")]
 
@@ -474,12 +475,232 @@ def _q3(conn) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Gráficos SVG (helpers)
+# ---------------------------------------------------------------------------
+def _svg_line(series, labels, fmt_y=None):
+    """Linhas sobre eixo comum. series=[(nome, cor, valores)], labels=eixo X."""
+    fmt_y = fmt_y or (lambda v: f"{v:,.0f}".replace(",", "."))
+    if not labels or not any(vals for _, _, vals in series):
+        return "<p class=note>sem dados no período</p>"
+    W, H, L, B = 780, 190, 46, 30
+    vmax = max((max(v) for _, _, v in series if v), default=1) or 1
+    n = max(len(labels) - 1, 1)
+    out = [f"<svg viewBox='0 0 {W} {H + 14}' style='width:100%;max-width:840px'>"]
+    for fr in (0.5, 1.0):
+        y = H - B - (H - B - 16) * fr
+        out.append(f"<line x1='{L}' y1='{y:.0f}' x2='{W - 8}' y2='{y:.0f}' stroke='var(--border)' stroke-dasharray='3 4'/>")
+        out.append(f"<text x='{L - 6}' y='{y + 4:.0f}' fill='var(--text-faint)' font-size='10' text-anchor='end'>{fmt_y(vmax * fr)}</text>")
+    out.append(f"<line x1='{L}' y1='{H - B}' x2='{W - 8}' y2='{H - B}' stroke='var(--border-strong)'/>")
+    step = max(1, len(labels) // 8)
+    for i, lb in enumerate(labels):
+        if i % step == 0:
+            x = L + (W - 8 - L) * i / n
+            out.append(f"<text x='{x:.0f}' y='{H - B + 15}' fill='var(--text-faint)' font-size='10' text-anchor='middle'>{escape(lb)}</text>")
+    for si, (nome, cor, vals) in enumerate(series):
+        if not vals:
+            continue
+        pts = " ".join(f"{L + (W - 8 - L) * i / n:.0f},{H - B - (H - B - 16) * (v / vmax):.0f}"
+                       for i, v in enumerate(vals))
+        out.append(f"<polyline points='{pts}' fill='none' stroke='{cor}' stroke-width='2'/>")
+        out.append(f"<text x='{L + 4 + si * 130}' y='14' fill='{cor}' font-size='11' font-weight='600'>{escape(nome)}</text>")
+    out.append("</svg>")
+    return "".join(out)
+
+
+# ---------------------------------------------------------------------------
+# Aba — Funil de Prospecção
+# ---------------------------------------------------------------------------
+# Etapas do Pipedrive (inspecionado 2026-07-07). Funil de COORTE: deals criados
+# no período; "passou da etapa X" = etapa atual (ou desfecho) com ordem >= X —
+# won passa por todas. Reagendamento (loop) equivale à Reunião agendada.
+# Pipeline 2 (prospecção ativa) mapeia para as ordens equivalentes.
+_STAGE_ORDER = {1: 0, 2: 1, 3: 2, 4: 3, 6: 4, 5: 4, 7: 5,
+                14: 0, 13: 1, 12: 2, 15: 3}
+_FUNIL_ETAPAS = [("Leads", 0), ("Primeiro contato", 1), ("Conectado", 2),
+                 ("Qualificação", 3), ("Reunião agendada", 4), ("Negociação", 5)]
+_FUNIL_SUGESTOES = {
+    "Primeiro contato": "Gargalo na VELOCIDADE de resposta: lead sem contato esfria em horas — revisar o SLA do primeiro toque (referência: <15 min em horário comercial) e a automação de disparo.",
+    "Conectado": "Muitos contatos sem conexão: variar canal (WhatsApp + ligação + e-mail), horários alternados e cadência de 5-7 tentativas antes de descartar.",
+    "Qualificação": "Perda alta na qualificação: filtrar curiosos ainda na LP/formulário e revisar o roteiro — campanhas com taxa baixa aqui pedem ajuste de público, não de verba.",
+    "Reunião agendada": "Qualificado que não agenda: link de agenda self-service, menos fricção de horários e confirmação por WhatsApp na véspera (no-show é o vilão típico).",
+    "Negociação": "Reunião que não vira booking: revisar proposta/ancoragem e follow-up estruturado — a maioria fecha entre o 2º e o 4º contato pós-reunião.",
+}
+
+
+def _funil(conn, request: Request) -> str:
+    ini, fim, form = _periodo(request)
+    dias = (fim - ini).days + 1
+    ini_p, fim_p = ini - dt.timedelta(days=dias), ini - dt.timedelta(days=1)
+
+    def coorte(a, b):
+        with conn.cursor() as cur:
+            cur.execute("""SELECT stage_id, status, count(*) FROM mkt_deals_attribution
+                            WHERE add_time >= %s AND add_time < %s GROUP BY 1, 2""",
+                        (a, b + dt.timedelta(days=1)))
+            passou = [0] * 6
+            booked = total = 0
+            for stage_id, status, n in cur.fetchall():
+                total += n
+                nivel = 5 if status == "won" else _STAGE_ORDER.get(stage_id, 0)
+                for k in range(0, min(nivel, 5) + 1):
+                    passou[k] += n
+                if status == "won":
+                    booked += n
+            passou[0] = total
+            return passou, booked, total
+
+    passou, booked, total = coorte(ini, fim)
+    passou_p, booked_p, total_p = coorte(ini_p, fim_p)
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT COALESCE(sum(meta_qtde),0) FROM mkt_goals WHERE mes=%s AND plano<>'total'",
+                    (fim.replace(day=1),))
+        meta_book = float(cur.fetchone()[0] or 0)
+    conv_atual = booked / total if total else 0
+    conv_nec = (meta_book / total) if total and meta_book else None
+
+    linhas, barras = "", ""
+    pior, pior_taxa = None, 1.0
+    for i, (nome, _) in enumerate(_FUNIL_ETAPAS):
+        n = passou[i]
+        taxa = n / passou[i - 1] if i and passou[i - 1] else None
+        taxa_p = (passou_p[i] / passou_p[i - 1]) if i and passou_p[i - 1] else None
+        delta = ""
+        if taxa is not None and taxa_p:
+            d = (taxa - taxa_p) * 100
+            cls = "pos" if d >= 0 else "neg"
+            sinal = "+" if d >= 0 else ""
+            delta = f"<span class='{cls}' style='font-size:var(--fs-2xs)'> ({sinal}{d:.1f}pp)</span>"
+        if taxa is not None and taxa < pior_taxa and passou[i - 1] >= 20:
+            pior, pior_taxa = nome, taxa
+        pct_total = n / total if total else 0
+        barras += ("<div style='display:grid;grid-template-columns:150px 1fr 120px;gap:10px;align-items:center;padding:4px 0'>"
+                   f"<div style='font-size:var(--fs-sm)'>{nome}</div>"
+                   f"<div class=bar style='height:22px;border-radius:6px'><div style='width:{pct_total * 100:.1f}%'></div></div>"
+                   f"<div style='font-size:var(--fs-sm);text-align:right'><b>{n}</b> ({_fmt(pct_total, 'pct')})</div></div>")
+        linhas += (f"<tr><td>{nome}</td><td class=num>{n}</td>"
+                   f"<td class=num>{_fmt(taxa, 'pct') if taxa is not None else '—'}{delta}</td></tr>")
+    pct_book = booked / total if total else 0
+    barras += ("<div style='display:grid;grid-template-columns:150px 1fr 120px;gap:10px;align-items:center;padding:4px 0'>"
+               "<div style='font-size:var(--fs-sm)'><b>Booking</b></div>"
+               f"<div class=bar style='height:22px;border-radius:6px'><div style='width:{pct_book * 100:.1f}%;background:var(--status-baixo)'></div></div>"
+               f"<div style='font-size:var(--fs-sm);text-align:right'><b>{booked}</b> ({_fmt(pct_book, 'pct')})</div></div>")
+    taxa_final = booked / passou[5] if passou[5] else None
+    linhas += (f"<tr><td><b>Booking (won)</b></td><td class=num><b>{booked}</b></td>"
+               f"<td class=num><b>{_fmt(taxa_final, 'pct')}</b></td></tr>")
+
+    meta_html = ""
+    if conv_nec is not None:
+        ok = conv_atual >= conv_nec
+        cor = "var(--status-baixo)" if ok else "var(--status-critico)"
+        meta_html = ("<div class=kpis>"
+                     f"<div class=kpi><div class=n>{_fmt(conv_atual, 'pct')}</div><div class=l>conversão lead→booking</div></div>"
+                     f"<div class=kpi><div class=n style='color:{cor}'>{_fmt(conv_nec, 'pct')}</div><div class=l>necessária p/ a meta ({meta_book:.0f} book/mês)</div></div>"
+                     f"<div class=kpi><div class=n>{booked}</div><div class=l>bookings da coorte</div></div>"
+                     f"<div class=kpi><div class=n>{total}</div><div class=l>leads no período</div></div></div>")
+    sugestoes = ""
+    if conv_nec is not None and conv_atual < conv_nec:
+        itens = ""
+        if pior and pior in _FUNIL_SUGESTOES:
+            itens += f"<div class='sug-item'><b>Maior perda: {pior} ({_fmt(pior_taxa, 'pct')})</b> — {_FUNIL_SUGESTOES[pior]}</div>"
+        if conv_atual:
+            deficit = (conv_nec / conv_atual - 1) * 100
+            leads_nec = f"{meta_book / conv_atual:,.0f}".replace(",", ".")
+            itens += (f"<div class='sug-item'>Para a meta no volume atual, a conversão precisa subir <b>{deficit:.0f}%</b>. "
+                      f"Alternativa: manter a conversão e crescer o topo — <b>{leads_nec} leads/mês</b> "
+                      "(use o Planejador, que já considera lag e CPL).</div>")
+        itens += "<div class='sug-item'>Priorize origens com conversão acima da mediana (aba Origem de Leads, chip “escalar?”) — mudar o mix é mais barato que consertar etapa.</div>"
+        sugestoes = ("<section><h2>Como alcançar a meta</h2><p class=secsub>sugestões determinísticas sobre a etapa de maior perda "
+                     "(a versão via Claude entra quando os créditos de API estiverem disponíveis)</p><div class=card>" + itens +
+                     "<style>.sug-item{padding:8px 0;border-top:1px solid var(--border);font-size:var(--fs-sm);line-height:1.6;color:var(--text-2)}.sug-item:first-child{border-top:none}</style></div></section>")
+
+    return (f"<h1>Funil de Prospecção</h1><div class=sub>coorte: deals criados no período · “passou da etapa” = alcançou etapa igual/posterior (won passa por todas)</div>"
+            f"<form method=get action=/marketing><input type=hidden name=view value=funil>{form}</form>"
+            + meta_html +
+            f"<section><h2>Funil</h2><div class=card>{barras}</div></section>"
+            f"<section><h2>Taxas por etapa</h2><p class=secsub>vs período anterior equivalente ({ini_p.strftime('%d-%m')} a {fim_p.strftime('%d-%m')})</p>"
+            f"<div class=card><table><tr><th>Etapa</th><th class=num>Deals</th><th class=num>Conversão da etapa</th></tr>{linhas}</table></div></section>"
+            + sugestoes)
+
+
+# ---------------------------------------------------------------------------
+# Aba — Mídia Paga (visões do dashboard Paid media performance)
+# ---------------------------------------------------------------------------
+def _midia(conn, request: Request) -> str:
+    ini, fim, form = _periodo(request)
+    with conn.cursor() as cur:
+        cur.execute("""SELECT date, sum(spend), sum(leads), sum(clicks), sum(impressions)
+                         FROM mkt_insights_daily WHERE date >= %s AND date <= %s
+                        GROUP BY 1 ORDER BY 1""", (ini, fim))
+        rows = cur.fetchall()
+    labels = [r[0].strftime("%d-%m") for r in rows]
+    spend = [float(r[1]) for r in rows]
+    leads = [float(r[2]) for r in rows]
+    cpl = [(s / l if l else 0) for s, l in zip(spend, leads)]
+    tot_s, tot_l = sum(spend), sum(leads)
+    tot_c = sum(float(r[3]) for r in rows)
+    tot_i = sum(float(r[4]) for r in rows)
+    ctr_medio = (tot_c / tot_i * 100) if tot_i else 0
+    kpis = ("<div class=kpis>"
+            f"<div class=kpi><div class=n>{_fmt(tot_s, 'brl')}</div><div class=l>Gasto no período</div></div>"
+            f"<div class=kpi><div class=n>{_fmt(tot_l)}</div><div class=l>Leads</div></div>"
+            f"<div class=kpi><div class=n>{_fmt(tot_s / tot_l if tot_l else None, 'brl')}</div><div class=l>CPL médio</div></div>"
+            f"<div class=kpi><div class=n>{ctr_medio:.2f}%</div><div class=l>CTR médio</div></div></div>")
+    g1 = _svg_line([("Gasto/dia (R$)", "var(--brand)", spend)], labels)
+    g2 = _svg_line([("Leads/dia", "var(--status-baixo)", leads)], labels)
+    g3 = _svg_line([("CPL/dia (R$)", "var(--status-alto)", cpl)], labels)
+
+    cards = ""
+    try:
+        from ..sources import creative_history as CH
+        agg = {}
+        for r in CH.daily():
+            d = str(r.get("date") or "")[:10]
+            if not d or not (ini.isoformat() <= d <= fim.isoformat()):
+                continue
+            a = agg.setdefault(r.get("ad_id"), {"nome": r.get("ad_name"), "thumb": r.get("thumbnail_url"),
+                                                "tipo": r.get("creative_type"), "spend": 0.0, "leads": 0,
+                                                "clicks": 0, "impr": 0, "book": 0})
+            a["spend"] += float(r.get("spend") or 0)
+            a["leads"] += int(r.get("leads") or 0)
+            a["clicks"] += int(r.get("clicks") or 0)
+            a["impr"] += int(r.get("impressions") or 0)
+            a["book"] += int(r.get("bookings") or 0)
+            if r.get("thumbnail_url"):
+                a["thumb"] = r.get("thumbnail_url")
+        top = sorted(agg.values(), key=lambda x: -x["spend"])[:12]
+        for a in top:
+            cpl_a = a["spend"] / a["leads"] if a["leads"] else None
+            ctr_a = a["clicks"] / a["impr"] * 100 if a["impr"] else None
+            ctr_txt = f"{ctr_a:.2f}%" if ctr_a is not None else "—"
+            book_txt = f" · {a['book']} bookings" if a["book"] else ""
+            img = (f"<img src='{escape(a['thumb'])}' loading=lazy style='width:100%;height:110px;object-fit:cover;border-radius:var(--radius-sm);background:var(--surface-3)'>"
+                   if a.get("thumb") else "<div style='height:110px;border-radius:var(--radius-sm);background:var(--surface-3)'></div>")
+            cards += ("<div style='background:var(--surface-1);border:1px solid var(--border-mid);border-radius:var(--radius-md);padding:10px'>"
+                      + img +
+                      f"<div style='font-size:var(--fs-xs);font-weight:600;margin-top:8px;line-height:1.3'>{escape((a['nome'] or '')[:48])}</div>"
+                      f"<div style='font-size:var(--fs-2xs);color:var(--text-muted);margin-top:5px'>"
+                      f"{escape(a['tipo'] or '')} · gasto {_fmt(a['spend'], 'brl')} · {a['leads']} leads · CPL {_fmt(cpl_a, 'brl')} · CTR {ctr_txt}{book_txt}</div></div>")
+    except Exception:  # noqa: BLE001 — histórico fora do ar não derruba a aba
+        cards = "<div class=warn>Histórico de criativos (ad-insightify) indisponível no momento.</div>"
+
+    return (f"<h1>Mídia Paga</h1><div class=sub>evolução diária de gasto, leads, CPL e CTR — Meta + Google somados · galeria de criativos do período</div>"
+            f"<form method=get action=/marketing><input type=hidden name=view value=midia>{form}</form>"
+            + kpis +
+            f"<section><h2>Gasto por dia</h2><div class=card>{g1}</div></section>"
+            f"<section><h2>Leads por dia</h2><div class=card>{g2}</div></section>"
+            f"<section><h2>CPL por dia</h2><div class=card>{g3}</div></section>"
+            f"<section><h2>Criativos do período</h2><p class=secsub>top 12 por gasto, com métricas do ad-insightify</p>"
+            f"<div style='display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px'>{cards}</div></section>")
+
+
+# ---------------------------------------------------------------------------
 @router.get("/marketing", response_class=HTMLResponse)
 def marketing(request: Request, view: str = Query("visao")):
     A = _deps()
-    s = A._session(request)
-    if not s:
-        return RedirectResponse("/login", status_code=302)
+    s, redir = A._require_area(request, "marketing")
+    if redir:
+        return redir
     user, role = s
     if view not in {v for v, _ in _VIEWS}:
         view = "visao"
@@ -487,9 +708,10 @@ def marketing(request: Request, view: str = Query("visao")):
         with c.cursor() as cur:
             cur.execute("INSERT INTO audit_log (actor, action, scope) VALUES (%s,'view',%s)",
                         (user, f"marketing/{view}"))
-        fn = {"visao": lambda: _visao(c), "canais": lambda: _canais(c, request),
-              "origens": lambda: _origens(c, request), "lag": lambda: _lag(c),
-              "planejador": lambda: _planejador(c, request),
+        fn = {"visao": lambda: _visao(c), "funil": lambda: _funil(c, request),
+              "canais": lambda: _canais(c, request),
+              "origens": lambda: _origens(c, request), "midia": lambda: _midia(c, request),
+              "lag": lambda: _lag(c), "planejador": lambda: _planejador(c, request),
               "criativos": lambda: _criativos(c, request), "q3": lambda: _q3(c)}[view]
         content = fn() + "<p class=foot>Cache local das fontes (Meta, Google, Pipedrive, planilha de metas, ad-insightify) — coleta diária 06h. A decisão é sempre do gestor.</p>"
     return HTMLResponse(_shell(A, role, view, content))
