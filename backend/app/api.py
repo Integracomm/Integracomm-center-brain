@@ -498,8 +498,9 @@ def hub(request: Request):
     with _conn() as c:
         _audit_view(c, user, scope="hub")
         stats = _hub_stats(c)
+        mkt = _hub_mkt_stats(c)
         users = list_users(c)
-    return HTMLResponse(_render_hub(user, stats, users))
+    return HTMLResponse(_render_hub(user, stats, users, mkt))
 
 
 @app.post("/api/users/{user_id}/status")
@@ -630,6 +631,39 @@ def _hub_stats(conn: Any) -> dict:
             "exec_late": exec_late}
 
 
+def _hub_mkt_stats(conn: Any) -> dict | None:
+    """Resumo do mês corrente da área de Marketing p/ o hub — realizado (coorte
+    Pipedrive + gasto de mídia) × plano da planilha de metas (mkt_plan_*)."""
+    try:
+        from .marketing.ui import _coorte, _dias_mes, _plan_funil
+        hoje = dt.date.today()
+        mes = hoje.replace(day=1)
+        plan = _plan_funil(conn, [mes]).get(mes) or {}
+        passou, booked, total = _coorte(conn, mes, hoje)
+        with conn.cursor() as cur:
+            cur.execute("SELECT COALESCE(sum(spend),0) FROM mkt_insights_daily WHERE date >= %s", (mes,))
+            gasto = float(cur.fetchone()[0] or 0)
+            cur.execute("SELECT verba FROM mkt_plan_channels WHERE mes=%s AND canal='META'", (mes,))
+            r = cur.fetchone()
+            verba = float(r[0]) if r and r[0] is not None else None
+        if not plan and not total:
+            return None
+
+        def meta(etapa):
+            v = (plan.get(etapa) or {}).get("qtde")
+            return float(v) if v else None
+
+        return {"mes": mes, "frac": min(1.0, hoje.day / _dias_mes(mes)),
+                "leads": total, "leads_meta": meta("Lead"),
+                "oport": passou[4], "oport_meta": meta("Oportunidade"),
+                "book": booked, "book_meta": meta("Booking"),
+                "gasto": gasto, "verba": verba,
+                "cpl": gasto / total if total and gasto else None,
+                "cpl_alvo": (plan.get("Lead") or {}).get("custo")}
+    except Exception:  # noqa: BLE001 — marketing sem cache não derruba o hub
+        return None
+
+
 def _fmt_brl(v: float) -> str:
     return f"R$ {v:,.0f}".replace(",", ".")
 
@@ -689,17 +723,30 @@ def _users_html(users: list[dict]) -> str:
     return rows + js
 
 
-def _render_hub(role: str, st: dict, users: list[dict] | None = None) -> str:
+def _render_hub(role: str, st: dict, users: list[dict] | None = None,
+                mkt: dict | None = None) -> str:
     n_alerts = sum(st["sev"].values())
     crit = st["sev"].get("critico", 0)
-    # Iniciativas sugeridas pela inteligência central — derivadas dos dados reais
-    # das áreas ativas (hoje Growth). Quando houver 2+ áreas, viram cross-área.
+    # Iniciativas sugeridas pela inteligência central — derivadas dos dados
+    # reais das áreas ativas (Growth + Marketing) = priorização cross-área.
     initiatives = []
     if crit:
         initiatives.append(("Reter as contas em risco crítico",
                             f"{crit} contas sinalizaram saída ou estão em faixa crítica — "
                             f"{_fmt_brl(st['mrr_crit'])} de MRR em jogo. Fila pronta na área de Growth.",
                             "--status-critico"))
+    if mkt and mkt.get("book_meta") and mkt["book"] / mkt["book_meta"] < mkt["frac"] * 0.75:
+        initiatives.append(("Destravar bookings do mês",
+                            f"{mkt['book']} de {mkt['book_meta']:.0f} bookings da meta com "
+                            f"{mkt['frac'] * 100:.0f}% do mês decorrido — ver etapa de maior perda no "
+                            "Funil de Prospecção e o gap por plano.",
+                            "--status-critico"))
+    if mkt and mkt.get("leads_meta") and mkt["leads"] / mkt["leads_meta"] < mkt["frac"] * 0.75:
+        initiatives.append(("Acelerar a geração de leads",
+                            f"{mkt['leads']} de {mkt['leads_meta']:.0f} leads da meta do mês com "
+                            f"{mkt['frac'] * 100:.0f}% do mês decorrido — revisar campanhas e verba "
+                            "na aba Metas do Semestre.",
+                            "--status-alto"))
     if st["exec_late"]:
         initiatives.append(("Regularizar execução nas contas em alerta",
                             f"{st['exec_late']} contas monitoradas têm entregas atrasadas no ClickUp — "
@@ -716,22 +763,96 @@ def _render_hub(role: str, st: dict, users: list[dict] | None = None) -> str:
         for t, d, var in initiatives
     ) or "<div class='init'><div class='id_'>sem iniciativas pendentes</div></div>"
 
-    areas = [
-        ("Growth / Assessoria", "ativa", "/growth",
-         f"{st['monitored']} contas · {n_alerts} alertas · {_fmt_brl(st['mrr_risk'])} em risco"),
-        ("Marketing", "ativa", "/marketing", "tráfego pago, leads, lag de campanha e planejador"),
-        ("Pré-vendas", "em breve", None, "qualificação e conversão"),
-        ("Financeiro", "em breve", None, "inadimplência e margem"),
-        ("Operações", "em breve", None, "capacidade e SLA"),
-    ]
-    area_cards = "".join(
-        (f"<a class='area' href='{link}'>" if link else "<div class='area soon'>")
+    # ---- cards-resumo por área (mini-painel com os números que importam)
+    def _num(v):
+        return f"{v:,.0f}".replace(",", ".")
+
+    def am(valor, rotulo, cor=None):
+        c = f" style='color:{cor}'" if cor else ""
+        return f"<div class=am><div class=av{c}>{valor}</div><div class=al>{rotulo}</div></div>"
+
+    def vs_meta(real, meta_v, frac, pior_menor=True):
+        """valor real/meta colorido pelo ritmo do mês (verde = no ritmo)."""
+        if not meta_v:
+            return _num(real), None
+        pct = real / meta_v
+        ok = (pct >= frac) if pior_menor else (pct <= 1.0)
+        cor = "var(--status-baixo)" if ok else "var(--status-critico)"
+        return (f"{_num(real)}<span style='color:var(--text-faint);font-size:14px'>"
+                f"/{_num(meta_v)}</span>"), cor
+
+    g_det = (f"{crit} críticos · {st['sev'].get('alto', 0)} altos · "
+             f"{st['sev'].get('atencao', 0)} atenção · {st['non_eval']} sem cobertura")
+    growth_card = (
+        "<a class='area big' href='/growth'><div class=ahead>"
+        f"<div class=an>Growth / Assessoria</div>{_chip('ativa', '--status-baixo')}</div>"
+        "<div class=agrid>"
+        + am(_num(st["monitored"]), "contas monitoradas")
+        + am(_num(n_alerts), "alertas abertos", "var(--status-critico)" if n_alerts else None)
+        + am(_fmt_brl(st["mrr_risk"]), "MRR em risco", "var(--status-alto)" if st["mrr_risk"] else None)
+        + am(_num(st["exec_late"]), "execução atrasada", "var(--status-medio)" if st["exec_late"] else None)
+        + f"</div><div class=ad>{escape(g_det)}</div></a>")
+
+    if mkt:
+        v_leads, c_leads = vs_meta(mkt["leads"], mkt.get("leads_meta"), mkt["frac"])
+        v_oport, c_oport = vs_meta(mkt["oport"], mkt.get("oport_meta"), mkt["frac"])
+        v_book, c_book = vs_meta(mkt["book"], mkt.get("book_meta"), mkt["frac"])
+        gasto_txt = _fmt_brl(mkt["gasto"])
+        c_gasto = None
+        if mkt.get("verba"):
+            c_gasto = "var(--status-baixo)" if mkt["gasto"] <= mkt["verba"] else "var(--status-critico)"
+            gasto_txt += (f"<span style='color:var(--text-faint);font-size:14px'>"
+                          f"/{_fmt_brl(mkt['verba'])}</span>")
+        cpl_txt = ""
+        if mkt.get("cpl") is not None:
+            cpl_txt = f" · CPL {_fmt_brl(mkt['cpl'])}"
+            if mkt.get("cpl_alvo"):
+                cpl_txt += f" (alvo {_fmt_brl(mkt['cpl_alvo'])})"
+        m_det = (f"mês {mkt['mes'].strftime('%m-%Y')} · ritmo esperado {mkt['frac'] * 100:.0f}%"
+                 + cpl_txt + " · metas da planilha do time")
+        mkt_card = (
+            "<a class='area big' href='/marketing'><div class=ahead>"
+            f"<div class=an>Marketing</div>{_chip('ativa', '--status-baixo')}</div>"
+            "<div class=agrid>"
+            + am(v_leads, "leads no mês", c_leads)
+            + am(v_oport, "oportunidades", c_oport)
+            + am(v_book, "bookings", c_book)
+            + am(gasto_txt, "gasto mídia/verba", c_gasto)
+            + f"</div><div class=ad>{escape(m_det)}</div></a>")
+    else:
+        mkt_card = ("<a class='area big' href='/marketing'><div class=ahead>"
+                    f"<div class=an>Marketing</div>{_chip('ativa', '--status-baixo')}</div>"
+                    "<div class=ad>tráfego pago, leads, funil e planejador — sem cache do mês "
+                    "(rode o sync de marketing)</div></a>")
+
+    area_cards = growth_card + mkt_card + "".join(
+        "<div class='area soon'>"
         + f"<div class='an'>{escape(nm)}</div>"
-        + f"<div class='ast'>{_chip(status, '--status-baixo' if status == 'ativa' else '--status-semdados')}</div>"
-        + f"<div class='ad'>{escape(desc)}</div>"
-        + ("</a>" if link else "</div>")
-        for nm, status, link, desc in areas
+        + f"<div class='ast'>{_chip('em breve', '--status-semdados')}</div>"
+        + f"<div class='ad'>{escape(desc)}</div></div>"
+        for nm, desc in (("Pré-vendas", "qualificação e conversão"),
+                         ("Financeiro", "inadimplência e margem"),
+                         ("Operações", "capacidade e SLA"))
     )
+
+    # ---- KPIs do topo: retenção (Growth) + aquisição (Marketing)
+    kpis = [
+        (_num(st["monitored"]), "Contas monitoradas", None),
+        (_num(n_alerts), "Alertas abertos", "var(--status-critico)" if n_alerts else None),
+        (_fmt_brl(st["mrr_risk"]), "MRR em risco", "var(--status-alto)" if st["mrr_risk"] else None),
+    ]
+    if mkt and mkt.get("leads_meta"):
+        v, c = vs_meta(mkt["leads"], mkt["leads_meta"], mkt["frac"])
+        kpis.append((v, "Leads no mês", c))
+    if mkt and mkt.get("book_meta"):
+        v, c = vs_meta(mkt["book"], mkt["book_meta"], mkt["frac"])
+        kpis.append((v, "Bookings no mês", c))
+    if len(kpis) == 3:
+        kpis.append(("2<span style='color:var(--text-faint);font-size:18px'>/5</span>",
+                     "Áreas ativas", None))
+    kpi_html = "".join(
+        f"<div class=kpi><div class=n{f' style=\"color:{c}\"' if c else ''}>{v}</div>"
+        f"<div class=l>{lbl}</div></div>" for v, lbl, c in kpis)
 
     head = """<!doctype html><html lang=pt-br><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
@@ -759,9 +880,9 @@ nav{padding:10px 12px;display:flex;flex-direction:column;gap:2px;flex:1}
 main{flex:1;min-width:0;padding:26px 32px 48px;max-width:var(--content-max)}
 h1{font-family:var(--font-display);font-weight:700;font-size:var(--fs-h1);letter-spacing:var(--tracking-tight);margin:0}
 .sub{font-size:var(--fs-sm);color:var(--text-muted);margin-top:6px}
-.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:22px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-top:22px}
 .kpi{background:var(--surface-1);border:1px solid var(--border-mid);border-radius:var(--radius-md);padding:16px 18px}
-.kpi .n{font-family:var(--font-display);font-weight:700;font-size:30px;line-height:1}
+.kpi .n{font-family:var(--font-display);font-weight:700;font-size:28px;line-height:1}
 .kpi .l{font-size:var(--fs-2xs);color:var(--text-muted);text-transform:uppercase;letter-spacing:var(--tracking-label);margin-top:8px}
 section{margin-top:var(--space-8)}
 h2{font-family:var(--font-display);font-weight:600;font-size:var(--fs-lg);margin:0 0 4px}
@@ -770,6 +891,12 @@ h2{font-family:var(--font-display);font-weight:600;font-size:var(--fs-lg);margin
 .area{display:block;background:var(--surface-1);border:1px solid var(--border-mid);border-radius:var(--radius-md);padding:16px 18px}
 .area:hover{background:var(--surface-2);border-color:var(--border-strong)}
 .area.soon{opacity:.55}
+.area.big{grid-column:span 2}
+@media (max-width:760px){.area.big{grid-column:span 1}}
+.ahead{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.agrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px;margin:12px 0 10px}
+.am .av{font-family:var(--font-display);font-weight:700;font-size:21px;line-height:1.1}
+.am .al{font-size:var(--fs-2xs);color:var(--text-muted);text-transform:uppercase;letter-spacing:var(--tracking-label);margin-top:4px}
 .an{font-family:var(--font-display);font-weight:600;font-size:15px}
 .ast{margin:8px 0}
 .ad{font-size:var(--fs-sm);color:var(--text-muted);line-height:1.45}
@@ -797,12 +924,7 @@ h2{font-family:var(--font-display);font-weight:600;font-size:var(--fs-lg);margin
  <main>
   <h1>Visão central</h1>
   <p class=sub>A inteligência central consolida os sinais de todas as áreas e sugere iniciativas alinhadas entre elas. Hoje 2 de 5 áreas estão ativas (Growth e Marketing); as demais entram como novos agentes na mesma casca.</p>
-  <div class=kpis>
-    <div class=kpi><div class=n>__MON__</div><div class=l>Contas monitoradas</div></div>
-    <div class=kpi><div class=n style="color:var(--status-critico)">__NALERT__</div><div class=l>Alertas abertos</div></div>
-    <div class=kpi><div class=n style="color:var(--status-alto)">__MRRRISK__</div><div class=l>MRR em risco</div></div>
-    <div class=kpi><div class=n>2<span style="color:var(--text-faint);font-size:18px">/5</span></div><div class=l>Áreas ativas</div></div>
-  </div>
+  <div class=kpis>__KPIS__</div>
   <section>
     <h2>Iniciativas sugeridas</h2>
     <p class=secsub>derivadas dos sinais das áreas ativas — priorização da empresa, não de uma área só</p>
@@ -810,7 +932,7 @@ h2{font-family:var(--font-display);font-weight:600;font-size:var(--fs-lg);margin
   </section>
   <section>
     <h2>Áreas</h2>
-    <p class=secsub>cada área tem seu agente e seu painel; o gestor da área entra direto na sua</p>
+    <p class=secsub>resumo do andamento de cada área — clique para abrir o painel completo; verde = no ritmo/meta, vermelho = atenção</p>
     <div class=areas>__AREAS__</div>
   </section>
   <section>
@@ -823,8 +945,7 @@ h2{font-family:var(--font-display);font-weight:600;font-size:var(--fs-lg);margin
 </div>
 </body></html>"""
     return (head.replace("__TOKENS__", _tokens_css()).replace("__ROLE__", escape(role))
-            .replace("__MON__", str(st["monitored"])).replace("__NALERT__", str(n_alerts))
-            .replace("__MRRRISK__", _fmt_brl(st["mrr_risk"]))
+            .replace("__KPIS__", kpi_html)
             .replace("__INITS__", init_html).replace("__AREAS__", area_cards)
             .replace("__USERS__", _users_html(users or [])))
 
