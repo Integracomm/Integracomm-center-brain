@@ -10,4 +10,10 @@ if [ "$(date +%d)" = "02" ]; then
     echo "--- dia 2: checagem mensal NPS ---"
     python -m scripts.check_nps_fill --slack
 fi
+echo "--- marketing: coleta $([ "$(date +%u)" = "1" ] && echo 'semanal (c/ metas+lag)' || echo 'incremental') ---"
+if [ "$(date +%u)" = "1" ]; then
+    python -m scripts.sync_marketing --weekly
+else
+    python -m scripts.sync_marketing
+fi
 echo "=== ok $(date '+%H:%M:%S') ==="

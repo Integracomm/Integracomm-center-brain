@@ -181,6 +181,11 @@ def _signup_html(erro: str = "", ok: bool = False) -> str:
   <input type=text name=name placeholder="Maria Silva" autofocus>
   <label>e-mail</label>
   <input type=email name=email placeholder="maria@integracomm.com.br" autocomplete=username>
+  <label>área</label>
+  <select name=role style="width:100%;background:var(--bg-panel);border:1px solid var(--border-strong);border-radius:var(--radius-sm);color:var(--text);font-family:var(--font-body);font-size:var(--fs-base);padding:9px 10px">
+    <option value=gestor_growth>Growth / Assessoria</option>
+    <option value=gestor_marketing>Marketing</option>
+  </select>
   <label>senha (mínimo 8 caracteres)</label>
   <input type=password name=password autocomplete=new-password>
   <label>confirmar senha</label>
@@ -233,7 +238,7 @@ async def do_signup(request: Request):
     if login_blocked(f"signup|{ip}"):  # anti-spam de cadastro por IP
         return HTMLResponse(_signup_html("muitas tentativas — aguarde 1 minuto"))
     with _conn() as c:
-        err = create_user(c, email, name, pwd)
+        err = create_user(c, email, name, pwd, role=str(form.get('role') or 'gestor_growth'))
         if err:
             record_login_fail(f"signup|{ip}")
             return HTMLResponse(_signup_html(err))
@@ -637,7 +642,7 @@ def _render_hub(role: str, st: dict, users: list[dict] | None = None) -> str:
     areas = [
         ("Growth / Assessoria", "ativa", "/growth",
          f"{st['monitored']} contas · {n_alerts} alertas · {_fmt_brl(st['mrr_risk'])} em risco"),
-        ("Marketing", "em breve", None, "aquisição e funil"),
+        ("Marketing", "ativa", "/marketing", "tráfego pago, leads, lag de campanha e planejador"),
         ("Pré-vendas", "em breve", None, "qualificação e conversão"),
         ("Financeiro", "em breve", None, "inadimplência e margem"),
         ("Operações", "em breve", None, "capacidade e SLA"),
@@ -705,7 +710,7 @@ h2{font-family:var(--font-display);font-weight:600;font-size:var(--fs-lg);margin
    <nav>
      <a class="nav-item active" href="/">Início</a>
      <a class="nav-item" href="/growth">Growth / Assessoria</a>
-     <a class="nav-item soon">Marketing <span class=tag>em breve</span></a>
+     <a class="nav-item" href="/marketing">Marketing</a>
      <a class="nav-item soon">Pré-vendas <span class=tag>em breve</span></a>
      <a class="nav-item soon">Financeiro <span class=tag>em breve</span></a>
      <a class="nav-item soon">Operações <span class=tag>em breve</span></a>
@@ -714,12 +719,12 @@ h2{font-family:var(--font-display);font-weight:600;font-size:var(--fs-lg);margin
  </aside>
  <main>
   <h1>Visão central</h1>
-  <p class=sub>A inteligência central consolida os sinais de todas as áreas e sugere iniciativas alinhadas entre elas. Hoje 1 de 5 áreas está ativa (Growth); as demais entram como novos agentes na mesma casca.</p>
+  <p class=sub>A inteligência central consolida os sinais de todas as áreas e sugere iniciativas alinhadas entre elas. Hoje 2 de 5 áreas estão ativas (Growth e Marketing); as demais entram como novos agentes na mesma casca.</p>
   <div class=kpis>
     <div class=kpi><div class=n>__MON__</div><div class=l>Contas monitoradas</div></div>
     <div class=kpi><div class=n style="color:var(--status-critico)">__NALERT__</div><div class=l>Alertas abertos</div></div>
     <div class=kpi><div class=n style="color:var(--status-alto)">__MRRRISK__</div><div class=l>MRR em risco</div></div>
-    <div class=kpi><div class=n>1<span style="color:var(--text-faint);font-size:18px">/5</span></div><div class=l>Áreas ativas</div></div>
+    <div class=kpi><div class=n>2<span style="color:var(--text-faint);font-size:18px">/5</span></div><div class=l>Áreas ativas</div></div>
   </div>
   <section>
     <h2>Iniciativas sugeridas</h2>
@@ -1584,5 +1589,7 @@ def _relatorios_content(rep: dict, scores: list[dict]) -> str:
 # capturar as rotas fixas /api/reports/summary e /send-slack definidas acima
 # (FastAPI casa na ordem de registro). Import tardio evita ciclo.
 from .report_api import router as _report_router  # noqa: E402
+from .marketing.ui import router as _marketing_router  # noqa: E402
 
 app.include_router(_report_router)
+app.include_router(_marketing_router)

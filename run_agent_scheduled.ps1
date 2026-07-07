@@ -63,6 +63,16 @@ if ($code -ne 0) {
 
 "OK: rodada concluida em $(Get-Date -Format 'HH:mm:ss')" | Add-Content $log
 
+# --- marketing: coleta diaria (segunda = semanal, com metas + recalculo do lag) ---
+Push-Location (Join-Path $root 'backend')
+try {
+    $flag = if ((Get-Date).DayOfWeek -eq 'Monday') { '--weekly' } else { '' }
+    & cmd /c "`"$py`" -m scripts.sync_marketing $flag >> `"$log`" 2>&1"
+    "sync marketing: exit $LASTEXITCODE" | Add-Content $log
+} finally {
+    Pop-Location
+}
+
 # --- dia 2 do mes: checagem do preenchimento de faturamento nas planilhas NPS ---
 # Avisa no MESMO grupo do Slack quem nao lancou o mes anterior (regra: sem
 # faturamento = lancar R$0; nenhum cliente ativo pode ficar em branco).

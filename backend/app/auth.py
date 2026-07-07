@@ -39,7 +39,8 @@ _PWD_KEY: dict[str, str] = {
     "admin": "AUTH_ADMIN_PASSWORD",
     "gestor_growth": "AUTH_GESTOR_GROWTH_PASSWORD",
 }
-ROLE_HOME: dict[str, str] = {"admin": "/", "gestor_growth": "/growth"}
+ROLE_HOME: dict[str, str] = {"admin": "/", "gestor_growth": "/growth",
+                             "gestor_marketing": "/marketing"}
 COOKIE = "iasession"
 
 
@@ -104,12 +105,15 @@ def ensure_users_table(conn: Any) -> None:
         cur.execute(_USERS_DDL)
 
 
-def create_user(conn: Any, email: str, name: str, password: str) -> str | None:
+def create_user(conn: Any, email: str, name: str, password: str,
+                role: str = "gestor_growth") -> str | None:
     """Cria conta PENDENTE. Retorna mensagem de erro ou None (sucesso)."""
     import bcrypt
 
     email = (email or "").strip().lower()
     name = (name or "").strip()
+    if role not in ("gestor_growth", "gestor_marketing"):
+        return "área inválida"
     if not _EMAIL_RE.match(email):
         return "e-mail inválido"
     if len(name) < 2:
@@ -124,8 +128,8 @@ def create_user(conn: Any, email: str, name: str, password: str) -> str | None:
         cur.execute("SELECT 1 FROM users WHERE email=%s", (email,))
         if cur.fetchone():
             return "já existe uma conta com este e-mail"
-        cur.execute("INSERT INTO users (email, name, password_hash) VALUES (%s,%s,%s)",
-                    (email, name, h))
+        cur.execute("INSERT INTO users (email, name, password_hash, role) VALUES (%s,%s,%s,%s)",
+                    (email, name, h, role))
     return None
 
 

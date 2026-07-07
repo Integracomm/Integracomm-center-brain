@@ -62,6 +62,8 @@ def main() -> None:
         conn, since=dt.date(2025, 1, 1) if args.backfill else hoje - dt.timedelta(days=60)))
     if args.weekly or args.backfill:
         step("metas (planilha)", lambda: mkt_goals_sheet.sync_goals(conn))
+        from app.marketing.analysis import recompute_lag_stats
+        step("lag stats (recalc)", lambda: recompute_lag_stats(conn))
     conn.close()
 
 
