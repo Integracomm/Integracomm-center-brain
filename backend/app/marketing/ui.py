@@ -333,52 +333,110 @@ def _lag(conn) -> str:
 # Aba 5 — Planejador de Lançamento
 # ---------------------------------------------------------------------------
 def _planejador(conn, request: Request) -> str:
-    qtde = request.query_params.get("qtde")
-    alvo_s = request.query_params.get("alvo")
-    canal_ui = request.query_params.get("canal") or "Meta Ads"
+    qp = request.query_params
+    alvo_s = qp.get("alvo")
+    canal_ui = qp.get("canal") or "Meta Ads"
     canal_db = _CANAL_DB.get(canal_ui, "meta")
+    bundles = ["B1", "B2", "B3", "B4", "B5"]
+    pedidos = {b: int(qp.get(f"q{b}") or 0) for b in bundles}
+    campos_b = "".join(
+        f"<div><label>{b}</label><input type=number name='q{b}' min=0 value='{pedidos[b] or ''}' "
+        f"placeholder='0' style='width:64px'></div>" for b in bundles)
     form = (f"<form method=get action=/marketing><input type=hidden name=view value=planejador>"
-            f"<div class=filters>"
-            f"<div><label>bookings desejados</label><input type=number name=qtde min=1 value='{escape(qtde or '5')}' style='width:90px'></div>"
+            f"<div class=filters>{campos_b}"
             f"<div><label>resultado até</label><input type=date name=alvo value='{escape(alvo_s or (dt.date.today() + dt.timedelta(days=60)).isoformat())}'></div>"
             f"<div><label>canal</label><select name=canal>" +
             "".join(f"<option {'selected' if canal_ui == c else ''}>{c}</option>" for c in ("Meta Ads", "Google Ads")) +
-            f"</select></div><button type=submit>Planejar</button></div></form>")
+            f"</select></div><button type=submit>Planejar</button></div>"
+            f"<p class=note style='margin:6px 0 0'>informe quantos bookings quer de cada bundle (ex.: 15 em B1 e 20 em B2) e a data-limite do resultado</p></form>")
+
     resultado = ""
-    if qtde and alvo_s:
+    total_pedido = sum(pedidos.values())
+    if alvo_s and total_pedido:
         try:
-            n_book, alvo = int(qtde), dt.date.fromisoformat(alvo_s)
+            alvo = dt.date.fromisoformat(alvo_s)
         except ValueError:
-            n_book, alvo = 0, None
+            alvo = None
         with conn.cursor() as cur:
-            cur.execute("""SELECT marco, p25_dias, mediana_dias, p75_dias FROM mkt_campaign_lag_stats
-                            WHERE canal=%s""", (canal_db,))
-            lag = {m: (p25, med, p75) for m, p25, med, p75 in cur.fetchall()}
-        ini90 = dt.date.today() - dt.timedelta(days=90)
-        rk = {r["canal"]: r for r in AN.ranking_canais(conn, ini90, dt.date.today())}
-        r = rk.get(canal_ui, {})
-        conv, cpl = r.get("conv_lead_book"), r.get("cpl")
-        if alvo and lag.get("primeiro_booking") and conv and cpl:
+            cur.execute("SELECT marco, p25_dias, mediana_dias, p75_dias FROM mkt_campaign_lag_stats WHERE canal=%s",
+                        (canal_db,))
+            lag = {mm: (p25, med, p75) for mm, p25, med, p75 in cur.fetchall()}
+        hoje = dt.date.today()
+        ini90 = hoje - dt.timedelta(days=90)
+        rk = {r["canal"]: r for r in AN.ranking_canais(conn, ini90, hoje)}
+        cpl = (rk.get(canal_ui) or {}).get("cpl")
+        pref = "meta" if canal_db == "meta" else "google"
+        with conn.cursor() as cur:
+            # base 180d do canal: leads totais e bookings POR BUNDLE
+            cur.execute("""SELECT count(*) FROM mkt_deals_attribution
+                            WHERE add_time >= %s AND origem LIKE %s""",
+                        (hoje - dt.timedelta(days=180), pref + "%"))
+            leads_base = cur.fetchone()[0] or 0
+            cur.execute("""SELECT substring(produto FROM 'B[1-5]') AS b, count(*)
+                             FROM mkt_deals_attribution
+                            WHERE add_time >= %s AND origem LIKE %s AND status='won'
+                              AND produto ~ 'B[1-5]' GROUP BY 1""",
+                        (hoje - dt.timedelta(days=180), pref + "%"))
+            book_bundle = dict(cur.fetchall())
+        if alvo and lag.get("primeiro_booking") and cpl and leads_base:
             p25, med, p75 = (float(x) for x in lag["primeiro_booking"])
             d_med = alvo - dt.timedelta(days=int(med))
-            d_cons = alvo - dt.timedelta(days=int(p75))
-            leads_nec = n_book / conv
-            orc = leads_nec * cpl
-            atraso = "<div class=warn style='margin-top:10px'>⚠ A data-limite mediana já passou — o cenário conservador é inviável; considere canais com lag menor ou reduzir a meta.</div>" if d_med < dt.date.today() else ""
+            linhas_b, recs = "", ""
+            tot_leads = tot_orc = 0.0
+            for b in bundles:
+                q = pedidos[b]
+                if not q:
+                    continue
+                taxa_b = (book_bundle.get(b, 0) / leads_base) if leads_base else 0
+                if taxa_b <= 0:
+                    linhas_b += (f"<tr><td><b>{b}</b></td><td class=num>{q}</td><td colspan=3 class=note>"
+                                 f"sem booking histórico deste bundle no canal (180d) — sem base p/ estimar; "
+                                 f"considere Indicações/LinkedIn ou outro canal</td></tr>")
+                    continue
+                leads_nec = q / taxa_b
+                orc = leads_nec * float(cpl)
+                tot_leads += leads_nec
+                tot_orc += orc
+                linhas_b += (f"<tr><td><b>{b}</b></td><td class=num>{q}</td>"
+                             f"<td class=num>{_fmt(taxa_b, 'pct')}</td>"
+                             f"<td class=num>{leads_nec:,.0f}</td>"
+                             f"<td class=num>{_fmt(orc, 'brl')}</td></tr>").replace(",", ".")
+                # melhores campanhas e criativos históricos do bundle
+                with conn.cursor() as cur:
+                    cur.execute("""SELECT utm_campaign, count(*) FROM mkt_deals_attribution
+                                    WHERE status='won' AND produto ~ %s AND origem LIKE %s
+                                      AND utm_campaign IS NOT NULL
+                                    GROUP BY 1 ORDER BY 2 DESC LIMIT 3""", (b, pref + "%"))
+                    camps = cur.fetchall()
+                    cur.execute("""SELECT utm_content, count(*) FROM mkt_deals_attribution
+                                    WHERE status='won' AND produto ~ %s AND origem LIKE %s
+                                      AND utm_content IS NOT NULL
+                                    GROUP BY 1 ORDER BY 2 DESC LIMIT 3""", (b, pref + "%"))
+                    ads = cur.fetchall()
+                if camps or ads:
+                    li_c = "".join(f"<li>campanha <b>{escape(cc[:52])}</b> ({n} bookings)</li>" for cc, n in camps)
+                    li_a = "".join(f"<li>criativo <b>{escape(aa[:52])}</b> ({n} bookings)</li>" for aa, n in ads)
+                    recs += (f"<div style='margin-top:10px'><b>{b}</b> — o que já FECHOU esse bundle neste canal:"
+                             f"<ul class=note style='margin:4px 0 0;padding-left:18px'>{li_c}{li_a}</ul></div>")
+            atraso = ("<div class=warn style='margin-top:10px'>⚠ A data-limite mediana já passou — cenário conservador inviável; "
+                      "reduza a meta, antecipe por outro canal ou reveja a data.</div>" if d_med < hoje else "")
             resultado = (
-                f"<section><h2>Plano para {n_book} bookings via {escape(canal_ui)} até {alvo.strftime('%d-%m-%Y')}</h2>"
-                f"<div class=card><table>"
-                f"<tr><th>Item</th><th class=num>Cenário mediano</th><th class=num>Intervalo (p25–p75)</th></tr>"
-                f"<tr><td><b>Lançar a campanha até</b></td><td class=num><b>{d_med.strftime('%d-%m-%Y')}</b></td>"
-                f"<td class=num>{(alvo - dt.timedelta(days=int(p25))).strftime('%d-%m')} (otimista) — {d_cons.strftime('%d-%m')} (conservador)</td></tr>"
-                f"<tr><td>Leads necessários</td><td class=num>{leads_nec:,.0f}</td><td class=num>conversão lead→booking 90d: {_fmt(conv, 'pct')}</td></tr>".replace(",", ".") +
-                f"<tr><td>Orçamento estimado</td><td class=num>{_fmt(orc, 'brl')}</td><td class=num>CPL 90d: {_fmt(cpl, 'brl')}</td></tr>"
-                f"<tr><td>Lag até 1º booking</td><td class=num>{med:.0f} dias</td><td class=num>{p25:.0f}–{p75:.0f} dias</td></tr>"
-                f"</table>{atraso}"
-                f"<p class='note' style='margin:10px 0 0'>Intervalos vêm do histórico real de campanhas ({escape(canal_ui)}) — o p75 é o cenário de risco, não use só a mediana para prometer data.</p></div></section>")
+                f"<section><h2>Plano: {total_pedido} bookings via {escape(canal_ui)} até {alvo.strftime('%d-%m-%Y')}</h2>"
+                f"<div class=card><table><tr><th>Bundle</th><th class=num>Bookings</th><th class=num>Taxa lead→booking (180d)</th>"
+                f"<th class=num>Leads necessários</th><th class=num>Orçamento</th></tr>{linhas_b}"
+                f"<tr><td><b>Total</b></td><td class=num><b>{total_pedido}</b></td><td></td>"
+                f"<td class=num><b>{tot_leads:,.0f}</b></td><td class=num><b>{_fmt(tot_orc, 'brl')}</b></td></tr></table>".replace(",", ".") +
+                f"<table style='margin-top:12px'><tr><th>Janela de lançamento</th><th class=num>Mediana</th><th class=num>p25–p75</th></tr>"
+                f"<tr><td>Lançar a campanha até</td><td class=num><b>{d_med.strftime('%d-%m-%Y')}</b></td>"
+                f"<td class=num>{(alvo - dt.timedelta(days=int(p25))).strftime('%d-%m')} — {(alvo - dt.timedelta(days=int(p75))).strftime('%d-%m')}</td></tr>"
+                f"<tr><td>Lag até 1º booking</td><td class=num>{med:.0f} dias</td><td class=num>{p25:.0f}–{p75:.0f} dias</td></tr></table>"
+                + atraso +
+                f"<p class='note' style='margin:10px 0 0'>Taxa por bundle = bookings do bundle ÷ leads totais do canal (180d) — reflete o mix real. "
+                f"CPL 90d do canal: {_fmt(cpl, 'brl')}. Use o p75 como cenário de risco.</p></div></section>"
+                + (f"<section><h2>Estratégias e criativos recomendados</h2><p class=secsub>histórico de quem já converteu cada bundle (base p/ replicar/iterar — a versão via Claude entra com os créditos de API)</p><div class=card>{recs}</div></section>" if recs else ""))
         else:
-            resultado = "<section><div class=warn>Sem base histórica suficiente neste canal (lag ou conversão indisponíveis) — o planejador precisa de campanhas com resultados atribuídos.</div></section>"
-    return (f"<h1>Planejador de Lançamento</h1><div class=sub>informe a meta e a data — o planejador inverte o lag histórico e responde quando lançar, com quantos leads e que orçamento</div>"
+            resultado = "<section><div class=warn>Sem base histórica suficiente neste canal (lag, CPL ou leads indisponíveis).</div></section>"
+    return (f"<h1>Planejador de Lançamento</h1><div class=sub>meta por bundle + data — o planejador inverte o lag e responde quando lançar, quantos leads, que orçamento e com quais estratégias</div>"
             + form + resultado)
 
 
@@ -496,17 +554,25 @@ def _svg_line(series, labels, fmt_y=None):
 # Pipeline 2 (prospecção ativa) mapeia para as ordens equivalentes.
 _STAGE_ORDER = {1: 0, 2: 1, 3: 2, 4: 3, 6: 4, 5: 4, 7: 5,
                 14: 0, 13: 1, 12: 2, 15: 3}
-# Nomenclatura do TIME (SAL/SQL) mapeada sobre as etapas do Pipedrive:
-# SAL = Primeiro contato (lead aceito/tocado por vendas); SQL = Qualificação.
-# Ajustar aqui se o time usar outro mapeamento.
-_FUNIL_ETAPAS = [("Leads", 0), ("SAL", 1), ("Conectado", 2),
-                 ("SQL", 3), ("Reunião agendada", 4), ("Negociação", 5)]
+# Taxonomia OFICIAL do time (mesma dos apps Lovable): Lead, MQL, SAL, SQL,
+# Oportunidade, Booking — mapeada sobre a progressão de etapas do Pipedrive.
+# Negociação/Reagendamento contam dentro de Oportunidade (ordem >= 4).
+_FUNIL_ETAPAS = [("Lead", 0), ("MQL", 1), ("SAL", 2),
+                 ("SQL", 3), ("Oportunidade", 4)]
+_FUNIL_DEFS = {
+    "Lead": "contato que entrou no funil (formulário, campanha ou outra origem)",
+    "MQL": "Marketing Qualified Lead — perfil validado pelo marketing; recebeu o primeiro contato",
+    "SAL": "Sales Accepted Lead — aceito por vendas; conexão estabelecida com o contato",
+    "SQL": "Sales Qualified Lead — qualificado por vendas (fit, dor e orçamento confirmados)",
+    "Oportunidade": "negociação real em curso — reunião agendada/realizada, proposta na mesa",
+    "Booking": "contrato fechado (won no Pipedrive)",
+}
 _FUNIL_SUGESTOES = {
-    "SAL": "Gargalo na VELOCIDADE de resposta: lead sem contato esfria em horas — revisar o SLA do primeiro toque (referência: <15 min em horário comercial) e a automação de disparo.",
-    "Conectado": "Muitos contatos sem conexão: variar canal (WhatsApp + ligação + e-mail), horários alternados e cadência de 5-7 tentativas antes de descartar.",
+    "MQL": "Gargalo na VELOCIDADE de resposta: lead sem contato esfria em horas — revisar o SLA do primeiro toque (referência: <15 min em horário comercial) e a automação de disparo.",
+    "SAL": "Muitos contatos sem conexão: variar canal (WhatsApp + ligação + e-mail), horários alternados e cadência de 5-7 tentativas antes de descartar.",
     "SQL": "Perda alta na qualificação: filtrar curiosos ainda na LP/formulário e revisar o roteiro — campanhas com taxa baixa aqui pedem ajuste de público, não de verba.",
-    "Reunião agendada": "Qualificado que não agenda: link de agenda self-service, menos fricção de horários e confirmação por WhatsApp na véspera (no-show é o vilão típico).",
-    "Negociação": "Reunião que não vira booking: revisar proposta/ancoragem e follow-up estruturado — a maioria fecha entre o 2º e o 4º contato pós-reunião.",
+    "Oportunidade": "SQL que não vira reunião/proposta: agenda self-service (link direto), menos fricção de horários e confirmação por WhatsApp na véspera (no-show é o vilão típico).",
+    "Booking": "Oportunidade que não fecha: revisar proposta/ancoragem e follow-up estruturado — a maioria fecha entre o 2º e o 4º contato pós-reunião.",
 }
 
 
@@ -520,12 +586,12 @@ def _funil(conn, request: Request) -> str:
             cur.execute("""SELECT stage_id, status, count(*) FROM mkt_deals_attribution
                             WHERE add_time >= %s AND add_time < %s GROUP BY 1, 2""",
                         (a, b + dt.timedelta(days=1)))
-            passou = [0] * 6
+            passou = [0] * 5
             booked = total = 0
             for stage_id, status, n in cur.fetchall():
                 total += n
-                nivel = 5 if status == "won" else _STAGE_ORDER.get(stage_id, 0)
-                for k in range(0, min(nivel, 5) + 1):
+                nivel = 4 if status == "won" else min(_STAGE_ORDER.get(stage_id, 0), 4)
+                for k in range(0, nivel + 1):
                     passou[k] += n
                 if status == "won":
                     booked += n
@@ -570,11 +636,11 @@ def _funil(conn, request: Request) -> str:
         elif taxa is not None and not metas_taxa and taxa < pior_taxa and passou[i - 1] >= 20:
             pior, pior_taxa = nome, taxa
         pct_total = n / total if total else 0
-        barras += (f"<div title='{nome}: {n} deals ({_fmt(pct_total, 'pct')} do total)' style='display:grid;grid-template-columns:150px 1fr 120px;gap:10px;align-items:center;padding:4px 0'>"
+        barras += (f"<div title='{nome} — {_FUNIL_DEFS.get(nome, '')} · {n} deals ({_fmt(pct_total, 'pct')} do total)' style='display:grid;grid-template-columns:150px 1fr 120px;gap:10px;align-items:center;padding:4px 0'>"
                    f"<div style='font-size:var(--fs-sm)'>{nome}</div>"
                    f"<div class=bar style='height:22px;border-radius:6px'><div style='width:{pct_total * 100:.1f}%'></div></div>"
                    f"<div style='font-size:var(--fs-sm);text-align:right'><b>{n}</b> ({_fmt(pct_total, 'pct')})</div></div>")
-        linhas += (f"<tr><td>{nome}</td><td class=num>{n}</td>"
+        linhas += (f"<tr title='{_FUNIL_DEFS.get(nome, '')}'><td>{nome}</td><td class=num>{n}</td>"
                    f"<td class=num>{_fmt(taxa, 'pct') if taxa is not None else '—'}{delta}</td>"
                    f"<td class=num>{meta_td}</td></tr>")
     pct_book = booked / total if total else 0
@@ -582,7 +648,7 @@ def _funil(conn, request: Request) -> str:
                "<div style='font-size:var(--fs-sm)'><b>Booking</b></div>"
                f"<div class=bar style='height:22px;border-radius:6px'><div style='width:{pct_book * 100:.1f}%;background:var(--status-baixo)'></div></div>"
                f"<div style='font-size:var(--fs-sm);text-align:right'><b>{booked}</b> ({_fmt(pct_book, 'pct')})</div></div>")
-    taxa_final = booked / passou[5] if passou[5] else None
+    taxa_final = booked / passou[4] if passou[4] else None
     meta_bk = metas_taxa.get("Booking")
     meta_bk_td = "—"
     if meta_bk is not None and taxa_final is not None:
@@ -636,7 +702,11 @@ def _funil(conn, request: Request) -> str:
             f"<section><h2>Funil</h2><div class=card>{barras}</div></section>"
             f"<section><h2>Taxas por etapa</h2><p class=secsub>vs período anterior equivalente ({ini_p.strftime('%d-%m')} a {fim_p.strftime('%d-%m')})</p>"
             f"<div class=card><table><tr><th>Etapa</th><th class=num>Deals</th><th class=num>Conversão da etapa</th><th class=num>Meta</th></tr>{linhas}</table></div></section>"
-            + form_metas + sugestoes)
+            + form_metas + sugestoes
+            + "<section><h2>Definições das etapas</h2><div class=card><table>"
+            + "".join(f"<tr><td style='width:130px'><b>{e}</b></td><td class=note>{d}</td></tr>"
+                      for e, d in _FUNIL_DEFS.items())
+            + "</table></div></section>")
 
 
 # ---------------------------------------------------------------------------
@@ -645,17 +715,25 @@ def _funil(conn, request: Request) -> str:
 def _midia(conn, request: Request) -> str:
     ini, fim, form = _periodo(request)
     with conn.cursor() as cur:
-        cur.execute("""SELECT date, sum(spend), sum(leads), sum(clicks), sum(impressions)
+        cur.execute("""SELECT date, sum(spend), sum(clicks), sum(impressions)
                          FROM mkt_insights_daily WHERE date >= %s AND date <= %s
                         GROUP BY 1 ORDER BY 1""", (ini, fim))
         rows = cur.fetchall()
+        # leads = DEALS do Pipedrive atribuídos a canais pagos (fonte da verdade
+        # do funil — número bate com o CRM; leads "da plataforma" divergem)
+        cur.execute("""SELECT add_time::date, count(*) FROM mkt_deals_attribution
+                        WHERE add_time::date >= %s AND add_time::date <= %s
+                          AND (origem LIKE 'meta%%' OR origem LIKE 'google%%'
+                               OR origem IN ('facebook', 'instagram_ads'))
+                        GROUP BY 1""", (ini, fim))
+        leads_dia = dict(cur.fetchall())
     labels = [r[0].strftime("%d-%m") for r in rows]
     spend = [float(r[1]) for r in rows]
-    leads = [float(r[2]) for r in rows]
+    leads = [float(leads_dia.get(r[0], 0)) for r in rows]
     cpl = [(s / l if l else 0) for s, l in zip(spend, leads)]
     tot_s, tot_l = sum(spend), sum(leads)
-    tot_c = sum(float(r[3]) for r in rows)
-    tot_i = sum(float(r[4]) for r in rows)
+    tot_c = sum(float(r[2]) for r in rows)
+    tot_i = sum(float(r[3]) for r in rows)
     ctr_medio = (tot_c / tot_i * 100) if tot_i else 0
     kpis = ("<div class=kpis>"
             f"<div class=kpi><div class=n>{_fmt(tot_s, 'brl')}</div><div class=l>Gasto no período</div></div>"
@@ -700,7 +778,7 @@ def _midia(conn, request: Request) -> str:
     except Exception:  # noqa: BLE001 — histórico fora do ar não derruba a aba
         cards = "<div class=warn>Histórico de criativos (ad-insightify) indisponível no momento.</div>"
 
-    return (f"<h1>Mídia Paga</h1><div class=sub>evolução diária de gasto, leads, CPL e CTR — Meta + Google somados · galeria de criativos do período</div>"
+    return (f"<h1>Mídia Paga</h1><div class=sub>gasto/CTR da plataforma · leads e CPL pelos DEALS do Pipedrive (canais pagos) — números batem com o CRM · galeria de criativos</div>"
             f"<form method=get action=/marketing><input type=hidden name=view value=midia>{form}</form>"
             + kpis +
             f"<section><h2>Gasto por dia</h2><div class=card>{g1}</div></section>"

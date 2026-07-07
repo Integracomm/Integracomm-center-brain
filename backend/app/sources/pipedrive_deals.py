@@ -96,4 +96,9 @@ def sync_deals(conn: Any, since: dt.date = dt.date(2025, 1, 1)) -> int:
             if page_old and data:
                 break  # página inteira antes do corte: fim do backfill
             start = p.get("next_start") if p.get("more_items_in_collection") else None
+        # higiene: deals APAGADOS no Pipedrive (janela de 30d da API) saem do cache
+        j = _get("deals", {"limit": 500, "status": "deleted"})
+        apagados = [d["id"] for d in (j.get("data") or [])]
+        if apagados:
+            cur.execute("DELETE FROM mkt_deals_attribution WHERE deal_id = ANY(%s)", (apagados,))
     return n
