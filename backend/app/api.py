@@ -41,6 +41,11 @@ def _prewarm() -> None:
         prewarm_clickup()
     except Exception:  # noqa: BLE001 — nunca bloquear o boot por causa disto
         pass
+    try:
+        from .sentinel import start_sentinel
+        start_sentinel(_conn)  # avisos imediatos de cancelamento (30 em 30 min)
+    except Exception:  # noqa: BLE001
+        pass
 
 _ROLES = {"admin", "gestor_growth"}
 _ROOT = Path(__file__).resolve().parents[1].parent  # raiz do projeto (onde vive o .env)
