@@ -1815,6 +1815,7 @@ def _cancel_content(rows: list[dict]) -> str:
     canc = [r for r in rows if r["tipo"] == "cancelamento"]
     term = [r for r in rows if r["tipo"] == "termino"]
     trat = [r for r in rows if r["tipo"] == "tratativa"]
+    rev = [r for r in rows if r["tipo"] == "revertido"]
     hoje = dt.date.today()
     mes_atual = hoje.replace(day=1)
     meses = sorted({r["mes"] for r in canc})
@@ -1841,6 +1842,8 @@ def _cancel_content(rows: list[dict]) -> str:
         f"<div class=s>soma das mensalidades</div></div>"
         f"<div class=kpi><div class=n style='color:var(--status-medio)'>{len(trat_mes)}</div>"
         f"<div class=l>em tratativa</div><div class=s>pipeline de retenção — agir antes de formalizar</div></div>"
+        f"<div class=kpi><div class=n style='color:var(--status-baixo)'>{len(rev)}</div>"
+        f"<div class=l>revertidos (anti-churn)</div><div class=s>intenção contornada — não contam como saída</div></div>"
         f"<div class=kpi><div class=n>{_st.median(tempos):.0f} m</div><div class=l>tempo de casa mediano</div>"
         f"<div class=s>na saída · {len(tempos)} c/ dado</div></div>"
         "</div>")
@@ -1924,9 +1927,10 @@ def _cancel_content(rows: list[dict]) -> str:
         f"<section><div class=sec-head><h2>Motivos informados</h2><span class=sub>{len(com_motivo)} saídas com motivo registrado — 15 mais recentes</span></div>"
         + card(tbl("<tr>" + "".join(f"<th style='text-align:left;padding:7px;border-bottom:1px solid var(--border-strong);color:var(--text-muted);font-size:var(--fs-2xs);text-transform:uppercase'>{h}</th>" for h in ("Mês", "Cliente", "Plano", "Motivo")) + "</tr>", linhas_mo)) +
         "</section>"
-        "<p class=note style='margin-top:14px'>Planilhas privadas: a releitura automática só funciona se forem compartilhadas "
-        "como “qualquer pessoa com o link – leitor”; sem isso, o sync usa a cópia em <code>data/</code> "
-        "(atualizada sob demanda). Términos START têm semântica própria (fim de contrato, não churn de assinatura).</p>")
+        "<p class=note style='margin-top:14px'>Duas réguas conciliadas: as ABAS MENSAIS (listas operacionais, histórico completo "
+        "incl. ADS/ASS antigos) + a aba CONSOLIDADA do processo anti-churn (mar/26+, status oficial) — cliente marcado "
+        "<b>Revertido</b>/<b>Em negociação</b> na consolidada não conta como saída aqui. "
+        "Términos START têm semântica própria (fim de contrato, não churn de assinatura). Releitura diária via link público.</p>")
 
 
 def _relatorios_content(rep: dict, scores: list[dict]) -> str:

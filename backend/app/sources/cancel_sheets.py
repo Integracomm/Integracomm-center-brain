@@ -228,6 +228,50 @@ def _parse_squads(wb: openpyxl.Workbook) -> list[dict]:
     return out
 
 
+def _chave(cliente: str) -> str:
+    return _norm(cliente).split("|")[0].strip()[:25]
+
+
+def _parse_consolidada(wb: openpyxl.Workbook) -> dict[str, dict]:
+    """Aba 'Cancelamentos' (processo ANTI-CHURN, mar/26+): Cliente, Data da
+    Intenção, Reincidência, STATUS (Cancelado|Em negociação|Revertido), Data do
+    Encerramento, Meses, Início, Plano, Equipe, Gestor, MOTIVO categorizado,
+    Abordagem, Desconto/Prejuízo, Observação. É a régua do dashboard do time:
+    Revertido/Em negociação NÃO contam como saída."""
+    if "Cancelamentos" not in wb.sheetnames:
+        return {}
+    out: dict[str, dict] = {}
+    linhas = list(wb["Cancelamentos"].iter_rows(values_only=True))
+    if not linhas:
+        return {}
+    h = _headers(linhas[0])
+
+    def j(pref):
+        return next((jj for k, jj in h.items() if k.startswith(pref)), None)
+
+    idx = {c: j(p) for c, p in [("status", "status"), ("enc", "data do encerramento"),
+                                ("int", "data da intencao"), ("meses", "meses"),
+                                ("inicio", "data de inicio"), ("plano", "plano"),
+                                ("equipe", "equipe"), ("gc", "gestor"), ("motivo", "motivo")]}
+    for row in linhas[1:]:
+        if not row or not row[0] or not str(row[0]).strip():
+            continue
+        def cel(c):
+            i = idx.get(c)
+            return row[i] if i is not None and i < len(row) else None
+        out[_chave(str(row[0]))] = {
+            "cliente": str(row[0]).strip()[:120],
+            "status": _norm(cel("status")),
+            "data_saida": _data(cel("enc")), "data_intencao": _data(cel("int")),
+            "meses": _num(cel("meses")), "data_inicio": _data(cel("inicio")),
+            "plano": (str(cel("plano") or "").strip()[:40] or None),
+            "equipe": (str(cel("equipe") or "").strip()[:40] or None),
+            "gc": (str(cel("gc") or "").strip()[:60] or None),
+            "motivo": (str(cel("motivo") or "").strip()[:400] or None),
+        }
+    return out
+
+
 def parse_all(wbs: dict[str, openpyxl.Workbook]) -> list[dict]:
     regs = _parse_saidas(wbs[FILE_SAIDAS]) + _parse_squads(wbs[FILE_SQUADS])
     # squad das saídas por squad vem na coluna do MEIO ("Responsável" 1 = squad,
@@ -243,7 +287,7 @@ def parse_all(wbs: dict[str, openpyxl.Workbook]) -> list[dict]:
         if r["tipo"] != "cancelamento":
             finais.append(r)
             continue
-        k = (_norm(r["cliente"]).split("|")[0].strip()[:40], r["mes"])
+        k = (_chave(r["cliente"]), r["mes"])
         j = vistos.get(k)
         if j is None:
             vistos[k] = r
@@ -251,6 +295,38 @@ def parse_all(wbs: dict[str, openpyxl.Workbook]) -> list[dict]:
         elif r.get("motivo") and not j.get("motivo"):
             finais[finais.index(j)] = r
             vistos[k] = r
+    # RECONCILIAÇÃO com a aba consolidada (processo anti-churn, régua do time):
+    # Revertido/Em negociação vira tipo próprio (NÃO conta como saída) e o
+    # motivo categorizado/plano/equipe/gestor enriquecem o registro.
+    proc = _parse_consolidada(wbs[FILE_SAIDAS])
+    casados: set[str] = set()
+    for r in finais:
+        if r["tipo"] != "cancelamento":
+            continue
+        p = proc.get(_chave(r["cliente"]))
+        if not p:
+            continue
+        casados.add(_chave(r["cliente"]))
+        for campo in ("motivo", "plano", "equipe", "gc", "meses", "data_inicio", "data_saida"):
+            if not r.get(campo) and p.get(campo):
+                r[campo] = p[campo]
+        if p["status"].startswith("revertido"):
+            r["tipo"], r["situacao"] = "revertido", "revertido (anti-churn)"
+        elif p["status"].startswith("em negocia"):
+            r["tipo"], r["situacao"] = "tratativa", "em negociação (anti-churn)"
+    # cancelados do processo que NÃO estão nas abas mensais entram como saída
+    for k, p in proc.items():
+        if k in casados or not p["status"].startswith("cancelado"):
+            continue
+        mes_ref = (p["data_saida"] or p["data_intencao"])
+        if not mes_ref:
+            continue
+        finais.append({"tipo": "cancelamento", "fonte": "processo",
+                       "mes": mes_ref.replace(day=1), "cliente": p["cliente"],
+                       "data_inicio": p["data_inicio"], "data_saida": p["data_saida"],
+                       "meses": p["meses"], "valor": None, "plano": p["plano"],
+                       "equipe": p["equipe"], "gc": p["gc"], "motivo": p["motivo"],
+                       "situacao": None})
     return finais
 
 
