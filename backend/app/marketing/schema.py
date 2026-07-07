@@ -71,6 +71,15 @@ CREATE TABLE IF NOT EXISTS mkt_campaign_lag_stats (
     PRIMARY KEY (canal, tipo, marco)
 );
 
+-- metas de TAXA por etapa do funil de prospecção (editadas no painel)
+CREATE TABLE IF NOT EXISTS mkt_funnel_goals (
+    mes        DATE NOT NULL,     -- 1º dia do mês
+    etapa      TEXT NOT NULL,     -- rótulo da etapa (ver _FUNIL_ETAPAS)
+    taxa_meta  NUMERIC NOT NULL,  -- fração 0-1
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (mes, etapa)
+);
+
 -- metas mensais da planilha financeira
 CREATE TABLE IF NOT EXISTS mkt_goals (
     mes          DATE NOT NULL,               -- 1º dia do mês

@@ -45,8 +45,8 @@ ROLE_HOME: dict[str, str] = {"admin": "/", "gestor_growth": "/growth",
 # Áreas do produto (controle de acesso POR CONTA — admin marca no hub quais
 # áreas cada conta enxerga). Chave = slug usado na coluna users.areas (csv).
 AREAS: dict[str, str] = {"growth": "Growth / Assessoria", "marketing": "Marketing",
-                         "prevendas": "Pré-vendas", "financeiro": "Financeiro",
-                         "operacoes": "Operações"}
+                         "vendas": "Vendas", "prevendas": "Pré-vendas",
+                         "financeiro": "Financeiro", "operacoes": "Operações"}
 AREA_HOME: dict[str, str] = {"growth": "/growth", "marketing": "/marketing"}
 _ROLE_AREAS: dict[str, set[str]] = {"admin": set(AREAS), "gestor_growth": {"growth"},
                                     "gestor_marketing": {"marketing"}}

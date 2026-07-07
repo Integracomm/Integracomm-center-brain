@@ -20,8 +20,7 @@ router = APIRouter()
 _VIEWS = [("visao", "Visão Geral"), ("funil", "Funil de Prospecção"),
           ("canais", "Ranking de Canais"), ("origens", "Origem de Leads"),
           ("midia", "Mídia Paga"), ("lag", "Tempo até Resultado"),
-          ("planejador", "Planejador"), ("criativos", "Criativos e Públicos"),
-          ("q3", "Canais Q3")]
+          ("planejador", "Planejador"), ("criativos", "Criativos e Públicos")]
 
 
 def _deps():
@@ -181,6 +180,9 @@ def _visao(conn) -> str:
         itens = "".join(
             f"<li><b>{p}</b>: faltam {f:.0f} bookings ≈ <b>{f / conv:,.0f} leads</b> no ritmo de conversão atual ({_fmt(conv, 'pct')})</li>".replace(",", ".")
             for p, f in gap_rows)
+        itens += ("<li style='margin-top:6px'><b>Alavancas Q3</b>: Indicações convertem sem custo de mídia "
+                  "(acompanhe na aba Origem de Leads) e o LinkedIn é o canal natural do público B3-B5 — "
+                  "padronizar <code>utm_source=linkedin</code> antes de ativar para o rastreio nascer certo.</li>")
         gap = (f"<section><h2>Gap para a meta (B3-B5)</h2><p class=secsub>quantos leads ainda são "
                f"necessários no ritmo de conversão do mês</p><div class=card><ul class=note style='margin:0;padding-left:18px'>{itens}</ul></div></section>")
 
@@ -447,34 +449,6 @@ def _criativos(conn, request: Request) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Aba 7 — Canais Q3
-# ---------------------------------------------------------------------------
-def _q3(conn) -> str:
-    with conn.cursor() as cur:
-        cur.execute("""SELECT date_trunc('month', add_time)::date AS mes, count(*),
-                              count(*) FILTER (WHERE status='won'),
-                              COALESCE(sum(valor) FILTER (WHERE status='won'),0)
-                         FROM mkt_deals_attribution WHERE origem ILIKE '%%indica%%'
-                        GROUP BY 1 ORDER BY 1 DESC LIMIT 12""")
-        ind = cur.fetchall()
-        cur.execute("SELECT count(*) FROM mkt_deals_attribution WHERE origem ILIKE '%%linkedin%%'")
-        n_li = cur.fetchone()[0]
-    irows = "".join(
-        f"<tr><td>{m.strftime('%m-%Y')}</td><td class=num>{n}</td><td class=num>{b}</td>"
-        f"<td class=num>{_fmt(b / n if n else None, 'pct')}</td><td class=num>{_fmt(float(r), 'brl')}</td></tr>"
-        for m, n, b, r in ind)
-    li_aviso = ("" if n_li else
-                "<div class=warn>Nenhum deal com origem LinkedIn ainda. <b>Antes dos lançamentos Q3</b>, padronizar com o "
-                "time o valor <code>utm_source=linkedin</code> nos formulários/links — o canal já está estruturado no "
-                "ranking e nas análises e passa a preencher sozinho.</div>")
-    return (f"<h1>Canais Q3 — LinkedIn e Indicações</h1><div class=sub>estruturados desde já; preenchem conforme os lançamentos acontecem</div>"
-            f"<section><h2>LinkedIn</h2><p class=secsub>rastreio via origem/UTM no Pipedrive (sem Ads API nesta fase) · deals até agora: {n_li}</p>"
-            f"<div class=card>{li_aviso or '<p class=note>Canal ativo no ranking — acompanhe pela aba Ranking de Canais.</p>'}</div></section>"
-            f"<section><h2>Programa de Indicações</h2><p class=secsub>volume, conversão e receita por mês (origem contém “indica”)</p>"
-            f"<div class=card><table><tr><th>Mês</th><th class=num>Leads</th><th class=num>Bookings</th><th class=num>Conversão</th><th class=num>Receita</th></tr>{irows or '<tr><td colspan=5 class=note>sem deals ainda</td></tr>'}</table></div></section>")
-
-
-# ---------------------------------------------------------------------------
 # Gráficos SVG (helpers)
 # ---------------------------------------------------------------------------
 def _svg_line(series, labels, fmt_y=None):
@@ -502,6 +476,12 @@ def _svg_line(series, labels, fmt_y=None):
         pts = " ".join(f"{L + (W - 8 - L) * i / n:.0f},{H - B - (H - B - 16) * (v / vmax):.0f}"
                        for i, v in enumerate(vals))
         out.append(f"<polyline points='{pts}' fill='none' stroke='{cor}' stroke-width='2'/>")
+        for i, v in enumerate(vals):  # tooltip nativo: <circle><title>
+            x = L + (W - 8 - L) * i / n
+            y = H - B - (H - B - 16) * (v / vmax)
+            out.append(f"<circle cx='{x:.0f}' cy='{y:.0f}' r='7' fill='transparent' stroke='none'>"
+                       f"<title>{escape(labels[i])}: {fmt_y(v)}</title></circle>"
+                       f"<circle cx='{x:.0f}' cy='{y:.0f}' r='2.5' fill='{cor}'/>")
         out.append(f"<text x='{L + 4 + si * 130}' y='14' fill='{cor}' font-size='11' font-weight='600'>{escape(nome)}</text>")
     out.append("</svg>")
     return "".join(out)
@@ -516,12 +496,15 @@ def _svg_line(series, labels, fmt_y=None):
 # Pipeline 2 (prospecção ativa) mapeia para as ordens equivalentes.
 _STAGE_ORDER = {1: 0, 2: 1, 3: 2, 4: 3, 6: 4, 5: 4, 7: 5,
                 14: 0, 13: 1, 12: 2, 15: 3}
-_FUNIL_ETAPAS = [("Leads", 0), ("Primeiro contato", 1), ("Conectado", 2),
-                 ("Qualificação", 3), ("Reunião agendada", 4), ("Negociação", 5)]
+# Nomenclatura do TIME (SAL/SQL) mapeada sobre as etapas do Pipedrive:
+# SAL = Primeiro contato (lead aceito/tocado por vendas); SQL = Qualificação.
+# Ajustar aqui se o time usar outro mapeamento.
+_FUNIL_ETAPAS = [("Leads", 0), ("SAL", 1), ("Conectado", 2),
+                 ("SQL", 3), ("Reunião agendada", 4), ("Negociação", 5)]
 _FUNIL_SUGESTOES = {
-    "Primeiro contato": "Gargalo na VELOCIDADE de resposta: lead sem contato esfria em horas — revisar o SLA do primeiro toque (referência: <15 min em horário comercial) e a automação de disparo.",
+    "SAL": "Gargalo na VELOCIDADE de resposta: lead sem contato esfria em horas — revisar o SLA do primeiro toque (referência: <15 min em horário comercial) e a automação de disparo.",
     "Conectado": "Muitos contatos sem conexão: variar canal (WhatsApp + ligação + e-mail), horários alternados e cadência de 5-7 tentativas antes de descartar.",
-    "Qualificação": "Perda alta na qualificação: filtrar curiosos ainda na LP/formulário e revisar o roteiro — campanhas com taxa baixa aqui pedem ajuste de público, não de verba.",
+    "SQL": "Perda alta na qualificação: filtrar curiosos ainda na LP/formulário e revisar o roteiro — campanhas com taxa baixa aqui pedem ajuste de público, não de verba.",
     "Reunião agendada": "Qualificado que não agenda: link de agenda self-service, menos fricção de horários e confirmação por WhatsApp na véspera (no-show é o vilão típico).",
     "Negociação": "Reunião que não vira booking: revisar proposta/ancoragem e follow-up estruturado — a maioria fecha entre o 2º e o 4º contato pós-reunião.",
 }
@@ -552,10 +535,13 @@ def _funil(conn, request: Request) -> str:
     passou, booked, total = coorte(ini, fim)
     passou_p, booked_p, total_p = coorte(ini_p, fim_p)
 
+    mes_ref = fim.replace(day=1)
     with conn.cursor() as cur:
         cur.execute("SELECT COALESCE(sum(meta_qtde),0) FROM mkt_goals WHERE mes=%s AND plano<>'total'",
-                    (fim.replace(day=1),))
+                    (mes_ref,))
         meta_book = float(cur.fetchone()[0] or 0)
+        cur.execute("SELECT etapa, taxa_meta FROM mkt_funnel_goals WHERE mes=%s", (mes_ref,))
+        metas_taxa = {e: float(t) for e, t in cur.fetchall()}
     conv_atual = booked / total if total else 0
     conv_nec = (meta_book / total) if total and meta_book else None
 
@@ -571,23 +557,53 @@ def _funil(conn, request: Request) -> str:
             cls = "pos" if d >= 0 else "neg"
             sinal = "+" if d >= 0 else ""
             delta = f"<span class='{cls}' style='font-size:var(--fs-2xs)'> ({sinal}{d:.1f}pp)</span>"
-        if taxa is not None and taxa < pior_taxa and passou[i - 1] >= 20:
+        meta_e = metas_taxa.get(nome)
+        meta_td = "—"
+        if meta_e is not None and taxa is not None:
+            ok_e = taxa >= meta_e
+            cls_e = "pos" if ok_e else "neg"
+            meta_td = f"<span class='{cls_e}'>{_fmt(meta_e, 'pct')}</span>"
+        elif meta_e is not None:
+            meta_td = _fmt(meta_e, 'pct')
+        if taxa is not None and meta_e is not None and taxa < meta_e and passou[i - 1] >= 20 and (taxa / meta_e) < pior_taxa:
+            pior, pior_taxa = nome, taxa  # prioriza a etapa mais LONGE da própria meta
+        elif taxa is not None and not metas_taxa and taxa < pior_taxa and passou[i - 1] >= 20:
             pior, pior_taxa = nome, taxa
         pct_total = n / total if total else 0
-        barras += ("<div style='display:grid;grid-template-columns:150px 1fr 120px;gap:10px;align-items:center;padding:4px 0'>"
+        barras += (f"<div title='{nome}: {n} deals ({_fmt(pct_total, 'pct')} do total)' style='display:grid;grid-template-columns:150px 1fr 120px;gap:10px;align-items:center;padding:4px 0'>"
                    f"<div style='font-size:var(--fs-sm)'>{nome}</div>"
                    f"<div class=bar style='height:22px;border-radius:6px'><div style='width:{pct_total * 100:.1f}%'></div></div>"
                    f"<div style='font-size:var(--fs-sm);text-align:right'><b>{n}</b> ({_fmt(pct_total, 'pct')})</div></div>")
         linhas += (f"<tr><td>{nome}</td><td class=num>{n}</td>"
-                   f"<td class=num>{_fmt(taxa, 'pct') if taxa is not None else '—'}{delta}</td></tr>")
+                   f"<td class=num>{_fmt(taxa, 'pct') if taxa is not None else '—'}{delta}</td>"
+                   f"<td class=num>{meta_td}</td></tr>")
     pct_book = booked / total if total else 0
     barras += ("<div style='display:grid;grid-template-columns:150px 1fr 120px;gap:10px;align-items:center;padding:4px 0'>"
                "<div style='font-size:var(--fs-sm)'><b>Booking</b></div>"
                f"<div class=bar style='height:22px;border-radius:6px'><div style='width:{pct_book * 100:.1f}%;background:var(--status-baixo)'></div></div>"
                f"<div style='font-size:var(--fs-sm);text-align:right'><b>{booked}</b> ({_fmt(pct_book, 'pct')})</div></div>")
     taxa_final = booked / passou[5] if passou[5] else None
+    meta_bk = metas_taxa.get("Booking")
+    meta_bk_td = "—"
+    if meta_bk is not None and taxa_final is not None:
+        cls_bk = "pos" if taxa_final >= meta_bk else "neg"
+        meta_bk_td = f"<span class='{cls_bk}'>{_fmt(meta_bk, 'pct')}</span>"
     linhas += (f"<tr><td><b>Booking (won)</b></td><td class=num><b>{booked}</b></td>"
-               f"<td class=num><b>{_fmt(taxa_final, 'pct')}</b></td></tr>")
+               f"<td class=num><b>{_fmt(taxa_final, 'pct')}</b></td><td class=num>{meta_bk_td}</td></tr>")
+
+    # formulário de metas de taxa do mês (edição inline pelo gestor)
+    etapas_meta = [nome for nome, _ in _FUNIL_ETAPAS[1:]] + ["Booking"]
+    campos = "".join(
+        f"<div><label>{e}</label><input type=number step=0.1 min=0 max=100 name='meta_{i}' "
+        f"value='{metas_taxa.get(e, '') if metas_taxa.get(e) is None else round(metas_taxa[e] * 100, 1)}' "
+        f"placeholder='%' style='width:86px'></div>"
+        for i, e in enumerate(etapas_meta))
+    form_metas = (f"<section><h2>Metas de taxa do mês ({mes_ref.strftime('%m-%Y')})</h2>"
+                  f"<p class=secsub>conversão-alvo de cada etapa, em % — coluna “Meta” da tabela compara com o realizado</p>"
+                  f"<form method=post action='/marketing/funil-metas'><div class=filters>"
+                  f"<input type=hidden name=mes value='{mes_ref.isoformat()}'>"
+                  f"<input type=hidden name=ini value='{ini.isoformat()}'><input type=hidden name=fim value='{fim.isoformat()}'>"
+                  + campos + "<button type=submit>Salvar metas</button></div></form></section>")
 
     meta_html = ""
     if conv_nec is not None:
@@ -619,8 +635,8 @@ def _funil(conn, request: Request) -> str:
             + meta_html +
             f"<section><h2>Funil</h2><div class=card>{barras}</div></section>"
             f"<section><h2>Taxas por etapa</h2><p class=secsub>vs período anterior equivalente ({ini_p.strftime('%d-%m')} a {fim_p.strftime('%d-%m')})</p>"
-            f"<div class=card><table><tr><th>Etapa</th><th class=num>Deals</th><th class=num>Conversão da etapa</th></tr>{linhas}</table></div></section>"
-            + sugestoes)
+            f"<div class=card><table><tr><th>Etapa</th><th class=num>Deals</th><th class=num>Conversão da etapa</th><th class=num>Meta</th></tr>{linhas}</table></div></section>"
+            + form_metas + sugestoes)
 
 
 # ---------------------------------------------------------------------------
@@ -695,6 +711,40 @@ def _midia(conn, request: Request) -> str:
 
 
 # ---------------------------------------------------------------------------
+@router.post("/marketing/funil-metas")
+async def salvar_funil_metas(request: Request):
+    """Salva as metas de taxa do funil do mês (form da aba Funil)."""
+    A = _deps()
+    s, redir = A._require_area(request, "marketing")
+    if redir:
+        return redir
+    form = await request.form()
+    mes = str(form.get("mes") or "")
+    etapas_meta = [nome for nome, _ in _FUNIL_ETAPAS[1:]] + ["Booking"]
+    with A._conn() as c:
+        from .schema import ensure_mkt_tables
+        ensure_mkt_tables(c)
+        with c.cursor() as cur:
+            for i, e in enumerate(etapas_meta):
+                v = str(form.get(f"meta_{i}") or "").replace(",", ".").strip()
+                if not v:
+                    cur.execute("DELETE FROM mkt_funnel_goals WHERE mes=%s AND etapa=%s", (mes, e))
+                    continue
+                try:
+                    taxa = max(0.0, min(100.0, float(v))) / 100.0
+                except ValueError:
+                    continue
+                cur.execute("""INSERT INTO mkt_funnel_goals (mes, etapa, taxa_meta, updated_at)
+                               VALUES (%s,%s,%s,now())
+                               ON CONFLICT (mes, etapa) DO UPDATE SET taxa_meta=EXCLUDED.taxa_meta, updated_at=now()""",
+                            (mes, e, taxa))
+            cur.execute("INSERT INTO audit_log (actor, action, scope) VALUES (%s,'funil_metas',%s)",
+                        (s[0], f"marketing:{mes}"))
+    ini, fim = str(form.get("ini") or ""), str(form.get("fim") or "")
+    return RedirectResponse(f"/marketing?view=funil&ini={ini}&fim={fim}", status_code=303)
+
+
+# ---------------------------------------------------------------------------
 @router.get("/marketing", response_class=HTMLResponse)
 def marketing(request: Request, view: str = Query("visao")):
     A = _deps()
@@ -712,6 +762,6 @@ def marketing(request: Request, view: str = Query("visao")):
               "canais": lambda: _canais(c, request),
               "origens": lambda: _origens(c, request), "midia": lambda: _midia(c, request),
               "lag": lambda: _lag(c), "planejador": lambda: _planejador(c, request),
-              "criativos": lambda: _criativos(c, request), "q3": lambda: _q3(c)}[view]
+              "criativos": lambda: _criativos(c, request)}[view]
         content = fn() + "<p class=foot>Cache local das fontes (Meta, Google, Pipedrive, planilha de metas, ad-insightify) — coleta diária 06h. A decisão é sempre do gestor.</p>"
     return HTMLResponse(_shell(A, role, view, content))
