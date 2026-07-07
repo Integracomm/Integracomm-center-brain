@@ -386,10 +386,11 @@ def _open_alerts(conn: Any) -> list[dict]:
         cur.execute("ALTER TABLE alerts ADD COLUMN IF NOT EXISTS notes TEXT")  # idempotente
         cur.execute(
             """SELECT al.id, a.name, al.severity, al.risk_band, al.stage, al.created_at,
-                      al.status, al.notes, cu.text AS case_note, cu.created_at AS case_note_at
+                      al.status, al.notes, cu.text AS case_note, cu.created_at AS case_note_at,
+                      cu.author AS case_note_by
                  FROM alerts al JOIN accounts a ON a.id = al.account_id
                  LEFT JOIN LATERAL (
-                      SELECT text, created_at FROM case_updates c
+                      SELECT text, created_at, author FROM case_updates c
                        WHERE c.account_id = al.account_id
                        ORDER BY created_at DESC LIMIT 1) cu ON TRUE
                 WHERE al.status = 'aberto' ORDER BY
@@ -1135,7 +1136,8 @@ def _render(role: str, scores: list[dict], alerts: list[dict],
         nota = ""
         if a.get("case_note"):
             quando = _fmt_date_br(a.get("case_note_at"))
-            nota = f"<div class='mot'>{quando} · {escape(str(a['case_note'])[:150])}</div>"
+            quem = escape(str(a.get("case_note_by") or "—"))
+            nota = f"<div class='mot'>{quando} · {escape(str(a['case_note'])[:150])} · {quem}</div>"
         elif a.get("notes"):
             ultima = str(a["notes"]).strip().splitlines()[-1]
             nota = f"<div class='mot'>{escape(ultima[:120])}</div>"
@@ -1738,6 +1740,53 @@ def _squads_html(analysis: list[dict], sem_squad: int = 0) -> str:
     return head + nota + cards
 
 
+def _dist_html(rep: dict) -> str:
+    """Quadro "Distribuições": três grupos lado a lado (Faixa / Estágio /
+    Trajetória), cada um com título colorido e linha divisória — no lugar dos
+    antigos separadores "— Faixa —" que se misturavam com as linhas de dado.
+    Barra proporcional + ponto na cor semântica facilitam a leitura."""
+    _EST_VAR = {"saudavel": "--status-baixo", "desengajamento_inicial": "--status-medio",
+                "insatisfacao_latente": "--status-medio", "insatisfacao_ativa": "--status-alto",
+                "intencao_de_saida": "--status-critico", "nao_avaliavel": "--status-semdados"}
+    _TRAJ_VAR = {"subindo": "--status-baixo", "estavel": "--status-semdados", "caindo": "--status-critico"}
+    _FAIXA_LBL = {"medio": "médio", "critico": "crítico", "sem_dados": "sem dados"}
+    _TRAJ_LBL = {"estavel": "estável"}
+    grupos = [
+        ("Faixa de risco", rep["faixa"], _BAND_VAR, _FAIXA_LBL),
+        ("Estágio", rep["estagio"], _EST_VAR, _STAGE_LABEL),
+        ("Trajetória", rep["trajetoria"], _TRAJ_VAR, _TRAJ_LBL),
+    ]
+    cols = ""
+    for titulo, dist, cores, lbls in grupos:
+        total = sum(dist.values()) or 1
+        rows = ""
+        for k, v in sorted(dist.items(), key=lambda x: -x[1]):
+            cor = f"var({cores.get(k, '--status-semdados')})"
+            rows += (f"<div class=dist-r><span class=dist-dot style='background:{cor}'></span>"
+                     f"<span class=dist-l>{escape(lbls.get(k, str(k)))}</span>"
+                     f"<span class=dist-bar><span style='width:{v / total * 100:.0f}%;background:{cor}'></span></span>"
+                     f"<b class=dist-n>{v}</b></div>")
+        cols += f"<div class=dist-g><div class=dist-h>{titulo}</div>{rows}</div>"
+    return (f"<div class=dist-wrap>{cols}</div>"
+            "<style>"
+            ".dist-wrap{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:18px 0}"
+            ".dist-g{padding:0 24px;border-left:1px solid var(--border)}"
+            ".dist-g:first-child{border-left:none;padding-left:0}"
+            ".dist-g:last-child{padding-right:0}"
+            ".dist-h{font-size:var(--fs-2xs);font-weight:var(--fw-semibold);text-transform:uppercase;"
+            "letter-spacing:var(--tracking-label);color:var(--brand);"
+            "border-bottom:1px solid var(--border-strong);padding-bottom:7px;margin-bottom:4px}"
+            ".dist-r{display:grid;grid-template-columns:10px 1fr 72px 36px;gap:9px;align-items:center;"
+            "padding:6px 0;border-bottom:1px solid var(--border);font-size:var(--fs-sm)}"
+            ".dist-r:last-child{border-bottom:none}"
+            ".dist-dot{width:8px;height:8px;border-radius:50%}"
+            ".dist-l{color:var(--text-2)}"
+            ".dist-bar{height:5px;background:var(--surface-3);border-radius:3px;overflow:hidden}"
+            ".dist-bar>span{display:block;height:100%;border-radius:3px}"
+            ".dist-n{text-align:right;font-variant-numeric:tabular-nums}"
+            "</style>")
+
+
 def _relatorios_content(rep: dict, scores: list[dict]) -> str:
     sev = rep["alertas"]
 
@@ -1762,9 +1811,7 @@ def _relatorios_content(rep: dict, scores: list[dict]) -> str:
     piores = dl([(f"{i}. {p['nome'][:44]}", f"{p['score']:.1f} · {_STAGE_LABEL.get(p['estagio'], p['estagio'])}"
                   + (f" · {_fmt_brl(p['mrr'])}" if p.get("mrr") else ""))
                  for i, p in enumerate(rep["piores"], 1)])
-    dists = dl([("— Faixa —", "")] + sorted(rep["faixa"].items(), key=lambda x: -x[1])
-               + [("— Estágio —", "")] + sorted(rep["estagio"].items(), key=lambda x: -x[1])
-               + [("— Trajetória —", "")] + sorted(rep["trajetoria"].items(), key=lambda x: -x[1]))
+    dists = _dist_html(rep)
     _squad_an, _sem_squad = _squad_analysis(scores)
     squads_html = _squads_html(_squad_an, _sem_squad)
 

@@ -92,10 +92,12 @@ class WhatsAppReader:
     def _url(self, endpoint: str) -> str:
         return f"{self._base}/{endpoint.lstrip('/')}"
 
-    def _get_with_retry(self, endpoint: str, params: dict[str, Any], max_attempts: int = 4) -> httpx.Response:
+    def _get_with_retry(self, endpoint: str, params: dict[str, Any], max_attempts: int = 5) -> httpx.Response:
         """GET com retry em erros transitórios: 429 / 5xx (incl. 546 do gateway) E
         timeouts/erros de rede (ReadTimeout etc.) — um timeout isolado não pode
-        derrubar a coleta de uma conta (menos ainda a rodada inteira)."""
+        derrubar a coleta de uma conta (menos ainda a rodada inteira).
+        Backoff 1s→3s→7s→15s: gateway SATURADO (visto 07/07: 500 em série com
+        rodada + diagnóstico simultâneos) precisa de folga real, não 3 tiros em 7s."""
         import time
 
         delay = 1.0
@@ -106,14 +108,14 @@ class WhatsAppReader:
             except httpx.TransportError:  # timeout de leitura/conexão = transitório
                 if attempt < max_attempts:
                     time.sleep(delay)
-                    delay *= 2
+                    delay = delay * 2 + 1
                     continue
                 raise
             if last.status_code < 400:
                 return last
             if (last.status_code == 429 or last.status_code >= 500) and attempt < max_attempts:
                 time.sleep(delay)
-                delay *= 2
+                delay = delay * 2 + 1
                 continue
             break
         assert last is not None
@@ -159,6 +161,11 @@ class WhatsAppReader:
             cursor_id = body.get("next_cursor_id")
             if not items or cursor is None:
                 return
+            # espaçamento entre páginas: alivia o gateway quando leitores
+            # concorrem (rodada + sentinela + diagnóstico) — custo ~1-2min
+            # numa rodada completa, contra a saturação vista em 07/07
+            import time
+            time.sleep(0.15)
 
     # -- alto nível -----------------------------------------------------
     def iter_groups(self) -> Iterator[WhatsAppGroup]:
