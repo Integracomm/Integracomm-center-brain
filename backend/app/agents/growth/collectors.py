@@ -127,11 +127,14 @@ def build_account_signals(
     cancel_days: set[dt.date] = set()            # dias c/ fala do cliente (janela toda)
     team_cancel: list[tuple[dt.date, str]] = []  # equipe tocando no tema (data, quem)
     start_dt = dt.datetime.combine(start_default, dt.time.min, tzinfo=dt.timezone.utc)
-    # Paginação por group_id habilitada no gateway (índice + keyset). try/except
-    # fica como defensivo. Silêncio/tom vêm das analyses; aqui: frequência,
-    # comprimento e detecção textual de cancelamento.
+    # Paginação por group_id habilitada no gateway (índice + keyset).
+    # Falha NO MEIO da leitura é tolerada (dados parciais valem); falha SEM
+    # nenhuma mensagem lida PROPAGA — senão gateway fora do ar vira "grupo
+    # mudo" e a conta é pontuada sobre o vazio (visto 07/07: 500 em série).
+    n_lidas = 0
     try:
         for m in reader.iter_messages(group_id=group_internal_id, window_start=start_dt, order="desc"):
+            n_lidas += 1
             if not m.received_at:
                 continue
             d = m.received_at.date()
@@ -149,8 +152,9 @@ def build_account_signals(
                         cancel_phrase = True
             elif events_out is not None and txt and _CANCEL_RE.search(_norm_txt(txt)):
                 team_cancel.append((d, (m.sender_name or "equipe").strip()))
-    except httpx.HTTPStatusError:
-        pass  # defensivo
+    except httpx.HTTPError:
+        if n_lidas == 0:
+            raise  # nada lido = sem base; o chamador pula a conta (não é "silêncio")
     if events_out is not None:
         events_out["episodios"] = [
             {"inicio": ini, "fim": fim,
