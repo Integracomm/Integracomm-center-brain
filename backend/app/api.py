@@ -553,7 +553,7 @@ def dashboard(request: Request, view: str = Query("contas")):
     if redir:
         return redir
     user, role = s
-    if view not in ("contas", "alertas", "playbooks", "relatorios"):
+    if view not in ("contas", "alertas", "playbooks", "relatorios", "cancelamentos"):
         view = "contas"
     with _conn() as c:
         _audit_view(c, user, scope=f"growth/{view}")
@@ -561,8 +561,9 @@ def dashboard(request: Request, view: str = Query("contas")):
         alerts = _open_alerts(c)
         practices = _top_practices(c)
         interventions = _recent_interventions(c) if view == "playbooks" else None
+        cancel = _cancel_rows(c) if view == "cancelamentos" else None
     return HTMLResponse(_render(role, scores, alerts, practices, view=view,
-                                interventions=interventions))
+                                interventions=interventions, cancel=cancel))
 
 
 def _recent_interventions(conn: Any, limit: int = 20) -> list[dict]:
@@ -1082,7 +1083,7 @@ _STAGE_LABEL = {"saudavel": "saudável", "desengajamento_inicial": "desengajamen
 
 def _render(role: str, scores: list[dict], alerts: list[dict],
             practices: dict | None = None, view: str = "contas",
-            interventions: list | None = None) -> str:
+            interventions: list | None = None, cancel: list | None = None) -> str:
     evaluable = [s for s in scores if s["evaluable"]]
     non_eval = [s for s in scores if not s["evaluable"]]
     evaluable.sort(key=lambda s: (float(s["score"]), -_mrr_val(s)))
@@ -1255,6 +1256,7 @@ __SCRIPT__
     # ---- navegação (view ativa; sessão define o papel — sem role na URL) ----
     nav = "<a class='nav-item' href='/'>← Início (central)</a>"
     for v, label in (("contas", "Contas"), ("alertas", "Alertas"),
+                     ("cancelamentos", "Cancelamentos"),
                      ("playbooks", "Playbooks"), ("relatorios", "Relatórios")):
         cls = "nav-item active" if v == view else "nav-item"
         nav += f"<a class='{cls}' href='/growth?view={v}'>{label}</a>"
@@ -1287,6 +1289,8 @@ __SCRIPT__
         script = _ALERTS_JS
     elif view == "playbooks":
         content = _playbooks_content(practices or {}, interventions or []) + foot
+    elif view == "cancelamentos":
+        content = _cancel_content(cancel or []) + foot
     elif view == "relatorios":
         rep = _report_from(scores, alerts)
         content = _relatorios_content(rep, scores) + foot
@@ -1785,6 +1789,144 @@ def _dist_html(rep: dict) -> str:
             ".dist-bar>span{display:block;height:100%;border-radius:3px}"
             ".dist-n{text-align:right;font-variant-numeric:tabular-nums}"
             "</style>")
+
+
+def _cancel_rows(conn: Any) -> list[dict]:
+    """Cache local das planilhas de cancelamento (grw_cancelamentos)."""
+    from .sources.cancel_sheets import _DDL
+    with conn.cursor() as cur:
+        cur.execute(_DDL)  # idempotente — 1ª visita antes do 1º sync
+        cur.execute("""SELECT tipo, mes, cliente, data_inicio, data_saida, meses,
+                              valor, plano, equipe, gc, motivo, situacao
+                         FROM grw_cancelamentos ORDER BY mes, cliente""")
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
+def _cancel_content(rows: list[dict]) -> str:
+    """Aba Cancelamentos — análises sobre as planilhas do time (fonte oficial
+    de churn realizado; ClickUp de cancelados é mal preenchido)."""
+    if not rows:
+        return ("<div class=page-head><h1>Cancelamentos</h1></div>"
+                "<section><div style='" + _CARD + "'>Sem dados carregados — rode "
+                "<code>python -m scripts.sync_cancelamentos</code> (usa as planilhas "
+                "do time; cópia local em data/ quando não houver acesso público).</div></section>")
+    import statistics as _st
+    canc = [r for r in rows if r["tipo"] == "cancelamento"]
+    term = [r for r in rows if r["tipo"] == "termino"]
+    trat = [r for r in rows if r["tipo"] == "tratativa"]
+    hoje = dt.date.today()
+    mes_atual = hoje.replace(day=1)
+    meses = sorted({r["mes"] for r in canc})
+
+    def _f(v):
+        return float(v) if v is not None else None
+
+    def card(inner):
+        return f"<div style='{_CARD}'>{inner}</div>"
+
+    def tbl(header, linhas):
+        return f"<table style='width:100%;border-collapse:collapse'>{header}{linhas}</table>"
+
+    # ---- KPIs do mês corrente
+    c_mes = [r for r in canc if r["mes"] == mes_atual]
+    mrr_mes = sum(_f(r["valor"]) or 0 for r in c_mes)
+    trat_mes = [r for r in trat if r["mes"] >= mes_atual]
+    tempos = [_f(r["meses"]) for r in canc if r["meses"] is not None]
+    kpis = (
+        "<div class=kpis>"
+        f"<div class=kpi><div class=n style='color:var(--status-critico)'>{len(c_mes)}</div>"
+        f"<div class=l>saídas em {mes_atual.strftime('%m-%Y')}</div><div class=s>formalizadas nas planilhas</div></div>"
+        f"<div class=kpi><div class=n>{_fmt_brl(mrr_mes)}</div><div class=l>MRR perdido no mês</div>"
+        f"<div class=s>soma das mensalidades</div></div>"
+        f"<div class=kpi><div class=n style='color:var(--status-medio)'>{len(trat_mes)}</div>"
+        f"<div class=l>em tratativa</div><div class=s>pipeline de retenção — agir antes de formalizar</div></div>"
+        f"<div class=kpi><div class=n>{_st.median(tempos):.0f} m</div><div class=l>tempo de casa mediano</div>"
+        f"<div class=s>na saída · {len(tempos)} c/ dado</div></div>"
+        "</div>")
+
+    # ---- por mês
+    th = ("<tr><th style='text-align:left;padding:7px;border-bottom:1px solid var(--border-strong);color:var(--text-muted);font-size:var(--fs-2xs);text-transform:uppercase'>Mês</th>"
+          + "".join(f"<th style='text-align:right;padding:7px;border-bottom:1px solid var(--border-strong);color:var(--text-muted);font-size:var(--fs-2xs);text-transform:uppercase'>{h}</th>"
+                    for h in ("Saídas", "MRR perdido", "Ticket médio", "Tempo casa (med.)", "Términos START")) + "</tr>")
+    max_n = max((sum(1 for r in canc if r["mes"] == m) for m in meses), default=1)
+    linhas_m = ""
+    for m in meses:
+        cs = [r for r in canc if r["mes"] == m]
+        mrr = sum(_f(r["valor"]) or 0 for r in cs)
+        vals = [_f(r["valor"]) for r in cs if r["valor"] is not None]
+        tps = [_f(r["meses"]) for r in cs if r["meses"] is not None]
+        nt = sum(1 for r in term if r["mes"] == m)
+        barra = (f"<span style='display:inline-block;vertical-align:middle;margin-left:8px;height:6px;"
+                 f"width:{len(cs) / max_n * 90:.0f}px;background:var(--status-critico);border-radius:3px'></span>")
+        td = "text-align:right;padding:7px;border-bottom:1px solid var(--border);font-variant-numeric:tabular-nums"
+        tempo_td = f"{_st.median(tps):.0f} m" if tps else "—"
+        linhas_m += (f"<tr><td style='padding:7px;border-bottom:1px solid var(--border)'><b>{m.strftime('%m-%Y')}</b></td>"
+                     f"<td style='{td}'>{len(cs)}{barra}</td>"
+                     f"<td style='{td}'>{_fmt_brl(mrr)}</td>"
+                     f"<td style='{td}'>{_fmt_brl(_st.mean(vals)) if vals else '—'}</td>"
+                     f"<td style='{td}'>{tempo_td}</td>"
+                     f"<td style='{td}'>{nt or '—'}</td></tr>")
+
+    # ---- tratativas em aberto (fila de retenção)
+    linhas_t = ""
+    for r in sorted(trat_mes, key=lambda x: (x["mes"], x["cliente"])):
+        td = "padding:7px;border-bottom:1px solid var(--border);font-size:var(--fs-sm)"
+        linhas_t += (f"<tr><td style='{td}'><b>{escape((r['cliente'] or '')[:52])}</b></td>"
+                     f"<td style='{td}'>{escape(r['gc'] or '—')}</td>"
+                     f"<td style='{td}'>{escape(r['plano'] or '—')}</td>"
+                     f"<td style='{td};color:var(--text-muted)'>{escape((r['situacao'] or 'sem situação registrada')[:90])}</td></tr>")
+    th_t = "".join(f"<th style='text-align:left;padding:7px;border-bottom:1px solid var(--border-strong);color:var(--text-muted);font-size:var(--fs-2xs);text-transform:uppercase'>{h}</th>"
+                   for h in ("Cliente", "GC/Squad", "Plano", "Situação"))
+
+    # ---- por plano e por equipe (todo o período)
+    def grupo(campo, titulo):
+        agg: dict[str, list] = {}
+        for r in canc:
+            k = (r[campo] or "—").strip().upper()[:24]
+            agg.setdefault(k, []).append(r)
+        linhas = ""
+        for k, rs in sorted(agg.items(), key=lambda x: -len(x[1]))[:12]:
+            mrr = sum(_f(r['valor']) or 0 for r in rs)
+            tps = [_f(r['meses']) for r in rs if r['meses'] is not None]
+            td = "text-align:right;padding:6px 7px;border-bottom:1px solid var(--border);font-variant-numeric:tabular-nums"
+            linhas += (f"<tr><td style='padding:6px 7px;border-bottom:1px solid var(--border)'>{escape(k)}</td>"
+                       f"<td style='{td}'>{len(rs)}</td><td style='{td}'>{_fmt_brl(mrr)}</td>"
+                       f"<td style='{td}'>{(_st.median(tps) if tps else 0):.0f} m</td></tr>")
+        th_g = ("<tr><th style='text-align:left;padding:6px 7px;border-bottom:1px solid var(--border-strong);color:var(--text-muted);font-size:var(--fs-2xs);text-transform:uppercase'>" + titulo + "</th>"
+                + "".join(f"<th style='text-align:right;padding:6px 7px;border-bottom:1px solid var(--border-strong);color:var(--text-muted);font-size:var(--fs-2xs);text-transform:uppercase'>{h}</th>"
+                          for h in ("Saídas", "MRR", "Tempo (med.)")) + "</tr>")
+        return tbl(th_g, linhas)
+
+    # ---- motivos recentes
+    com_motivo = [r for r in canc if r["motivo"]]
+    linhas_mo = ""
+    for r in sorted(com_motivo, key=lambda x: x["mes"], reverse=True)[:15]:
+        td = "padding:7px;border-bottom:1px solid var(--border);font-size:var(--fs-sm)"
+        linhas_mo += (f"<tr><td style='{td};white-space:nowrap'>{r['mes'].strftime('%m-%Y')}</td>"
+                      f"<td style='{td}'><b>{escape((r['cliente'] or '')[:40])}</b></td>"
+                      f"<td style='{td}'>{escape(r['plano'] or '—')}</td>"
+                      f"<td style='{td};color:var(--text-2)'>{escape((r['motivo'] or '')[:160])}</td></tr>")
+
+    return (
+        "<div class=page-head><h1>Cancelamentos</h1>"
+        "<span class=role-chip>fonte: planilhas do time (Saídas de Clientes + Bonificação Squads)</span></div>"
+        + kpis +
+        f"<section><div class=sec-head><h2>Fila de retenção — clientes em tratativa</h2>"
+        f"<span class=sub>saída ainda NÃO formalizada: é aqui que a retenção acontece</span></div>"
+        + card(tbl(f"<tr>{th_t}</tr>", linhas_t) if linhas_t else "<span class=note>nenhuma tratativa aberta registrada</span>") +
+        "</section>"
+        f"<section><div class=sec-head><h2>Saídas por mês</h2><span class=sub>cancelamentos formalizados · términos de contrato START contados à parte</span></div>"
+        + card(tbl(th, linhas_m)) + "</section>"
+        "<section><div class=sec-head><h2>Por plano e por equipe</h2><span class=sub>todo o período das planilhas (dez-2025 em diante)</span></div>"
+        "<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px'>"
+        + card(grupo("plano", "Plano")) + card(grupo("equipe", "Equipe/Squad")) + "</div></section>"
+        f"<section><div class=sec-head><h2>Motivos informados</h2><span class=sub>{len(com_motivo)} saídas com motivo registrado — 15 mais recentes</span></div>"
+        + card(tbl("<tr>" + "".join(f"<th style='text-align:left;padding:7px;border-bottom:1px solid var(--border-strong);color:var(--text-muted);font-size:var(--fs-2xs);text-transform:uppercase'>{h}</th>" for h in ("Mês", "Cliente", "Plano", "Motivo")) + "</tr>", linhas_mo)) +
+        "</section>"
+        "<p class=note style='margin-top:14px'>Planilhas privadas: a releitura automática só funciona se forem compartilhadas "
+        "como “qualquer pessoa com o link – leitor”; sem isso, o sync usa a cópia em <code>data/</code> "
+        "(atualizada sob demanda). Términos START têm semântica própria (fim de contrato, não churn de assinatura).</p>")
 
 
 def _relatorios_content(rep: dict, scores: list[dict]) -> str:

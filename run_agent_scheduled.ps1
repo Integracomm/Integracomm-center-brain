@@ -69,6 +69,9 @@ try {
     $flag = if ((Get-Date).DayOfWeek -eq 'Monday') { '--weekly' } else { '' }
     & cmd /c "`"$py`" -m scripts.sync_marketing $flag >> `"$log`" 2>&1"
     "sync marketing: exit $LASTEXITCODE" | Add-Content $log
+    # cancelamentos: planilhas do time (publico se compartilhado; senao data/)
+    & cmd /c "`"$py`" -m scripts.sync_cancelamentos >> `"$log`" 2>&1"
+    "sync cancelamentos: exit $LASTEXITCODE" | Add-Content $log
 } finally {
     Pop-Location
 }
