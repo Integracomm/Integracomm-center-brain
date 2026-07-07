@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import csv
 import datetime as dt
+import os
 import re
 import unicodedata
 from collections import defaultdict
@@ -70,8 +71,19 @@ def load_analyses_cache(path: Path) -> dict[str, list[tuple[str, str]]]:
     return by_group
 
 
+# Equipe que escreve de número PESSOAL (sem "INTEGRACOMM" no nome) — caso real:
+# Eduardo (Coordenador de Performance) fez retenção no grupo ALMEIDA citando
+# "cancelamento do contrato" e a frase contou como fala do CLIENTE. Lista
+# configurável no .env: GROWTH_TEAM_SENDERS=Eduardo Luiz,Fulano
+_TEAM_EXTRA = {s.strip().upper() for s in os.environ.get("GROWTH_TEAM_SENDERS", "").split(",")
+               if s.strip()}
+
+
 def _is_team(sender_name: str | None) -> bool:
-    return bool(sender_name and "INTEGRACOMM" in sender_name.upper())
+    if not sender_name:
+        return False
+    up = sender_name.upper()
+    return "INTEGRACOMM" in up or any(t in up for t in _TEAM_EXTRA)
 
 
 def build_account_signals(

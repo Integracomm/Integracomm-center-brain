@@ -85,21 +85,47 @@ def record_score(conn: Any, *, account_id: str, run_id: str, score: AccountScore
 
 
 def record_alert(conn: Any, *, account_id: str, score_id: str, score: AccountScore) -> None:
-    """Abre alerta quando a tendência cruza para risco (humano no loop).
+    """Mantém NO MÁXIMO um alerta aberto por conta (humano no loop, sem ruído).
 
     Severidade (critico|alto|atencao) vem de scoring.alert_severity; None = sem alerta.
+    - Já existe alerta aberto → ATUALIZA severidade/estágio (created_at preserva a
+      idade do caso) em vez de abrir duplicado — antes cada rodada abria um novo
+      e o painel acumulava ~2,8 alertas/conta, enterrando o que era prioridade.
+    - Conta AVALIÁVEL que normalizou (severity None) → fecha os abertos sozinho
+      com nota; não-avaliável não fecha nada (sem dado ≠ recuperada).
     """
     from ..agents.growth.scoring import alert_severity
 
     severity = alert_severity(score)
-    if severity is None:
-        return
     with conn.cursor() as cur:
+        if severity is None:
+            if score.evaluable:
+                cur.execute(
+                    """UPDATE alerts SET status='resolvido',
+                              notes = COALESCE(notes || ' · ', '') ||
+                                      'auto: risco normalizado em ' || to_char(now(), 'DD-MM-YYYY')
+                        WHERE account_id=%s AND status='aberto'""",
+                    (account_id,),
+                )
+            return
         cur.execute(
-            """INSERT INTO alerts (account_id, score_id, risk_band, stage, severity)
-               VALUES (%s,%s,%s,%s,%s)""",
-            (account_id, score_id, score.risk_band, score.stage.value, severity),
+            """SELECT id FROM alerts WHERE account_id=%s AND status='aberto'
+               ORDER BY created_at DESC LIMIT 1""",
+            (account_id,),
         )
+        row = cur.fetchone()
+        if row:
+            cur.execute(
+                """UPDATE alerts SET severity=%s, risk_band=%s, stage=%s, score_id=%s
+                    WHERE id=%s""",
+                (severity, score.risk_band, score.stage.value, score_id, row[0]),
+            )
+        else:
+            cur.execute(
+                """INSERT INTO alerts (account_id, score_id, risk_band, stage, severity)
+                   VALUES (%s,%s,%s,%s,%s)""",
+                (account_id, score_id, score.risk_band, score.stage.value, severity),
+            )
 
 
 def record_outcome(conn: Any, *, account_id: str, outcome: str, outcome_date: dt.date | None,

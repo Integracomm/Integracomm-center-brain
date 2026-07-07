@@ -93,7 +93,8 @@ CREATE TABLE IF NOT EXISTS alerts (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     status          TEXT NOT NULL DEFAULT 'aberto', -- aberto|reconhecido|resolvido
     acknowledged_by TEXT,
-    acknowledged_at TIMESTAMPTZ
+    acknowledged_at TIMESTAMPTZ,
+    notes           TEXT                            -- desfecho/notas (inclui 'auto: ...' das resoluções automáticas)
 );
 CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(status, created_at DESC);
 
