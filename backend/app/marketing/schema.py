@@ -80,6 +80,27 @@ CREATE TABLE IF NOT EXISTS mkt_funnel_goals (
     PRIMARY KEY (mes, etapa)
 );
 
+-- plano mensal detalhado do funil (planilha "Metas Marketing" — ver mkt_plan_sheet)
+CREATE TABLE IF NOT EXISTS mkt_plan_funnel (
+    mes          DATE NOT NULL,               -- 1º dia do mês
+    etapa        TEXT NOT NULL,               -- Lead|MQL|SAL|SQL|Oportunidade|Booking
+    qtde         NUMERIC,                     -- meta de volume (H2) / realizado registrado (H1)
+    custo_unit   NUMERIC,                     -- custo-alvo por unidade da etapa
+    investimento NUMERIC,                     -- investimento mensal necessário (base = etapa)
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (mes, etapa)
+);
+
+-- metas de oportunidades por canal (mesma planilha, jul-dez)
+CREATE TABLE IF NOT EXISTS mkt_plan_channels (
+    mes        DATE NOT NULL,                 -- 1º dia do mês
+    canal      TEXT NOT NULL,                 -- META|PROSPECÇÃO|EVENTOS|SHOPEE|LOW TICKET|INST ORG|TOTAL
+    meta_oport NUMERIC,
+    verba      NUMERIC,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (mes, canal)
+);
+
 -- metas mensais da planilha financeira
 CREATE TABLE IF NOT EXISTS mkt_goals (
     mes          DATE NOT NULL,               -- 1º dia do mês

@@ -18,7 +18,7 @@ import psycopg
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.marketing.schema import ensure_mkt_tables  # noqa: E402
-from app.sources import google_ads_src, meta_ads, mkt_goals_sheet, pipedrive_deals  # noqa: E402
+from app.sources import google_ads_src, meta_ads, mkt_goals_sheet, mkt_plan_sheet, pipedrive_deals  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -62,6 +62,7 @@ def main() -> None:
         conn, since=dt.date(2025, 1, 1) if args.backfill else hoje - dt.timedelta(days=60)))
     if args.weekly or args.backfill:
         step("metas (planilha)", lambda: mkt_goals_sheet.sync_goals(conn))
+        step("plano mkt (planilha de metas)", lambda: mkt_plan_sheet.sync_plan(conn))
         from app.marketing.analysis import recompute_lag_stats
         step("lag stats (recalc)", lambda: recompute_lag_stats(conn))
     conn.close()

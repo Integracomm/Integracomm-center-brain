@@ -1,4 +1,4 @@
-"""Área de MARKETING no painel — /marketing?view=... (7 abas).
+"""Área de MARKETING no painel — /marketing?view=... (9 abas).
 
 Mesmo padrão do painel de Growth: HTML server-rendered com os tokens de design
 (fonte única frontend/design-tokens.css via api._tokens_css), sessão por cookie,
@@ -17,7 +17,8 @@ from . import analysis as AN
 
 router = APIRouter()
 
-_VIEWS = [("visao", "Visão Geral"), ("funil", "Funil de Prospecção"),
+_VIEWS = [("visao", "Visão Geral"), ("metas", "Metas do Semestre"),
+          ("funil", "Funil de Prospecção"),
           ("canais", "Ranking de Canais"), ("origens", "Origem de Leads"),
           ("midia", "Mídia Paga"), ("lag", "Tempo até Resultado"),
           ("planejador", "Planejador"), ("criativos", "Criativos e Públicos")]
@@ -188,6 +189,7 @@ def _visao(conn) -> str:
 
     return (f"<h1>Visão Geral</h1><div class=sub>mês atual ({ini.strftime('%d-%m-%Y')} → hoje) vs mês anterior</div>"
             f"<div class=kpis>{kpis}</div>"
+            + _funil_vs_meta(conn, ini, fim) +
             f"<section><h2>Progresso vs meta do mês</h2><p class=secsub>metas da planilha financeira · bookings fechados no Pipedrive · B3-B5 em destaque</p>"
             f"<div class=card><table><tr><th>Plano</th><th class=num>Realizado</th><th class=num>Meta</th><th class=num>%</th><th></th></tr>{linhas}</table></div></section>"
             + gap)
@@ -567,6 +569,80 @@ _FUNIL_DEFS = {
     "Oportunidade": "negociação real em curso — reunião agendada/realizada, proposta na mesa",
     "Booking": "contrato fechado (won no Pipedrive)",
 }
+_ETAPAS_PLANO = ["Lead", "MQL", "SAL", "SQL", "Oportunidade", "Booking"]
+
+
+def _coorte(conn, a: dt.date, b: dt.date) -> tuple[list[int], int, int]:
+    """Coorte de deals criados em [a,b]: quantos passaram de cada etapa
+    (_FUNIL_ETAPAS); won conta em todas. → (passou[5], bookings, total)."""
+    with conn.cursor() as cur:
+        cur.execute("""SELECT stage_id, status, count(*) FROM mkt_deals_attribution
+                        WHERE add_time >= %s AND add_time < %s GROUP BY 1, 2""",
+                    (a, b + dt.timedelta(days=1)))
+        passou = [0] * 5
+        booked = total = 0
+        for stage_id, status, n in cur.fetchall():
+            total += n
+            nivel = 4 if status == "won" else min(_STAGE_ORDER.get(stage_id, 0), 4)
+            for k in range(0, nivel + 1):
+                passou[k] += n
+            if status == "won":
+                booked += n
+        passou[0] = total
+        return passou, booked, total
+
+
+def _plan_funil(conn, meses: list[dt.date]) -> dict[dt.date, dict[str, dict]]:
+    """Plano mensal da planilha de metas (mkt_plan_funnel) para os meses dados."""
+    with conn.cursor() as cur:
+        cur.execute("""SELECT mes, etapa, qtde, custo_unit, investimento
+                         FROM mkt_plan_funnel WHERE mes = ANY(%s)""", (meses,))
+        out: dict[dt.date, dict[str, dict]] = {}
+        for mes, etapa, q, c, i in cur.fetchall():
+            out.setdefault(mes, {})[etapa] = {
+                "qtde": float(q) if q is not None else None,
+                "custo": float(c) if c is not None else None,
+                "inv": float(i) if i is not None else None}
+        return out
+
+
+def _dias_mes(mes: dt.date) -> int:
+    import calendar
+    return calendar.monthrange(mes.year, mes.month)[1]
+
+
+def _funil_vs_meta(conn, ini: dt.date, fim: dt.date) -> str:
+    """Seção "Funil do mês vs meta": realizado da coorte × meta de volume da
+    planilha, com marcador do ritmo esperado (fração do mês decorrida)."""
+    mes_ref = ini.replace(day=1)
+    plan = _plan_funil(conn, [mes_ref]).get(mes_ref) or {}
+    if not any((v.get("qtde") is not None) for v in plan.values()):
+        return ""
+    passou, booked, _total = _coorte(conn, ini, fim)
+    reais = passou + [booked]
+    frac = min(1.0, ((fim - ini).days + 1) / _dias_mes(mes_ref))
+    rows = ""
+    for i, etapa in enumerate(_ETAPAS_PLANO):
+        meta = (plan.get(etapa) or {}).get("qtde")
+        if meta is None:
+            continue
+        real = reais[i]
+        pct = real / meta if meta else None
+        cls = "" if pct is None else ("pos" if pct >= frac else ("neg" if pct < frac * 0.75 else ""))
+        barra = (f"<div class=bar style='position:relative;overflow:visible'>"
+                 f"<div style='width:{min(100, (pct or 0) * 100):.0f}%'></div>"
+                 f"<div title='ritmo esperado ({frac * 100:.0f}% do mês)' style='position:absolute;left:{frac * 100:.0f}%;top:-3px;bottom:-3px;width:2px;background:var(--text-muted)'></div></div>")
+        rows += (f"<tr title='{_FUNIL_DEFS.get(etapa, '')}'><td>{etapa}</td><td class=num>{real}</td>"
+                 f"<td class=num>{meta:.0f}</td><td class='num {cls}'>{_fmt(pct, 'pct')}</td>"
+                 f"<td style='min-width:140px'>{barra}</td></tr>")
+    if not rows:
+        return ""
+    return (f"<section><h2>Funil do mês vs meta ({mes_ref.strftime('%m-%Y')})</h2>"
+            f"<p class=secsub>metas de volume da planilha de metas do Marketing · traço vertical = ritmo esperado ({frac * 100:.0f}% do mês decorrido)</p>"
+            f"<div class=card><table><tr><th>Etapa</th><th class=num>Realizado</th><th class=num>Meta do mês</th><th class=num>% da meta</th><th></th></tr>{rows}</table>"
+            f"<p class='note' style='margin:10px 0 0'>Realizado = coorte de deals criados no mês (Pipedrive). Detalhe completo do semestre na aba <a href='/marketing?view=metas' style='color:var(--brand)'>Metas do Semestre</a>.</p></div></section>")
+
+
 _FUNIL_SUGESTOES = {
     "MQL": "Gargalo na VELOCIDADE de resposta: lead sem contato esfria em horas — revisar o SLA do primeiro toque (referência: <15 min em horário comercial) e a automação de disparo.",
     "SAL": "Muitos contatos sem conexão: variar canal (WhatsApp + ligação + e-mail), horários alternados e cadência de 5-7 tentativas antes de descartar.",
@@ -581,25 +657,8 @@ def _funil(conn, request: Request) -> str:
     dias = (fim - ini).days + 1
     ini_p, fim_p = ini - dt.timedelta(days=dias), ini - dt.timedelta(days=1)
 
-    def coorte(a, b):
-        with conn.cursor() as cur:
-            cur.execute("""SELECT stage_id, status, count(*) FROM mkt_deals_attribution
-                            WHERE add_time >= %s AND add_time < %s GROUP BY 1, 2""",
-                        (a, b + dt.timedelta(days=1)))
-            passou = [0] * 5
-            booked = total = 0
-            for stage_id, status, n in cur.fetchall():
-                total += n
-                nivel = 4 if status == "won" else min(_STAGE_ORDER.get(stage_id, 0), 4)
-                for k in range(0, nivel + 1):
-                    passou[k] += n
-                if status == "won":
-                    booked += n
-            passou[0] = total
-            return passou, booked, total
-
-    passou, booked, total = coorte(ini, fim)
-    passou_p, booked_p, total_p = coorte(ini_p, fim_p)
+    passou, booked, total = _coorte(conn, ini, fim)
+    passou_p, booked_p, total_p = _coorte(conn, ini_p, fim_p)
 
     mes_ref = fim.replace(day=1)
     with conn.cursor() as cur:
@@ -608,6 +667,7 @@ def _funil(conn, request: Request) -> str:
         meta_book = float(cur.fetchone()[0] or 0)
         cur.execute("SELECT etapa, taxa_meta FROM mkt_funnel_goals WHERE mes=%s", (mes_ref,))
         metas_taxa = {e: float(t) for e, t in cur.fetchall()}
+    plan_mes = _plan_funil(conn, [mes_ref]).get(mes_ref) or {}
     conv_atual = booked / total if total else 0
     conv_nec = (meta_book / total) if total and meta_book else None
 
@@ -640,7 +700,9 @@ def _funil(conn, request: Request) -> str:
                    f"<div style='font-size:var(--fs-sm)'>{nome}</div>"
                    f"<div class=bar style='height:22px;border-radius:6px'><div style='width:{pct_total * 100:.1f}%'></div></div>"
                    f"<div style='font-size:var(--fs-sm);text-align:right'><b>{n}</b> ({_fmt(pct_total, 'pct')})</div></div>")
+        meta_q = (plan_mes.get(nome) or {}).get("qtde")
         linhas += (f"<tr title='{_FUNIL_DEFS.get(nome, '')}'><td>{nome}</td><td class=num>{n}</td>"
+                   f"<td class=num style='color:var(--text-muted)'>{_fmt(meta_q)}</td>"
                    f"<td class=num>{_fmt(taxa, 'pct') if taxa is not None else '—'}{delta}</td>"
                    f"<td class=num>{meta_td}</td></tr>")
     pct_book = booked / total if total else 0
@@ -654,7 +716,9 @@ def _funil(conn, request: Request) -> str:
     if meta_bk is not None and taxa_final is not None:
         cls_bk = "pos" if taxa_final >= meta_bk else "neg"
         meta_bk_td = f"<span class='{cls_bk}'>{_fmt(meta_bk, 'pct')}</span>"
+    meta_q_bk = (plan_mes.get("Booking") or {}).get("qtde")
     linhas += (f"<tr><td><b>Booking (won)</b></td><td class=num><b>{booked}</b></td>"
+               f"<td class=num style='color:var(--text-muted)'>{_fmt(meta_q_bk)}</td>"
                f"<td class=num><b>{_fmt(taxa_final, 'pct')}</b></td><td class=num>{meta_bk_td}</td></tr>")
 
     # formulário de metas de taxa do mês (edição inline pelo gestor)
@@ -665,7 +729,7 @@ def _funil(conn, request: Request) -> str:
         f"placeholder='%' style='width:86px'></div>"
         for i, e in enumerate(etapas_meta))
     form_metas = (f"<section><h2>Metas de taxa do mês ({mes_ref.strftime('%m-%Y')})</h2>"
-                  f"<p class=secsub>conversão-alvo de cada etapa, em % — coluna “Meta” da tabela compara com o realizado</p>"
+                  f"<p class=secsub>conversão-alvo de cada etapa, em % — pré-preenchidas pela planilha de metas do Marketing; o que você salvar aqui prevalece</p>"
                   f"<form method=post action='/marketing/funil-metas'><div class=filters>"
                   f"<input type=hidden name=mes value='{mes_ref.isoformat()}'>"
                   f"<input type=hidden name=ini value='{ini.isoformat()}'><input type=hidden name=fim value='{fim.isoformat()}'>"
@@ -700,13 +764,203 @@ def _funil(conn, request: Request) -> str:
             f"<form method=get action=/marketing><input type=hidden name=view value=funil>{form}</form>"
             + meta_html +
             f"<section><h2>Funil</h2><div class=card>{barras}</div></section>"
-            f"<section><h2>Taxas por etapa</h2><p class=secsub>vs período anterior equivalente ({ini_p.strftime('%d-%m')} a {fim_p.strftime('%d-%m')})</p>"
-            f"<div class=card><table><tr><th>Etapa</th><th class=num>Deals</th><th class=num>Conversão da etapa</th><th class=num>Meta</th></tr>{linhas}</table></div></section>"
+            f"<section><h2>Taxas por etapa</h2><p class=secsub>vs período anterior equivalente ({ini_p.strftime('%d-%m')} a {fim_p.strftime('%d-%m')}) · “Meta qtde” = volume planejado do mês ({mes_ref.strftime('%m-%Y')}) na planilha de metas</p>"
+            f"<div class=card><table><tr><th>Etapa</th><th class=num>Deals</th><th class=num>Meta qtde (mês)</th><th class=num>Conversão da etapa</th><th class=num>Meta taxa</th></tr>{linhas}</table></div></section>"
             + form_metas + sugestoes
             + "<section><h2>Definições das etapas</h2><div class=card><table>"
             + "".join(f"<tr><td style='width:130px'><b>{e}</b></td><td class=note>{d}</td></tr>"
                       for e, d in _FUNIL_DEFS.items())
             + "</table></div></section>")
+
+
+# ---------------------------------------------------------------------------
+# Aba — Metas do Semestre (planilha de metas detalhadas do Marketing, H2)
+# ---------------------------------------------------------------------------
+_MES_ABREV = {7: "Jul", 8: "Ago", 9: "Set", 10: "Out", 11: "Nov", 12: "Dez"}
+_CANAIS_PLANO = ["META", "PROSPECÇÃO", "EVENTOS", "SHOPEE", "LOW TICKET", "INST ORG", "TOTAL"]
+_CANAIS_LBL = {"META": "Mídia paga (Meta/Google)", "PROSPECÇÃO": "Prospecção ativa",
+               "EVENTOS": "Eventos", "SHOPEE": "Shopee", "LOW TICKET": "Low ticket",
+               "INST ORG": "Instagram orgânico", "TOTAL": "Total"}
+# realizado por canal via utm_source (mesma convenção de canal_de/analysis)
+_CANAIS_SQL = {
+    "META": "(origem LIKE 'meta%%' OR origem LIKE 'google%%' OR origem IN ('facebook','instagram_ads'))",
+    "PROSPECÇÃO": "origem ILIKE 'prospec%%'",
+    "EVENTOS": "origem ILIKE '%%evento%%'",
+    "SHOPEE": "origem ILIKE '%%shopee%%'",
+    "LOW TICKET": "origem ILIKE '%%low%%'",
+    "INST ORG": "(origem ILIKE 'insta%%' AND origem <> 'instagram_ads')",
+    "TOTAL": "TRUE",
+}
+
+
+def _metas(conn) -> str:
+    from ..sources.mkt_plan_sheet import ANO
+    hoje = dt.date.today()
+    meses = [dt.date(ANO, m, 1) for m in range(7, 13)]
+    plan = _plan_funil(conn, meses)
+    if not plan:
+        return ("<h1>Metas do Semestre</h1><div class=sub>plano mensal da planilha de metas do Marketing</div>"
+                "<section><div class=warn>Plano ainda não importado — rode <code>python -m scripts.sync_marketing --weekly</code> "
+                "para ler a planilha de metas.</div></section>")
+    mes_atual = hoje.replace(day=1)
+
+    # gasto de mídia por mês + realizado (coorte) dos meses já iniciados
+    with conn.cursor() as cur:
+        cur.execute("""SELECT date_trunc('month', date)::date, sum(spend)
+                         FROM mkt_insights_daily WHERE date >= %s GROUP BY 1""", (meses[0],))
+        gasto_mes = {m: float(s) for m, s in cur.fetchall()}
+        cur.execute("SELECT mes, canal, meta_oport, verba FROM mkt_plan_channels WHERE mes = ANY(%s)", (meses,))
+        plan_canais = {(m, c): (float(q) if q is not None else None,
+                                float(v) if v is not None else None)
+                       for m, c, q, v in cur.fetchall()}
+    reais: dict[dt.date, list[int]] = {}
+    for mes in meses:
+        if mes > mes_atual:
+            continue
+        fim_m = min(hoje, mes.replace(day=_dias_mes(mes)))
+        passou, booked, _t = _coorte(conn, mes, fim_m)
+        reais[mes] = passou + [booked]
+
+    # ---- KPIs do mês corrente (com ritmo esperado)
+    kpis = ""
+    if mes_atual in plan and mes_atual in reais:
+        p, r = plan[mes_atual], reais[mes_atual]
+        frac = min(1.0, hoje.day / _dias_mes(mes_atual))
+
+        def kpi_meta(label, real, meta, kind="num", inverso=False):
+            if meta is None:
+                return ""
+            pct = real / meta if meta else None
+            ok = pct is not None and ((pct <= 1.0) if inverso else (pct >= frac))
+            cls = "pos" if ok else "neg"
+            alvo = "alvo" if inverso else "meta"
+            return (f"<div class=kpi><div class=n>{_fmt(real, kind)}</div><div class=l>{label}</div>"
+                    f"<div class='d {cls}'>{_fmt(pct, 'pct')} ({alvo}: {_fmt(meta, kind)})</div></div>")
+
+        kpis += kpi_meta("Leads no mês", r[0], (p.get("Lead") or {}).get("qtde"))
+        kpis += kpi_meta("SQLs", r[3], (p.get("SQL") or {}).get("qtde"))
+        kpis += kpi_meta("Oportunidades", r[4], (p.get("Oportunidade") or {}).get("qtde"))
+        kpis += kpi_meta("Bookings", r[5], (p.get("Booking") or {}).get("qtde"))
+        g = gasto_mes.get(mes_atual)
+        cpl_alvo = (p.get("Lead") or {}).get("custo")
+        if g and r[0]:
+            kpis += kpi_meta("CPL do mês", g / r[0], cpl_alvo, "brl", inverso=True)
+        verba_meta = (plan_canais.get((mes_atual, "META")) or (None, None))[1]
+        if g is not None and verba_meta:
+            kpis += kpi_meta("Gasto mídia", g, verba_meta, "brl", inverso=True)
+        kpis = (f"<div class=kpis>{kpis}</div>"
+                f"<p class='note' style='margin:8px 0 0'>ritmo esperado: {frac * 100:.0f}% do mês decorrido — "
+                f"verde = no ritmo da meta (custos: verde = dentro do alvo/verba).</p>") if kpis else ""
+
+    # ---- grade mês × etapa: realizado / meta
+    def celula(mes, i, etapa):
+        meta = (plan.get(mes, {}).get(etapa) or {}).get("qtde")
+        if mes not in reais:  # mês futuro: só a meta
+            return f"<td class=num style='color:var(--text-muted)'>{_fmt(meta)}</td>"
+        real = reais[mes][i]
+        if meta is None:
+            return f"<td class=num>{real}</td>"
+        pct = real / meta if meta else None
+        frac_m = min(1.0, ((min(hoje, mes.replace(day=_dias_mes(mes))) - mes).days + 1) / _dias_mes(mes))
+        cls = "pos" if (pct or 0) >= frac_m else ("neg" if (pct or 0) < frac_m * 0.75 else "")
+        return (f"<td class=num title='meta {meta:.0f} · realizado {real}'>"
+                f"<b>{real}</b><span style='color:var(--text-muted)'>/{meta:.0f}</span> "
+                f"<span class='{cls}' style='font-size:var(--fs-2xs)'>{_fmt(pct, 'pct')}</span></td>")
+
+    grade = ""
+    for mes in meses:
+        marca = " style='background:color-mix(in srgb,var(--brand) 5%,transparent)'" if mes == mes_atual else ""
+        grade += f"<tr{marca}><td><b>{_MES_ABREV[mes.month]}</b></td>"
+        grade += "".join(celula(mes, i, e) for i, e in enumerate(_ETAPAS_PLANO)) + "</tr>"
+    tot_meta_book = sum((plan.get(m, {}).get("Booking") or {}).get("qtde") or 0 for m in meses)
+    tot_real_book = sum(r[5] for r in reais.values())
+    grade += (f"<tr><td><b>H2</b></td><td colspan=4></td><td></td>"
+              f"<td class=num><b>{tot_real_book}</b><span style='color:var(--text-muted)'>/{tot_meta_book:.0f}</span></td></tr>")
+
+    # ---- custo-alvo × custo real por etapa (mês corrente)
+    custos = ""
+    if mes_atual in plan and mes_atual in reais and gasto_mes.get(mes_atual):
+        g = gasto_mes[mes_atual]
+        linhas_c = ""
+        for i, etapa in enumerate(_ETAPAS_PLANO[:5]):
+            alvo = (plan[mes_atual].get(etapa) or {}).get("custo")
+            vol = reais[mes_atual][i]
+            real_c = g / vol if vol else None
+            if alvo is None:
+                continue
+            d = ""
+            if real_c is not None:
+                var = (real_c - alvo) / alvo * 100
+                cls = "neg" if var > 0 else "pos"
+                d = f"<span class='{cls}'>{'+' if var >= 0 else ''}{var:.0f}%</span>"
+            linhas_c += (f"<tr><td>{etapa}</td><td class=num>{vol}</td><td class=num>{_fmt(alvo, 'brl')}</td>"
+                         f"<td class=num>{_fmt(real_c, 'brl')}</td><td class=num>{d}</td></tr>")
+        custos = (f"<section><h2>Custo por etapa vs alvo ({mes_atual.strftime('%m-%Y')})</h2>"
+                  f"<p class=secsub>custo real = gasto de mídia do mês ÷ volume da etapa (proxy: inclui volume de canais não pagos) · alvo da planilha</p>"
+                  f"<div class=card><table><tr><th>Etapa</th><th class=num>Volume</th><th class=num>Custo-alvo</th>"
+                  f"<th class=num>Custo real</th><th class=num>Δ</th></tr>{linhas_c}</table></div></section>")
+
+    # ---- investimento necessário × gasto real
+    linhas_i = ""
+    for mes in meses:
+        p = plan.get(mes, {})
+        inv = (p.get("Lead") or {}).get("inv")
+        verba = (plan_canais.get((mes, "META")) or (None, None))[1]
+        g = gasto_mes.get(mes)
+        cob = ""
+        if g is not None and inv:
+            cob = _fmt(g / inv, "pct")
+        linhas_i += (f"<tr><td><b>{_MES_ABREV[mes.month]}</b></td>"
+                     f"<td class=num>{_fmt((p.get('Lead') or {}).get('qtde'))}</td>"
+                     f"<td class=num>{_fmt(inv, 'brl')}</td><td class=num>{_fmt(verba, 'brl')}</td>"
+                     f"<td class=num>{_fmt(g, 'brl') if g is not None else '—'}</td><td class=num>{cob}</td></tr>")
+
+    # ---- oportunidades por canal (metas jul-dez + realizado do mês corrente)
+    reais_canal = {}
+    if mes_atual in reais:
+        with conn.cursor() as cur:
+            for canal, cond in _CANAIS_SQL.items():
+                cur.execute(f"""SELECT count(*) FILTER (WHERE stage_id >= 3 OR status IN ('won','lost'))
+                                  FROM mkt_deals_attribution
+                                 WHERE add_time >= %s AND add_time < %s AND {cond}""",
+                            (mes_atual, hoje + dt.timedelta(days=1)))
+                reais_canal[canal] = cur.fetchone()[0] or 0
+    linhas_k = ""
+    for canal in _CANAIS_PLANO:
+        peso = " style='border-top:2px solid var(--border-strong)'" if canal == "TOTAL" else ""
+        cels = ""
+        for mes in meses:
+            q, v = plan_canais.get((mes, canal)) or (None, None)
+            tip = f" title='verba: {_fmt(v, 'brl') if v else 'R$ 0'}'" if v is not None else ""
+            cels += f"<td class=num{tip}>{_fmt(q)}</td>"
+        real = reais_canal.get(canal)
+        meta_m = (plan_canais.get((mes_atual, canal)) or (None, None))[0]
+        real_td = "—"
+        if real is not None:
+            cls = ""
+            if meta_m:
+                frac = min(1.0, hoje.day / _dias_mes(mes_atual))
+                cls = "pos" if real / meta_m >= frac else "neg"
+            real_td = f"<span class='{cls}'>{real}</span>"
+        linhas_k += (f"<tr{peso}><td><b>{escape(_CANAIS_LBL[canal])}</b></td>{cels}"
+                     f"<td class=num>{real_td}</td></tr>")
+
+    hdr_meses = "".join(f"<th class=num>{_MES_ABREV[m.month]}</th>" for m in meses)
+    return (f"<h1>Metas do Semestre</h1><div class=sub>plano mensal detalhado da planilha de metas do Marketing (jul-dez {ANO}) × realizado no Pipedrive/mídia — releitura semanal</div>"
+            + kpis +
+            f"<section><h2>Funil mês a mês — realizado/meta</h2>"
+            f"<p class=secsub>realizado = coorte de deals criados no mês (mesma régua da aba Funil) · verde = no ritmo, vermelho = abaixo de 75% do ritmo</p>"
+            f"<div class=card><table><tr><th>Mês</th>" + "".join(f"<th class=num>{e}</th>" for e in _ETAPAS_PLANO) + f"</tr>{grade}</table></div></section>"
+            + custos +
+            f"<section><h2>Investimento planejado × gasto</h2>"
+            f"<p class=secsub>investimento necessário = meta de leads × CPL-alvo (planilha) · verba mídia = orçamento disponível do mês · gasto = Meta+Google</p>"
+            f"<div class=card><table><tr><th>Mês</th><th class=num>Meta leads</th><th class=num>Investimento necessário</th>"
+            f"<th class=num>Verba mídia</th><th class=num>Gasto real</th><th class=num>Gasto ÷ necessário</th></tr>{linhas_i}</table></div></section>"
+            f"<section><h2>Oportunidades por canal — metas do semestre</h2>"
+            f"<p class=secsub>metas da planilha · “Real {_MES_ABREV[mes_atual.month] if mes_atual in reais else ''}” = oportunidades do mês corrente por utm_source (origens não rastreadas não aparecem)</p>"
+            f"<div class=card><table><tr><th>Canal</th>{hdr_meses}<th class=num>Real {_MES_ABREV[mes_atual.month] if mes_atual in reais else '—'}</th></tr>{linhas_k}</table>"
+            f"<p class='note' style='margin:10px 0 0'>Passe o mouse na célula para ver a verba do canal no mês. O mapeamento canal→utm_source é aproximado "
+            f"(META = Meta+Google Ads); padronizar UTMs de Shopee, eventos e low ticket deixa o realizado fiel.</p></div></section>")
 
 
 # ---------------------------------------------------------------------------
@@ -836,7 +1090,8 @@ def marketing(request: Request, view: str = Query("visao")):
         with c.cursor() as cur:
             cur.execute("INSERT INTO audit_log (actor, action, scope) VALUES (%s,'view',%s)",
                         (user, f"marketing/{view}"))
-        fn = {"visao": lambda: _visao(c), "funil": lambda: _funil(c, request),
+        fn = {"visao": lambda: _visao(c), "metas": lambda: _metas(c),
+              "funil": lambda: _funil(c, request),
               "canais": lambda: _canais(c, request),
               "origens": lambda: _origens(c, request), "midia": lambda: _midia(c, request),
               "lag": lambda: _lag(c), "planejador": lambda: _planejador(c, request),
