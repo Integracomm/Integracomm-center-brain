@@ -86,6 +86,18 @@ def _is_team(sender_name: str | None) -> bool:
     return "INTEGRACOMM" in up or any(t in up for t in _TEAM_EXTRA)
 
 
+def _cluster_episodes(dates: set[dt.date], gap_days: int = 7) -> list[tuple[dt.date, dt.date]]:
+    """Agrupa dias com fala de cancelamento em EPISÓDIOS (início, fim):
+    dias a até `gap_days` de distância pertencem ao mesmo episódio."""
+    eps: list[tuple[dt.date, dt.date]] = []
+    for d in sorted(dates):
+        if eps and (d - eps[-1][1]).days <= gap_days:
+            eps[-1] = (eps[-1][0], d)
+        else:
+            eps.append((d, d))
+    return eps
+
+
 def build_account_signals(
     reader: WhatsAppReader,
     *,
@@ -93,8 +105,16 @@ def build_account_signals(
     asof: dt.date,
     analyses_by_group: dict[str, list[tuple[str, str]]],
     window_days: int = 90,
+    events_out: dict | None = None,
 ) -> list[SignalInput]:
-    """Constrói os SignalInput de WhatsApp de UMA conta na janela pré-asof."""
+    """Constrói os SignalInput de WhatsApp de UMA conta na janela pré-asof.
+
+    `events_out` (opcional): recebe {"episodios": [{"inicio", "fim", "equipe"}]}
+    — episódios de fala de cancelamento do CLIENTE na janela e a primeira
+    mensagem da EQUIPE tocando no tema após cada início (data, remetente).
+    Vira a linha do tempo do caso (case_updates); só datas/derivados, sem
+    conteúdo bruto (LGPD).
+    """
     end_dt = dt.datetime.combine(asof, dt.time.max, tzinfo=dt.timezone.utc)
     start_default = asof - dt.timedelta(days=window_days)
 
@@ -104,6 +124,8 @@ def build_account_signals(
     first_data: dt.date | None = None
     cancel_phrase = False  # "fala em cancelar" (texto) nas últimas 3 semanas
     cancel_cut = asof - dt.timedelta(days=21)
+    cancel_days: set[dt.date] = set()            # dias c/ fala do cliente (janela toda)
+    team_cancel: list[tuple[dt.date, str]] = []  # equipe tocando no tema (data, quem)
     start_dt = dt.datetime.combine(start_default, dt.time.min, tzinfo=dt.timezone.utc)
     # Paginação por group_id habilitada no gateway (índice + keyset). try/except
     # fica como defensivo. Silêncio/tom vêm das analyses; aqui: frequência,
@@ -116,15 +138,25 @@ def build_account_signals(
             if d < start_default or d > asof:
                 continue
             first_data = d if first_data is None else min(first_data, d)
+            txt = m.message_text or m.audio_transcription or ""
             if not _is_team(m.sender_name):
                 wk = _monday(d)
                 cli_count[wk] += 1
-                txt = m.message_text or m.audio_transcription or ""
                 cli_len[wk].append(len(txt))
-                if not cancel_phrase and d >= cancel_cut and txt and _CANCEL_RE.search(_norm_txt(txt)):
-                    cancel_phrase = True
+                if txt and _CANCEL_RE.search(_norm_txt(txt)):
+                    cancel_days.add(d)
+                    if d >= cancel_cut:
+                        cancel_phrase = True
+            elif events_out is not None and txt and _CANCEL_RE.search(_norm_txt(txt)):
+                team_cancel.append((d, (m.sender_name or "equipe").strip()))
     except httpx.HTTPStatusError:
         pass  # defensivo
+    if events_out is not None:
+        events_out["episodios"] = [
+            {"inicio": ini, "fim": fim,
+             "equipe": min((tc for tc in team_cancel if tc[0] >= ini), default=None)}
+            for ini, fim in _cluster_episodes(cancel_days)
+        ]
 
     # --- analyses (silêncio / negativo) por semana ---
     sem: dict[dt.date, int] = defaultdict(int)

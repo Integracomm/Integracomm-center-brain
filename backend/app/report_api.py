@@ -389,6 +389,24 @@ function render(d){
       +(s.sinais_do_mes?'':' · sinais mais recentes disponíveis (sem série completa dentro do mês)')+'</div>';
   html+='</div></section>';
 
+  // --- histórico do caso (linha do tempo: agente + gestores + ações) ---
+  var hist=d.historico||[];
+  if(hist.length){
+    var RES={retido:'--status-baixo',cancelou:'--status-critico',sem_efeito:'--status-medio'};
+    html+='<section><h2>Histórico do caso</h2><p class=secsub>linha do tempo das interações — pedidos de cancelamento detectados, ações da equipe e desfechos; insumo direto para a próxima reunião</p><div class=card>';
+    hist.forEach(function(ev,i){
+      var auto=(ev.texto||'').indexOf('[auto]')===0;
+      var txt=auto?ev.texto.slice(6).trim():ev.texto;
+      html+='<div style="display:flex;gap:10px;align-items:baseline;padding:7px 0'+(i?';border-top:1px solid var(--border)':'')+'">'
+          +'<span style="flex-shrink:0;font-variant-numeric:tabular-nums;color:var(--text-muted);font-size:var(--fs-xs);min-width:76px">'+fmtD(ev.quando)+'</span>'
+          +'<span style="flex:1;font-size:var(--fs-sm);line-height:1.5">'+esc(txt)
+          +' <span style="color:var(--text-faint);font-size:var(--fs-2xs)">· '+esc(auto?'agente (automático)':ev.autor)+'</span>'
+          +(ev.resultado?(' '+chip(ev.resultado,RES[ev.resultado]||'--status-semdados')):'')
+          +'</span></div>';
+    });
+    html+='</div></section>';
+  }
+
   // --- plano de ação (gestor de CS sênior); relatórios antigos caem nas observações ---
   if(d.plano_acao){
     html+='<section><h2>Plano de ação — norte para a reunião</h2><p class=secsub>traçado sobre todos os dados do caso + atualizações do gestor</p><div class=card>';

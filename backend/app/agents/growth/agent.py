@@ -57,9 +57,10 @@ class GrowthAgent(Agent):
                     # analyses AO VIVO por grupo (nunca de cache — senão perde CRÍTICO recente)
                     analyses_live = {gid: [(a.analysis_date, a.classification)
                                            for a in reader.iter_analyses(group_id=gid)]}
+                    eventos: dict = {}
                     sigs = collectors.build_account_signals(
                         reader, group_internal_id=gid, asof=item["asof"],
-                        analyses_by_group=analyses_live,
+                        analyses_by_group=analyses_live, events_out=eventos,
                     )
                     # EXECUÇÃO no score (bloco 15%): risco direto pré-computado pelo
                     # runner (mirror ClickUp as-of, porte fiel). Ausente -> bloco fora,
@@ -87,6 +88,7 @@ class GrowthAgent(Agent):
                         "name": item["name"], "plan_category": item.get("plan_category"),
                         "is_legacy": item.get("is_legacy", False),
                         "recurring_revenue": item.get("recurring_revenue"),
+                        "case_events": eventos.get("episodios") or [],
                     }
                 except Exception as e:  # noqa: BLE001 — isolar falha de UMA conta
                     skipped.append((item.get("name", gid), f"{type(e).__name__}: {e}"))
@@ -131,6 +133,7 @@ class GrowthAgent(Agent):
 
         conn = self._conn_factory()
         try:
+            meta = getattr(ctx, "account_meta", {}) if ctx else {}
             for s in scores:
                 acc = P.ensure_account(
                     conn, id_interno=s.account_id, name=s.account_name,
@@ -144,14 +147,50 @@ class GrowthAgent(Agent):
                     signals=[{"source": r.source, "signal_key": r.text.split(":")[0],
                               "value_num": r.weight, "leading": r.leading} for r in s.reasons],
                 )
+                with conn.cursor() as cur:  # estágio ANTERIOR (p/ evento de recuperação)
+                    cur.execute("SELECT stage FROM scores WHERE account_id=%s ORDER BY computed_at DESC LIMIT 1",
+                                (acc,))
+                    row = cur.fetchone()
+                    prev_stage = row[0] if row else None
                 sid = P.record_score(conn, account_id=acc, run_id=ctx.run_id, score=s)
                 P.audit(conn, actor=f"agent:{self.key}", action="score", account_id=acc, run_id=ctx.run_id)
                 P.record_alert(conn, account_id=acc, score_id=sid, score=s)
                 if scoring.should_alert(s):
                     P.audit(conn, actor=f"agent:{self.key}", action="alert", account_id=acc, run_id=ctx.run_id)
+                self._record_case_timeline(
+                    conn, account_id=acc, score=s, prev_stage=prev_stage,
+                    episodios=meta.get(s.account_id, {}).get("case_events") or [])
             conn.commit()
         finally:
             conn.close()
+
+    @staticmethod
+    def _record_case_timeline(conn: Any, *, account_id: str, score: AccountScore,
+                              prev_stage: str | None, episodios: list[dict]) -> None:
+        """Linha do tempo AUTOMÁTICA do caso (case_updates, autor 'agente'):
+        pedido de cancelamento do cliente → equipe abordando o tema → estágio
+        normalizado. Texto determinístico com a data do evento = chave de dedup
+        (add_case_update_once); só datas/derivados, sem conteúdo bruto (LGPD).
+        Aparece no relatório individual e na aba Alertas."""
+        from ...reports import add_case_update_once
+
+        for ep in episodios:
+            ini = ep["inicio"]
+            add_case_update_once(
+                conn, account_id, "agente",
+                f"[auto] Cliente verbalizou pedido de cancelamento no grupo em {ini.strftime('%d-%m-%Y')}.")
+            if ep.get("equipe"):
+                d_eq, quem = ep["equipe"]
+                add_case_update_once(
+                    conn, account_id, "agente",
+                    f"[auto] Equipe abordou o cancelamento no grupo em {d_eq.strftime('%d-%m-%Y')} ({quem}).")
+        exit_stage = scoring.DeclineStage.EXIT_INTENT.value
+        if prev_stage == exit_stage and score.stage.value != exit_stage and score.evaluable:
+            hoje = dt.date.today().strftime("%d-%m-%Y")
+            add_case_update_once(
+                conn, account_id, "agente",
+                f"[auto] Estágio normalizado em {hoje}: 3 semanas sem novas falas de cancelamento "
+                "— relacionamento em recuperação.")
 
     # -- exposição (RBAC) -------------------------------------------------
     def surface(self, ctx: AgentContext, scores: list[AccountScore]) -> None:

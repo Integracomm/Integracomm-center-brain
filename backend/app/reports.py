@@ -79,6 +79,37 @@ def add_case_update(conn: Any, account_id: str, author: str | None, text: str,
                     (account_id, alert_id, author, text))
 
 
+def add_case_update_once(conn: Any, account_id: str, author: str | None, text: str) -> bool:
+    """Grava a atualização SÓ se o texto exato ainda não existe para a conta —
+    eventos automáticos (linha do tempo do agente) rodam todo dia e o texto
+    determinístico (com a data do evento) é a chave de dedup."""
+    ensure_reports_table(conn)
+    with conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM case_updates WHERE account_id=%s AND text=%s LIMIT 1",
+                    (account_id, text))
+        if cur.fetchone():
+            return False
+        cur.execute("INSERT INTO case_updates (account_id, author, text) VALUES (%s,%s,%s)",
+                    (account_id, author, text))
+        return True
+
+
+def _case_history(conn: Any, account_id: str, updates: list[dict]) -> list[dict]:
+    """Histórico de interações do caso, cronológico (antigo → recente): eventos
+    automáticos do agente + notas dos gestores (case_updates) + AÇÕES registradas
+    com desfecho (interventions). Insumo de reunião — sai na impressão."""
+    eventos = [{"quando": u["created_at"], "autor": u["author"] or "—",
+                "texto": u["text"], "resultado": None} for u in updates]
+    with conn.cursor() as cur:
+        cur.execute("""SELECT taken_at, taken_by, action_text, result FROM interventions
+                        WHERE account_id=%s ORDER BY taken_at""", (account_id,))
+        eventos += [{"quando": t.isoformat(), "autor": (por or "gestor"),
+                     "texto": f"Ação registrada: {txt}",
+                     "resultado": (res if res and res != "pendente" else None)}
+                    for t, por, txt, res in cur.fetchall()]
+    return sorted(eventos, key=lambda e: e["quando"])
+
+
 def ensure_reports_table(conn: Any) -> None:
     with conn.cursor() as cur:
         cur.execute(_REPORTS_DDL)
@@ -351,8 +382,9 @@ def build_report(conn: Any, account_id: str, ref_month: str, generated_by: str |
 
     # --- plano de ação individual (gestor de CS sênior) + histórico do caso ---
     from .agents.growth.action_plan import generate_plan
-    updates = list_case_updates(conn, str(acc["id"]))
+    updates = list_case_updates(conn, str(acc["id"]), limit=50)
     data["case_updates"] = updates
+    data["historico"] = _case_history(conn, str(acc["id"]), updates)
     data["plano_acao"] = generate_plan(data, updates, acc)
 
     # --- persiste ---

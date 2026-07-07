@@ -380,12 +380,18 @@ def _latest_scores(conn: Any) -> list[dict]:
 
 
 def _open_alerts(conn: Any) -> list[dict]:
+    from .reports import ensure_reports_table
+    ensure_reports_table(conn)  # case_updates pode não existir em banco novo
     with conn.cursor() as cur:
         cur.execute("ALTER TABLE alerts ADD COLUMN IF NOT EXISTS notes TEXT")  # idempotente
         cur.execute(
             """SELECT al.id, a.name, al.severity, al.risk_band, al.stage, al.created_at,
-                      al.status, al.notes
+                      al.status, al.notes, cu.text AS case_note, cu.created_at AS case_note_at
                  FROM alerts al JOIN accounts a ON a.id = al.account_id
+                 LEFT JOIN LATERAL (
+                      SELECT text, created_at FROM case_updates c
+                       WHERE c.account_id = al.account_id
+                       ORDER BY created_at DESC LIMIT 1) cu ON TRUE
                 WHERE al.status = 'aberto' ORDER BY
                   CASE al.severity WHEN 'critico' THEN 0 WHEN 'alto' THEN 1 ELSE 2 END,
                   al.created_at DESC"""
@@ -1124,8 +1130,13 @@ def _render(role: str, scores: list[dict], alerts: list[dict],
 
     rows = "".join(row(s) for s in ordered)
     def _alert_row(a: dict) -> str:
+        # linha de contexto: última atualização do caso (linha do tempo — inclui
+        # os eventos automáticos do agente) > nota do próprio alerta
         nota = ""
-        if a.get("notes"):
+        if a.get("case_note"):
+            quando = _fmt_date_br(a.get("case_note_at"))
+            nota = f"<div class='mot'>{quando} · {escape(str(a['case_note'])[:150])}</div>"
+        elif a.get("notes"):
             ultima = str(a["notes"]).strip().splitlines()[-1]
             nota = f"<div class='mot'>{escape(ultima[:120])}</div>"
         aid = a.get("id")
