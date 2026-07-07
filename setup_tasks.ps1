@@ -51,7 +51,9 @@ Write-Host "OK  IntegracommIA-Painel (boot -> localhost:8000)" -ForegroundColor 
 # 2) Rodada diaria + Slack, 06:00
 $aRodada = New-ScheduledTaskAction -Execute 'powershell.exe' `
     -Argument ('-NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $rodadaPs1)
-$tRodada = New-ScheduledTaskTrigger -Daily -At '06:00'
+# LOCAL: a maquina so liga ~08h — rodar 08:10 (na AWS o cron continua 06:00,
+# antes da equipe chegar; ver deploy/bootstrap.sh)
+$tRodada = New-ScheduledTaskTrigger -Daily -At '08:10'
 $sRodada = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 2)
 Register-ScheduledTask -TaskName 'IntegracommIA-RodadaDiaria' -Principal $system -Action $aRodada `

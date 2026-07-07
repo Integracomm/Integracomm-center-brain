@@ -40,7 +40,14 @@ _CANCEL_RE = re.compile(
     r"|pens\w+\s+(seriamente\s+)?em\s+(parar|sair|cancelar|desistir)"
     r"|(vou|quero|penso)\s+(parar|desistir)"
     r"|desist\w+\s+(do|da|de|dos)\s+(servico|contrato|plano|assessoria|integracomm)"
-    r"|nao\s+(vale|compensa)\s+(a\s+pena\s+)?(continuar|seguir|manter)",
+    r"|nao\s+(vale|compensa)\s+(a\s+pena\s+)?(continuar|seguir|manter)"
+    # forma SUBSTANTIVADA/formal (caso real BENE TU 01/07/26: "venho por meio
+    # desta, solicitar o cancelamento de nosso contrato... formalizacao desse
+    # encerramento" — a versao anterior so cobria o VERBO "cancelar")
+    r"|(solicit\w+|peco|pedir|pedimos|queremos|quero)\s+(o\s+)?(cancelamento|encerramento|rescisao|distrato)"
+    r"|(cancelamento|encerramento)\s+(de\s+|do\s+|da\s+)?(o\s+|noss[oa]s?\s+|ess[ea]\s+|est[ea]\s+)?(contrato|servico|plano|parceria|assessoria)"
+    r"|(formaliza\w+|procedimento\w*)\s+(desse|deste|do|de|da)\s+(encerramento|cancelamento|rescisao|distrato)"
+    r"|distrato",
     re.IGNORECASE,
 )
 
