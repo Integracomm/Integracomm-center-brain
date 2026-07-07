@@ -35,10 +35,12 @@ _MESES = {"janeiro": 1, "fevereiro": 2, "março": 3, "marco": 3, "abril": 4,
 _ETAPA_QTDE = {"Leads [Qtde]": "Lead", "MQLs [Qtde]": "MQL", "SAL [Qtde]": "SAL",
                "SQL [Qtde]": "SQL", "Oportunidades [Qtde]": "Oportunidade",
                "Bookings [Qtde]": "Booking"}
-# taxa da planilha → etapa DESTINO na taxonomia do funil (mkt_funnel_goals)
+# taxa da planilha → etapa DESTINO na taxonomia do funil (mkt_funnel_goals);
+# "MQL→Booking" é a taxa COMPOSTA (fim a fim) exibida no funil, não editável
 _ETAPA_TAXA = {"Tx. Lead x MQL [%]": "MQL", "Tx. MQL x SAL [%]": "SAL",
                "Tx. SAL x SQL [%]": "SQL", "Tx. SQL x Oportunidade [%]": "Oportunidade",
-               "Tx. Oportunidade x Booking [%]": "Booking"}
+               "Tx. Oportunidade x Booking [%]": "Booking",
+               "Tx. MQL x Booking [%]": "MQL→Booking"}
 _ETAPA_CUSTO = {"Lead": "Lead", "MQL": "MQL", "SAL": "SAL", "SQL": "SQL",
                 "Oportunidade": "Oportunidade"}
 _CANAIS = {"META", "PROSPECÇÃO", "EVENTOS", "SHOPEE", "LOW TICKET", "INST ORG", "TOTAL"}

@@ -239,20 +239,40 @@ def _canais(conn, request: Request) -> str:
             f"“Oportunidade” = deal que avançou do estágio inicial (proxy; o marco exato entra com o histórico de etapas).</p></div></section>")
 
 
+def _origem_paga(origem) -> bool:
+    """Mídia paga = canais com investimento (Meta/Google Ads), pela mesma
+    convenção de canal_de/analysis."""
+    return AN.canal_de(origem) in ("Meta Ads", "Google Ads")
+
+
 def _origens(conn, request: Request) -> str:
     ini, fim, form = _periodo(request)
     origem = request.query_params.get("origem") or None
+    midia = request.query_params.get("midia") or "todas"
+    if midia not in ("todas", "pagas", "organicas"):
+        midia = "todas"
     if origem:
         rows = ""
         for r in AN.funil_por_origem(conn, ini, fim, origem):
             rows += (f"<tr><td>{escape(str(r['utm_campaign'] or '—')[:48])}</td><td>{escape(str(r['utm_content'] or '—')[:40])}</td>"
                      f"<td class=num>{r['leads']}</td><td class=num>{r['oport']}</td><td class=num>{r['bookings']}</td>"
                      f"<td class=num>{_fmt(float(r['receita']), 'brl')}</td></tr>")
-        return (f"<h1>Origem: {escape(origem)}</h1><div class=sub><a href='/marketing?view=origens&ini={ini}&fim={fim}' style='color:var(--brand)'>← todas as origens</a></div>"
+        return (f"<h1>Origem: {escape(origem)}</h1><div class=sub><a href='/marketing?view=origens&ini={ini}&fim={fim}&midia={midia}' style='color:var(--brand)'>← todas as origens</a></div>"
                 f"<section><div class=card><table><tr><th>Campanha</th><th>Criativo</th><th class=num>Leads</th>"
                 f"<th class=num>Oport</th><th class=num>Bookings</th><th class=num>Receita</th></tr>{rows}</table></div></section>")
+    # filtro de mídia dentro do mesmo form de período
+    _MIDIA_OPTS = [("todas", "todas"), ("pagas", "mídia paga (Meta/Google)"),
+                   ("organicas", "não pagas (orgânico/indicação/outros)")]
+    sel = ("<div><label>mídia</label><select name=midia>"
+           + "".join(f"<option value='{v}' {'selected' if midia == v else ''}>{lbl}</option>"
+                     for v, lbl in _MIDIA_OPTS) + "</select></div>")
+    form = form.replace("<button type=submit>", sel + "<button type=submit>")
     rows = ""
     dados = AN.funil_por_origem(conn, ini, fim)
+    if midia == "pagas":
+        dados = [r for r in dados if _origem_paga(r["origem"])]
+    elif midia == "organicas":
+        dados = [r for r in dados if not _origem_paga(r["origem"])]
     med_conv = [(r["bookings"] / r["leads"]) for r in dados if r["leads"] >= 20]
     med = sorted(med_conv)[len(med_conv) // 2] if med_conv else 0
     for r in dados:
@@ -264,10 +284,14 @@ def _origens(conn, request: Request) -> str:
         elif r["leads"] >= 200 and conv < med * 0.5:
             tag = " <span class=chip style='--c:var(--status-alto)'>revisar</span>"
         o = escape(str(r["origem"] or "(vazio)"))
-        rows += (f"<tr><td><a href='/marketing?view=origens&origem={o}&ini={ini}&fim={fim}' style='color:var(--brand)'>{o}</a>{tag}</td>"
+        rows += (f"<tr><td><a href='/marketing?view=origens&origem={o}&ini={ini}&fim={fim}&midia={midia}' style='color:var(--brand)'>{o}</a>{tag}</td>"
                  f"<td class=num>{r['leads']}</td><td class=num>{r['oport']} ({_fmt(oport_pct, 'pct')})</td>"
                  f"<td class=num>{r['bookings']} ({_fmt(conv, 'pct')})</td><td class=num>{_fmt(float(r['receita']), 'brl')}</td></tr>")
-    return (f"<h1>Análise por Origem de Leads</h1><div class=sub>funil lead → oportunidade → booking; clique na origem para ver campanhas e criativos</div>"
+    lbl_midia = {"todas": "todas as mídias", "pagas": "só mídia paga", "organicas": "só não pagas"}[midia]
+    tot_l = sum(r["leads"] for r in dados)
+    tot_b = sum(r["bookings"] for r in dados)
+    return (f"<h1>Análise por Origem de Leads</h1><div class=sub>funil lead → oportunidade → booking; clique na origem para ver campanhas e criativos · "
+            f"exibindo <b>{lbl_midia}</b>: {tot_l} leads, {tot_b} bookings</div>"
             f"<form method=get action=/marketing><input type=hidden name=view value=origens>{form}</form>"
             f"<section><div class=card><table><tr><th>Origem (utm_source)</th><th class=num>Leads</th>"
             f"<th class=num>Oportunidades</th><th class=num>Bookings</th><th class=num>Receita</th></tr>{rows}</table>"
@@ -670,6 +694,10 @@ def _funil(conn, request: Request) -> str:
     plan_mes = _plan_funil(conn, [mes_ref]).get(mes_ref) or {}
     conv_atual = booked / total if total else 0
     conv_nec = (meta_book / total) if total and meta_book else None
+    # conversão COMPOSTA MQL→Booking (fim a fim; meta = "Tx. MQL x Booking" da planilha)
+    mql_n = passou[1]
+    taxa_mb = booked / mql_n if mql_n else None
+    meta_mb = metas_taxa.get("MQL→Booking")
 
     linhas, barras = "", ""
     pior, pior_taxa = None, 1.0
@@ -720,6 +748,19 @@ def _funil(conn, request: Request) -> str:
     linhas += (f"<tr><td><b>Booking (won)</b></td><td class=num><b>{booked}</b></td>"
                f"<td class=num style='color:var(--text-muted)'>{_fmt(meta_q_bk)}</td>"
                f"<td class=num><b>{_fmt(taxa_final, 'pct')}</b></td><td class=num>{meta_bk_td}</td></tr>")
+    mb_meta_td = "—"
+    if meta_mb is not None and taxa_mb is not None:
+        cls_mb = "pos" if taxa_mb >= meta_mb else "neg"
+        mb_meta_td = f"<span class='{cls_mb}'>{_fmt(meta_mb, 'pct')}</span>"
+    elif meta_mb is not None:
+        mb_meta_td = _fmt(meta_mb, "pct")
+    linhas += (f"<tr title='taxa fim a fim: de todo MQL, quantos viram contrato — resume o funil inteiro numa conversão só'>"
+               f"<td style='border-top:2px solid var(--border-strong)'><b>MQL → Booking</b> "
+               f"<span style='color:var(--text-faint);font-size:var(--fs-2xs)'>(composta)</span></td>"
+               f"<td class=num style='border-top:2px solid var(--border-strong)'>{booked}<span style='color:var(--text-faint)'>/{mql_n}</span></td>"
+               f"<td class=num style='border-top:2px solid var(--border-strong);color:var(--text-muted)'>—</td>"
+               f"<td class=num style='border-top:2px solid var(--border-strong)'><b>{_fmt(taxa_mb, 'pct') if taxa_mb is not None else '—'}</b></td>"
+               f"<td class=num style='border-top:2px solid var(--border-strong)'>{mb_meta_td}</td></tr>")
 
     # formulário de metas de taxa do mês (edição inline pelo gestor)
     etapas_meta = [nome for nome, _ in _FUNIL_ETAPAS[1:]] + ["Booking"]
@@ -735,6 +776,15 @@ def _funil(conn, request: Request) -> str:
                   f"<input type=hidden name=ini value='{ini.isoformat()}'><input type=hidden name=fim value='{fim.isoformat()}'>"
                   + campos + "<button type=submit>Salvar metas</button></div></form></section>")
 
+    kpi_mb = ""
+    if taxa_mb is not None:
+        cor_mb = ""
+        if meta_mb is not None:
+            cor_mb = (" style='color:var(--status-baixo)'" if taxa_mb >= meta_mb
+                      else " style='color:var(--status-critico)'")
+        lbl_mb = "MQL → booking" + (f" (meta {_fmt(meta_mb, 'pct')})" if meta_mb is not None else "")
+        kpi_mb = (f"<div class=kpi><div class=n{cor_mb}>{_fmt(taxa_mb, 'pct')}</div>"
+                  f"<div class=l>{lbl_mb}</div></div>")
     meta_html = ""
     if conv_nec is not None:
         ok = conv_atual >= conv_nec
@@ -742,8 +792,11 @@ def _funil(conn, request: Request) -> str:
         meta_html = ("<div class=kpis>"
                      f"<div class=kpi><div class=n>{_fmt(conv_atual, 'pct')}</div><div class=l>conversão lead→booking</div></div>"
                      f"<div class=kpi><div class=n style='color:{cor}'>{_fmt(conv_nec, 'pct')}</div><div class=l>necessária p/ a meta ({meta_book:.0f} book/mês)</div></div>"
+                     + kpi_mb +
                      f"<div class=kpi><div class=n>{booked}</div><div class=l>bookings da coorte</div></div>"
                      f"<div class=kpi><div class=n>{total}</div><div class=l>leads no período</div></div></div>")
+    elif kpi_mb:
+        meta_html = f"<div class=kpis>{kpi_mb}</div>"
     sugestoes = ""
     if conv_nec is not None and conv_atual < conv_nec:
         itens = ""
