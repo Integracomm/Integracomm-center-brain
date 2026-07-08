@@ -147,6 +147,10 @@ def _parse_saidas(wb: openpyxl.Workbook) -> list[dict]:
                 "termino" if "termino" in n else None)
         if tipo is None:
             continue
+        # régua do Otávio: este arquivo vale ATÉ ABRIL; maio em diante a fonte
+        # oficial é a planilha de squads (a aba de maio daqui não conta)
+        if tipo == "cancelamento" and mes >= dt.date(2026, 5, 1):
+            continue
         ws = wb[aba]
         hdr: dict[str, int] | None = None
         for row in ws.iter_rows(values_only=True):
@@ -164,6 +168,10 @@ def _parse_saidas(wb: openpyxl.Workbook) -> list[dict]:
             cliente = col("cliente", "seller")
             if not cliente or not str(cliente).strip():
                 continue
+            # rodapé encerra a LISTA do mês — o que vem depois (EM ANDAMENTO,
+            # previsões, #REF!) não conta na régua do time
+            if _norm(cliente).startswith(("previsao", "em andamento", "total", "#ref")):
+                break
             if not _cliente_valido(cliente):
                 continue
             # linhas que NÃO são saída: cliente renovou/prorrogou (aparecem na
@@ -222,6 +230,10 @@ def _parse_squads(wb: openpyxl.Workbook) -> list[dict]:
         if col_form is not None:
             blocos.append(("cancelamento", bloco_hdr(col_form, len(sub))))
         for row in linhas[2:]:
+            # seção "CLIENTES START - <mês>" encerra os formalizados; o que vem
+            # abaixo é término de contrato START (régua própria, não churn)
+            if any("clientes start" in _norm(c) for c in row if c):
+                break
             for tipo, h in blocos:
                 def col(*nomes):
                     for nm in nomes:
@@ -241,8 +253,8 @@ def _parse_squads(wb: openpyxl.Workbook) -> list[dict]:
                 if tipo == "cancelamento":
                     if pl.startswith(("renovado", "prorrogado")):
                         continue
-                    if pl.startswith("nao renovara"):
-                        tipo_r = "tratativa"
+                    if pl.startswith(("nao renovar", "nao renovado")):
+                        tipo_r = "termino"  # não renovação = fim de contrato (régua do time)
                     elif pl == "start":
                         tipo_r = "termino"
                 out.append({
@@ -328,9 +340,10 @@ def parse_all(wbs: dict[str, openpyxl.Workbook]) -> list[dict]:
         elif r.get("motivo") and not j.get("motivo"):
             finais[finais.index(j)] = r
             vistos[k] = r
-    # RECONCILIAÇÃO com a aba consolidada (processo anti-churn, régua do time):
-    # Revertido/Em negociação vira tipo próprio (NÃO conta como saída) e o
-    # motivo categorizado/plano/equipe/gestor enriquecem o registro.
+    # Aba consolidada (processo anti-churn): a CONTAGEM oficial é a das abas
+    # mensais (régua confirmada pelo Otávio 08/07 com as listas nominais);
+    # a consolidada só ENRIQUECE (motivo categorizado, plano, equipe, gestor)
+    # e traz os revertidos/em negociação que não estão nas abas (informativo).
     proc = _parse_consolidada(wbs[FILE_SAIDAS])
     casados: set[str] = set()
     for r in finais:
@@ -343,23 +356,22 @@ def parse_all(wbs: dict[str, openpyxl.Workbook]) -> list[dict]:
         for campo in ("motivo", "plano", "equipe", "gc", "meses", "data_inicio", "data_saida"):
             if not r.get(campo) and p.get(campo):
                 r[campo] = p[campo]
-        if p["status"].startswith("revertido"):
-            r["tipo"], r["situacao"] = "revertido", "revertido (anti-churn)"
-        elif p["status"].startswith("em negocia"):
-            r["tipo"], r["situacao"] = "tratativa", "em negociação (anti-churn)"
-    # cancelados do processo que NÃO estão nas abas mensais entram como saída
     for k, p in proc.items():
-        if k in casados or not p["status"].startswith("cancelado"):
+        if k in casados:
             continue
         mes_ref = (p["data_saida"] or p["data_intencao"])
         if not mes_ref:
             continue
-        finais.append({"tipo": "cancelamento", "fonte": "processo",
+        tipo_p = ("revertido" if p["status"].startswith("revertido")
+                  else "tratativa" if p["status"].startswith("em negocia") else None)
+        if tipo_p is None:
+            continue  # cancelado só do processo NÃO entra na contagem oficial
+        finais.append({"tipo": tipo_p, "fonte": "processo",
                        "mes": mes_ref.replace(day=1), "cliente": p["cliente"],
                        "data_inicio": p["data_inicio"], "data_saida": p["data_saida"],
                        "meses": p["meses"], "valor": None, "plano": p["plano"],
                        "equipe": p["equipe"], "gc": p["gc"], "motivo": p["motivo"],
-                       "situacao": None})
+                       "situacao": f"{p['status']} (anti-churn)"})
     return finais
 
 
