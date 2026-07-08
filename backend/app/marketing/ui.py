@@ -616,6 +616,30 @@ def _coorte(conn, a: dt.date, b: dt.date) -> tuple[list[int], int, int]:
         return passou, booked, total
 
 
+def _funil_eventos(conn, a: dt.date, b: dt.date) -> tuple[list[int], int, int, float]:
+    """Contagem POR EVENTO no período — mesma régua do Pipedrive/app Lovable:
+    Lead = deals CRIADOS; MQL..Oportunidade = deals que ENTRARAM em etapa
+    daquela ordem (mkt_stage_events, via /flow); Booking = ganhos (won) no
+    período + receita. Taxas podem passar de 100%: o evento pode ser de deal
+    criado antes do período (ex.: agendou em junho, compareceu em julho)."""
+    fim = b + dt.timedelta(days=1)
+    with conn.cursor() as cur:
+        cur.execute("""SELECT count(*) FROM mkt_deals_attribution
+                        WHERE add_time >= %s AND add_time < %s""", (a, fim))
+        total = cur.fetchone()[0]
+        passou = [total, 0, 0, 0, 0]
+        cur.execute("""SELECT stage_id, count(DISTINCT deal_id) FROM mkt_stage_events
+                        WHERE entered_at >= %s AND entered_at < %s GROUP BY 1""", (a, fim))
+        for sid, n in cur.fetchall():
+            o = _STAGE_ORDER.get(sid)
+            if o and 1 <= o <= 4:
+                passou[o] += n
+        cur.execute("""SELECT count(*), COALESCE(sum(valor), 0) FROM mkt_deals_attribution
+                        WHERE status='won' AND won_time >= %s AND won_time < %s""", (a, fim))
+        booked, receita = cur.fetchone()
+    return passou, booked, total, float(receita)
+
+
 def _plan_funil(conn, meses: list[dt.date]) -> dict[dt.date, dict[str, dict]]:
     """Plano mensal da planilha de metas (mkt_plan_funnel) para os meses dados."""
     with conn.cursor() as cur:
@@ -685,8 +709,8 @@ def _funil(conn, request: Request) -> str:
     dias = (fim - ini).days + 1
     ini_p, fim_p = ini - dt.timedelta(days=dias), ini - dt.timedelta(days=1)
 
-    passou, booked, total = _coorte(conn, ini, fim)
-    passou_p, booked_p, total_p = _coorte(conn, ini_p, fim_p)
+    passou, booked, total, receita_book = _funil_eventos(conn, ini, fim)
+    passou_p, booked_p, total_p, _rec_p = _funil_eventos(conn, ini_p, fim_p)
 
     mes_ref = fim.replace(day=1)
     with conn.cursor() as cur:
@@ -735,12 +759,6 @@ def _funil(conn, request: Request) -> str:
     # ---- funil visual (modelo do app Lovable do time): barras centradas com
     # largura proporcional, pílula de conversão VS ETAPA ANTERIOR entre elas,
     # receita no Booking; ao lado, o Resumo do Funil (TX vs anterior + TX Lead)
-    with conn.cursor() as cur:
-        cur.execute("""SELECT COALESCE(sum(valor) FILTER (WHERE status='won'), 0)
-                         FROM mkt_deals_attribution
-                        WHERE add_time >= %s AND add_time < %s""",
-                    (ini, fim + dt.timedelta(days=1)))
-        receita_book = float(cur.fetchone()[0] or 0)
     seq = [(nome, passou[i]) for i, (nome, _) in enumerate(_FUNIL_ETAPAS)] + [("Booking", booked)]
     for i2 in range(len(seq)):
         nome, n2 = seq[i2]
@@ -750,7 +768,7 @@ def _funil(conn, request: Request) -> str:
             barras += (f"<div style='text-align:center;margin:7px 0'><span style='background:var(--surface-3);"
                        f"border:1px solid var(--border-strong);border-radius:999px;padding:2px 12px;"
                        f"font-size:var(--fs-xs);color:var(--text-2)'>{_fmt(taxa2, 'pct') if taxa2 is not None else '—'} conv.</span></div>")
-        w = max(30.0, (n2 / total * 100) if total else 30.0)
+        w = min(100.0, max(30.0, (n2 / total * 100) if total else 30.0))
         extra = (f"<div style='font-size:var(--fs-xs);font-weight:600;opacity:.8'>{_fmt(receita_book, 'brl')}</div>"
                  if nome == "Booking" else "")
         barras += (f"<div title='{escape(_FUNIL_DEFS.get(nome, ''))}' style='width:{w:.1f}%;margin:0 auto;"
@@ -854,7 +872,7 @@ def _funil(conn, request: Request) -> str:
                      "(a versão via Claude entra quando os créditos de API estiverem disponíveis)</p><div class=card>" + itens +
                      "<style>.sug-item{padding:8px 0;border-top:1px solid var(--border);font-size:var(--fs-sm);line-height:1.6;color:var(--text-2)}.sug-item:first-child{border-top:none}</style></div></section>")
 
-    return (f"<h1>Funil de Prospecção</h1><div class=sub>coorte: deals criados no período · “passou da etapa” = alcançou etapa igual/posterior (won passa por todas)</div>"
+    return (f"<h1>Funil de Prospecção</h1><div class=sub>contagem por EVENTO no período (mesma régua do Pipedrive): Lead = criados · etapas = quem ENTROU na etapa · Booking = ganhos — por isso uma etapa pode superar a anterior</div>"
             f"<form method=get action=/marketing><input type=hidden name=view value=funil>{form}</form>"
             + meta_html +
             f"<section><h2>Funil</h2><p class=secsub>largura proporcional ao volume · pílula = conversão sobre a etapa anterior</p>{funil_visual}</section>"

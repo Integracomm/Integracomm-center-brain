@@ -102,3 +102,91 @@ def sync_deals(conn: Any, since: dt.date = dt.date(2025, 1, 1)) -> int:
         if apagados:
             cur.execute("DELETE FROM mkt_deals_attribution WHERE deal_id = ANY(%s)", (apagados,))
     return n
+
+
+# ---------------------------------------------------------------------------
+# Histórico de mudanças de etapa (/deals/{id}/flow) → mkt_stage_events.
+# É o que permite contar o funil POR EVENTO no período (mesma régua do
+# Pipedrive/app Lovable do time: "entrou na etapa X em julho"), em vez de
+# coorte. 1 chamada por deal: backfill pesado (~2k deals), incremental leve.
+# ---------------------------------------------------------------------------
+_EVENTS_DDL = """
+CREATE TABLE IF NOT EXISTS mkt_stage_events (
+    deal_id    BIGINT NOT NULL,
+    stage_id   INTEGER NOT NULL,
+    entered_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (deal_id, stage_id, entered_at)
+);
+CREATE INDEX IF NOT EXISTS idx_mkt_stage_ev_t ON mkt_stage_events(entered_at);
+-- deals já enriquecidos (re-buscamos só os que mudaram depois)
+CREATE TABLE IF NOT EXISTS mkt_flow_synced (
+    deal_id   BIGINT PRIMARY KEY,
+    synced_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+"""
+
+
+def _flow_events(deal_id: int) -> list[tuple[int, str]]:
+    """(stage_id, log_time) de cada mudança de etapa do deal, via /flow."""
+    import time
+    out: list[tuple[int, str]] = []
+    start = 0
+    while True:
+        for tent in range(4):
+            try:
+                j = _get(f"deals/{deal_id}/flow", {"limit": 500, "start": start})
+                break
+            except httpx.HTTPStatusError as e:  # 429: espera e tenta de novo
+                if e.response.status_code == 429 and tent < 3:
+                    time.sleep(2.0 * (tent + 1))
+                    continue
+                raise
+        for item in j.get("data") or []:
+            if item.get("object") != "dealChange":
+                continue
+            d = item.get("data") or {}
+            if d.get("field_key") == "stage_id" and d.get("new_value") is not None:
+                try:
+                    out.append((int(d["new_value"]), d.get("log_time")))
+                except (TypeError, ValueError):
+                    pass
+        p = (j.get("additional_data") or {}).get("pagination") or {}
+        if not p.get("more_items_in_collection"):
+            return out
+        start = p.get("next_start")
+
+
+def sync_stage_events(conn: Any, *, full: bool = False, window_days: int = 60) -> int:
+    """Enriquece com o histórico de etapas os deals NOVOS/ALTERADOS desde o
+    último enriquecimento (updated_at > synced_at); `full` refaz todos."""
+    import time
+    with conn.cursor() as cur:
+        cur.execute(_EVENTS_DDL)
+        if full:
+            cur.execute("SELECT deal_id FROM mkt_deals_attribution ORDER BY add_time")
+        else:
+            cur.execute("""SELECT d.deal_id FROM mkt_deals_attribution d
+                             LEFT JOIN mkt_flow_synced f ON f.deal_id = d.deal_id
+                            WHERE (f.deal_id IS NULL AND d.add_time >= now() - %s * interval '1 day')
+                               OR d.updated_at > f.synced_at ORDER BY d.add_time""",
+                        (window_days,))
+        ids = [r[0] for r in cur.fetchall()]
+    n = 0
+    with conn.cursor() as cur:
+        for i, did in enumerate(ids):
+            try:
+                evs = _flow_events(did)
+            except httpx.HTTPError:
+                continue  # deal problemático não trava o lote; re-tenta amanhã
+            for sid, quando in evs:
+                if not quando:
+                    continue
+                cur.execute("""INSERT INTO mkt_stage_events (deal_id, stage_id, entered_at)
+                               VALUES (%s,%s,%s) ON CONFLICT DO NOTHING""", (did, sid, quando))
+                n += 1
+            cur.execute("""INSERT INTO mkt_flow_synced (deal_id, synced_at) VALUES (%s, now())
+                           ON CONFLICT (deal_id) DO UPDATE SET synced_at=now()""", (did,))
+            time.sleep(0.12)  # folga p/ o rate limit (~80 req/2s no plano)
+            if i and i % 200 == 0:
+                print(f"  [flow] {i}/{len(ids)} deals...", flush=True)
+    return n
