@@ -51,7 +51,7 @@ def _fmt(v, kind="num") -> str:
     return f"{v:,.0f}".replace(",", ".")
 
 
-def _shell(A, role: str, view: str, content: str) -> str:
+def _shell(A, role: str, view: str, content: str, usermail: str = "") -> str:
     nav = "<a class='nav-item' href='/'>← Início (central)</a>" if role == "admin" else ""
     for v, label in _VIEWS:
         cls = "nav-item active" if v == view else "nav-item"
@@ -110,12 +110,12 @@ tr:hover td{background:var(--surface-2)}
  <aside class=rail>
    <div class=brand><div class=logo></div><div><div class=bt>Integracomm IA</div><div class=bs>Marketing · Tráfego & Leads</div></div></div>
    <nav>__NAV__</nav>
-   <div class=rail-foot>papel: <b>__ROLE__</b> · <a href="/logout" style="color:var(--text-muted);text-decoration:underline">sair</a><br>dados via cache local (coleta 06h)</div>
+   <div class=rail-foot><b>__USERMAIL__</b> · <a href="/logout" style="color:var(--text-muted);text-decoration:underline">sair</a><br>dados via cache local (coleta 06h)</div>
  </aside>
  <main>__CONTENT__</main>
 </div></body></html>"""
     return (head.replace("__TOKENS__", A._tokens_css()).replace("__NAV__", nav)
-            .replace("__ROLE__", escape(role)).replace("__CONTENT__", content))
+            .replace("__USERMAIL__", escape(usermail or role)).replace("__CONTENT__", content))
 
 
 # ---------------------------------------------------------------------------
@@ -1221,4 +1221,4 @@ def marketing(request: Request, view: str = Query("visao")):
               "lag": lambda: _lag(c), "planejador": lambda: _planejador(c, request),
               "criativos": lambda: _criativos(c, request)}[view]
         content = fn() + "<p class=foot>Cache local das fontes (Meta, Google, Pipedrive, planilha de metas, ad-insightify) — coleta diária 06h. A decisão é sempre do gestor.</p>"
-    return HTMLResponse(_shell(A, role, view, content))
+    return HTMLResponse(_shell(A, role, view, content, usermail=user))

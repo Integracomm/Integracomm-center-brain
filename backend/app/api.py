@@ -184,9 +184,9 @@ button{{width:100%;margin-top:20px;cursor:pointer;background:var(--brand);color:
   <div style="margin-bottom:18px"><span class=logo></span><h1>Integracomm IA</h1></div>
   {msg}
   <label>usuário / e-mail</label>
-  <input type=text name=user placeholder="adm@integracomm.com.br" autofocus autocomplete=username>
+  <input type=text name=user placeholder="insira o e-mail..." autofocus autocomplete=username>
   <label>senha</label>
-  <input type=password name=password autocomplete=current-password>
+  <input type=password name=password placeholder="insira sua senha..." autocomplete=current-password>
   <button type=submit>Entrar</button>
   <div class=hint style="text-align:center;margin-top:16px">
     Primeiro acesso? <a href="/signup" style="color:var(--brand);font-weight:600;text-decoration:none">Criar sua conta</a>
@@ -510,6 +510,22 @@ def hub(request: Request):
     return HTMLResponse(_render_hub(user, stats, users, mkt))
 
 
+@app.get("/admin", response_class=HTMLResponse)
+def admin_panel(request: Request):
+    """Painel administrativo (só admin): contas e permissões por área."""
+    s = _session(request)
+    if not s:
+        return RedirectResponse("/login", status_code=302)
+    user, role = s
+    if role != "admin":
+        return RedirectResponse("/growth", status_code=302)
+    with _conn() as c:
+        _audit_view(c, user, scope="admin")
+        stats = _hub_stats(c)
+        users = list_users(c)
+    return HTMLResponse(_render_hub(user, stats, users, None, page="admin"))
+
+
 @app.post("/api/users/{user_id}/status")
 def api_user_status(user_id: str, request: Request, payload: dict = Body(...)):
     """Aprova/bloqueia uma conta criada no cadastro. Só admin."""
@@ -563,7 +579,7 @@ def dashboard(request: Request, view: str = Query("contas")):
         interventions = _recent_interventions(c) if view == "playbooks" else None
         cancel = _cancel_rows(c) if view == "cancelamentos" else None
     return HTMLResponse(_render(role, scores, alerts, practices, view=view,
-                                interventions=interventions, cancel=cancel))
+                                interventions=interventions, cancel=cancel, usermail=user))
 
 
 def _recent_interventions(conn: Any, limit: int = 20) -> list[dict]:
@@ -732,7 +748,7 @@ def _users_html(users: list[dict]) -> str:
 
 
 def _render_hub(role: str, st: dict, users: list[dict] | None = None,
-                mkt: dict | None = None) -> str:
+                mkt: dict | None = None, page: str = "home") -> str:
     n_alerts = sum(st["sev"].values())
     crit = st["sev"].get("critico", 0)
     # Iniciativas sugeridas pela inteligência central — derivadas dos dados
@@ -920,42 +936,44 @@ h2{font-family:var(--font-display);font-weight:600;font-size:var(--fs-lg);margin
  <aside class=rail>
    <div class=brand><div class=logo></div><div><div class=bt>Integracomm IA</div><div class=bs>Central</div></div></div>
    <nav>
-     <a class="nav-item active" href="/">Início</a>
+     <a class="nav-item__HOME_ON__" href="/">Início</a>
+     <a class="nav-item__ADM_ON__" href="/admin">Administração</a>
      <a class="nav-item" href="/growth">Growth / Assessoria</a>
      <a class="nav-item" href="/marketing">Marketing</a>
      <a class="nav-item soon">Pré-vendas <span class=tag>em breve</span></a>
      <a class="nav-item soon">Financeiro <span class=tag>em breve</span></a>
      <a class="nav-item soon">Operações <span class=tag>em breve</span></a>
    </nav>
-   <div class=rail-foot>papel: <b>__ROLE__</b> · <a href="/logout" style="color:var(--text-muted);text-decoration:underline">sair</a><br>humano no loop — a IA só sinaliza</div>
+   <div class=rail-foot><b>__USERMAIL__</b> · <a href="/logout" style="color:var(--text-muted);text-decoration:underline">sair</a><br>humano no loop — a IA só sinaliza</div>
  </aside>
  <main>
-  <h1>Visão central</h1>
-  <p class=sub>A inteligência central consolida os sinais de todas as áreas e sugere iniciativas alinhadas entre elas. Hoje 2 de 5 áreas estão ativas (Growth e Marketing); as demais entram como novos agentes na mesma casca.</p>
-  <div class=kpis>__KPIS__</div>
-  <section>
-    <h2>Iniciativas sugeridas</h2>
-    <p class=secsub>derivadas dos sinais das áreas ativas — priorização da empresa, não de uma área só</p>
-    <div class=central>__INITS__</div>
-  </section>
-  <section>
-    <h2>Áreas</h2>
-    <p class=secsub>resumo do andamento de cada área — clique para abrir o painel completo; verde = no ritmo/meta, vermelho = atenção</p>
-    <div class=areas>__AREAS__</div>
-  </section>
-  <section>
-    <h2>Contas de acesso</h2>
-    <p class=secsub>cadastros feitos na tela de login — pendentes primeiro; aprovar libera o acesso à área de Growth</p>
-    <div class=central>__USERS__</div>
-  </section>
+__BODY__
   <p class=foot>Derivados do Postgres próprio (LGPD: sem conteúdo bruto). A IA calcula, exibe e sinaliza — a decisão é sempre humana.</p>
  </main>
 </div>
 </body></html>"""
-    return (head.replace("__TOKENS__", _tokens_css()).replace("__ROLE__", escape(role))
-            .replace("__KPIS__", kpi_html)
-            .replace("__INITS__", init_html).replace("__AREAS__", area_cards)
-            .replace("__USERS__", _users_html(users or [])))
+    if page == "admin":
+        body = (
+            "<h1>Administração</h1>"
+            "<p class=sub>controle de acessos por conta — aprovar/bloquear cadastros e definir quais áreas cada usuário enxerga</p>"
+            "<section><h2>Contas e permissões</h2>"
+            "<p class=secsub>pendentes primeiro · marque as áreas e clique em “salvar áreas” — mudanças valem em até 60s</p>"
+            f"<div class=central>{_users_html(users or [])}</div></section>")
+    else:
+        body = (
+            "<h1>Visão central</h1>"
+            "<p class=sub>A inteligência central consolida os sinais de todas as áreas e sugere iniciativas alinhadas entre elas. Hoje 2 de 5 áreas estão ativas (Growth e Marketing); as demais entram como novos agentes na mesma casca.</p>"
+            f"<div class=kpis>{kpi_html}</div>"
+            "<section><h2>Iniciativas sugeridas</h2>"
+            "<p class=secsub>derivadas dos sinais das áreas ativas — priorização da empresa, não de uma área só</p>"
+            f"<div class=central>{init_html}</div></section>"
+            "<section><h2>Áreas</h2>"
+            "<p class=secsub>resumo do andamento de cada área — clique para abrir o painel completo; verde = no ritmo/meta, vermelho = atenção</p>"
+            f"<div class=areas>{area_cards}</div></section>")
+    return (head.replace("__TOKENS__", _tokens_css()).replace("__USERMAIL__", escape(role))
+            .replace("__HOME_ON__", " active" if page != "admin" else "")
+            .replace("__ADM_ON__", " active" if page == "admin" else "")
+            .replace("__BODY__", body))
 
 
 # mapeamento semântico -> variável de token (design-tokens.css é a fonte da verdade)
@@ -1083,7 +1101,8 @@ _STAGE_LABEL = {"saudavel": "saudável", "desengajamento_inicial": "desengajamen
 
 def _render(role: str, scores: list[dict], alerts: list[dict],
             practices: dict | None = None, view: str = "contas",
-            interventions: list | None = None, cancel: list | None = None) -> str:
+            interventions: list | None = None, cancel: list | None = None,
+            usermail: str = "") -> str:
     evaluable = [s for s in scores if s["evaluable"]]
     non_eval = [s for s in scores if not s["evaluable"]]
     evaluable.sort(key=lambda s: (float(s["score"]), -_mrr_val(s)))
@@ -1246,7 +1265,7 @@ section{margin-top:var(--space-8)}
  <aside class=rail>
    <div class=brand><div class=logo></div><div><div class=bt>Integracomm IA</div><div class=bs>Growth · Saúde de clientes</div></div></div>
    <nav>__NAV__</nav>
-   <div class=rail-foot>papel: <b>__ROLE__</b> · <a href="/logout" style="color:var(--text-muted);text-decoration:underline">sair</a><br>humano no loop — o agente só sinaliza</div>
+   <div class=rail-foot><b>__USERMAIL__</b> · <a href="/logout" style="color:var(--text-muted);text-decoration:underline">sair</a><br>humano no loop — o agente só sinaliza</div>
  </aside>
  <main>__CONTENT__</main>
 </div>
@@ -1329,7 +1348,7 @@ __SCRIPT__
         script = _CONTAS_JS
 
     return (head.replace("__TOKENS__", _tokens_css())
-            .replace("__NAV__", nav).replace("__ROLE__", escape(role))
+            .replace("__NAV__", nav).replace("__USERMAIL__", escape(usermail or role))
             .replace("__CONTENT__", content).replace("__SCRIPT__", script))
 
 
