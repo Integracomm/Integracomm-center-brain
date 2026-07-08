@@ -63,6 +63,11 @@ def sync_deals(conn: Any, since: dt.date = dt.date(2025, 1, 1)) -> int:
     labels = produto_labels()
     n, start = 0, 0
     with conn.cursor() as cur:
+        # colunas p/ as áreas de Pré-vendas/Vendas (dono e motivo de perda)
+        cur.execute("""ALTER TABLE mkt_deals_attribution
+                       ADD COLUMN IF NOT EXISTS owner_id BIGINT,
+                       ADD COLUMN IF NOT EXISTS owner_name TEXT,
+                       ADD COLUMN IF NOT EXISTS lost_reason TEXT""")
         while start is not None:
             j = _get("deals", {"limit": 500, "start": start, "sort": "add_time DESC"})
             data = j.get("data") or []
@@ -79,22 +84,29 @@ def sync_deals(conn: Any, since: dt.date = dt.date(2025, 1, 1)) -> int:
                     """INSERT INTO mkt_deals_attribution
                            (deal_id, add_time, won_time, lost_time, status, valor, origem,
                             utm_medium, utm_campaign, utm_term, utm_content, produto,
-                            stage_id, updated_at)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now())
+                            stage_id, owner_id, owner_name, lost_reason, updated_at)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now())
                        ON CONFLICT (deal_id) DO UPDATE SET
                             won_time=EXCLUDED.won_time, lost_time=EXCLUDED.lost_time,
                             status=EXCLUDED.status, valor=EXCLUDED.valor, origem=EXCLUDED.origem,
                             utm_medium=EXCLUDED.utm_medium, utm_campaign=EXCLUDED.utm_campaign,
                             utm_term=EXCLUDED.utm_term, utm_content=EXCLUDED.utm_content,
-                            produto=EXCLUDED.produto, stage_id=EXCLUDED.stage_id, updated_at=now()
+                            produto=EXCLUDED.produto, stage_id=EXCLUDED.stage_id,
+                            owner_id=EXCLUDED.owner_id, owner_name=EXCLUDED.owner_name,
+                            lost_reason=EXCLUDED.lost_reason, updated_at=now()
                        WHERE (mkt_deals_attribution.status, mkt_deals_attribution.stage_id,
-                              mkt_deals_attribution.won_time, mkt_deals_attribution.valor)
+                              mkt_deals_attribution.won_time, mkt_deals_attribution.valor,
+                              mkt_deals_attribution.owner_id, mkt_deals_attribution.lost_reason)
                              IS DISTINCT FROM
-                             (EXCLUDED.status, EXCLUDED.stage_id, EXCLUDED.won_time, EXCLUDED.valor)""",
+                             (EXCLUDED.status, EXCLUDED.stage_id, EXCLUDED.won_time, EXCLUDED.valor,
+                              EXCLUDED.owner_id, EXCLUDED.lost_reason)""",
                     (d["id"], add, d.get("won_time"), d.get("lost_time"), d.get("status"),
                      d.get("value"), (_txt(d.get(F_SOURCE)) or "").lower() or None,
                      _txt(d.get(F_MEDIUM)), _txt(d.get(F_CAMPAIGN)), _txt(d.get(F_TERM)),
-                     _txt(d.get(F_CONTENT)), prod, d.get("stage_id")))
+                     _txt(d.get(F_CONTENT)), prod, d.get("stage_id"),
+                     (d.get("user_id") or {}).get("id") if isinstance(d.get("user_id"), dict) else d.get("user_id"),
+                     (d.get("user_id") or {}).get("name") if isinstance(d.get("user_id"), dict) else None,
+                     _txt(d.get("lost_reason"))))
                 n += 1
             p = (j.get("additional_data") or {}).get("pagination") or {}
             if page_old and data:
