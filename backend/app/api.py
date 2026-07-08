@@ -523,6 +523,13 @@ def admin_panel(request: Request):
         _audit_view(c, user, scope="admin")
         stats = _hub_stats(c)
         users = list_users(c)
+        with c.cursor() as cur:
+            cur.execute("""SELECT actor, count(*), max(at) FROM audit_log
+                            WHERE action='view' GROUP BY actor""")
+            acessos = {a: (n, ult) for a, n, ult in cur.fetchall()}
+    for u in users:
+        n, ult = acessos.get(u["email"], (0, None))
+        u["views"], u["last_seen"] = n, (ult.strftime("%d/%m/%Y às %H:%M") if ult else None)
     return HTMLResponse(_render_hub(user, stats, users, None, page="admin"))
 
 
@@ -747,6 +754,65 @@ def _users_html(users: list[dict]) -> str:
     return rows + js
 
 
+def _admin_html(users: list[dict]) -> str:
+    """Painel administrativo: linha por conta com interruptor POR ÁREA (aplica
+    na hora via /api/users/{id}/areas), nº de acessos e último login (audit_log),
+    aprovar/bloquear e busca — modelo do painel da calculadora."""
+    if not users:
+        return "<div class=central><div class='id_'>nenhuma conta criada ainda — os gestores usam “Criar sua conta” na tela de login</div></div>"
+    _UST = {"pendente": "--status-medio", "aprovado": "--status-baixo", "bloqueado": "--status-critico"}
+    ths = "".join(f"<th>{nome.split(' /')[0]}</th>" for nome in AREAS.values())
+    rows = ""
+    for u in users:
+        acts = ""
+        if u["status"] != "aprovado":
+            acts += f"<button class=abtn onclick=\"userSt('{u['id']}','aprovado')\">aprovar</button> "
+        if u["status"] != "bloqueado":
+            acts += f"<button class=abtn onclick=\"userSt('{u['id']}','bloqueado')\">bloquear</button>"
+        tgls = "".join(
+            f"<td class=tgl-td><label class=tgl><input type=checkbox data-uid='{u['id']}' value='{slug}' "
+            f"{'checked' if slug in (u.get('areas') or []) else ''} onchange=\"tglArea('{u['id']}')\">"
+            f"<span></span></label></td>" for slug in AREAS)
+        rows += (f"<tr data-busca=\"{escape((u['name'] + ' ' + u['email']).lower())}\">"
+                 f"<td><b>{escape(u['name'][:34])}</b><br><span class=amail>{escape(u['email'][:44])}</span></td>"
+                 f"<td>{_chip(u['status'], _UST.get(u['status'], '--status-semdados'))}<div style='margin-top:5px'>{acts}</div></td>"
+                 f"<td class=anum>{u.get('views', 0)}</td>"
+                 f"<td class=anum>{escape(u.get('last_seen') or '—')}</td>"
+                 f"{tgls}</tr>")
+    return (
+        "<div class=central style='padding:0;overflow-x:auto'>"
+        "<div style='padding:14px 16px 0'><input id=abusca placeholder='pesquisar por nome ou e-mail…' oninput='aFiltra()' "
+        "style='width:100%;max-width:420px;background:var(--bg-panel);border:1px solid var(--border-strong);border-radius:var(--radius-sm);color:var(--text);font-family:var(--font-body);font-size:var(--fs-sm);padding:9px 11px'></div>"
+        "<table class=atbl><tr><th>Usuário</th><th>Status</th><th>Acessos</th><th>Último login</th>" + ths + "</tr>"
+        + rows + "</table></div>"
+        "<script>"
+        "function userSt(id,st){if(st==='bloqueado'&&!confirm('Bloquear esta conta?'))return;"
+        "fetch('/api/users/'+id+'/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:st})})"
+        ".then(function(r){return r.json();}).then(function(j){if(j.error)alert(j.error);else location.reload();}).catch(function(){alert('falha de rede');});}"
+        "function tglArea(id){var areas=[].slice.call(document.querySelectorAll(\"input[data-uid='\"+id+\"']:checked\")).map(function(c){return c.value;});"
+        "fetch('/api/users/'+id+'/areas',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({areas:areas})})"
+        ".then(function(r){return r.json();}).then(function(j){if(j.error){alert(j.error);location.reload();}}).catch(function(){alert('falha de rede');location.reload();});}"
+        "function aFiltra(){var q=document.getElementById('abusca').value.toLowerCase();"
+        "[].slice.call(document.querySelectorAll('tr[data-busca]')).forEach(function(tr){tr.style.display=tr.getAttribute('data-busca').indexOf(q)>=0?'':'none';});}"
+        "</script>"
+        "<style>"
+        ".atbl{width:100%;border-collapse:collapse;font-size:var(--fs-sm);margin-top:12px}"
+        ".atbl th{text-align:left;color:var(--text-muted);font-size:var(--fs-2xs);text-transform:uppercase;letter-spacing:var(--tracking-label);padding:9px 12px;border-bottom:1px solid var(--border-strong);white-space:nowrap}"
+        ".atbl td{padding:10px 12px;border-bottom:1px solid var(--border);vertical-align:middle}"
+        ".amail{color:var(--text-muted);font-size:var(--fs-xs)}"
+        ".anum{font-variant-numeric:tabular-nums;white-space:nowrap}"
+        ".tgl-td{text-align:center}"
+        ".tgl{position:relative;display:inline-block;width:38px;height:21px;cursor:pointer}"
+        ".tgl input{opacity:0;width:0;height:0}"
+        ".tgl span{position:absolute;inset:0;background:var(--surface-3);border:1px solid var(--border-strong);border-radius:999px;transition:background .15s}"
+        ".tgl span::after{content:'';position:absolute;width:15px;height:15px;border-radius:50%;background:var(--text-muted);top:2px;left:3px;transition:all .15s}"
+        ".tgl input:checked+span{background:var(--brand);border-color:var(--brand)}"
+        ".tgl input:checked+span::after{left:18px;background:var(--brand-ink)}"
+        ".abtn{cursor:pointer;background:var(--surface-3);border:1px solid var(--border-strong);border-radius:var(--radius-sm);color:var(--text-2);font-family:var(--font-body);font-size:var(--fs-2xs);padding:3px 8px}"
+        ".abtn:hover{border-color:var(--brand);color:var(--brand)}"
+        "</style>")
+
+
 def _render_hub(role: str, st: dict, users: list[dict] | None = None,
                 mkt: dict | None = None, page: str = "home") -> str:
     n_alerts = sum(st["sev"].values())
@@ -957,8 +1023,8 @@ __BODY__
             "<h1>Administração</h1>"
             "<p class=sub>controle de acessos por conta — aprovar/bloquear cadastros e definir quais áreas cada usuário enxerga</p>"
             "<section><h2>Contas e permissões</h2>"
-            "<p class=secsub>pendentes primeiro · marque as áreas e clique em “salvar áreas” — mudanças valem em até 60s</p>"
-            f"<div class=central>{_users_html(users or [])}</div></section>")
+            "<p class=secsub>pendentes primeiro · os interruptores aplicam NA HORA (vale em até 60s) · busca por nome/e-mail</p>"
+            + _admin_html(users or []))
     else:
         body = (
             "<h1>Visão central</h1>"
