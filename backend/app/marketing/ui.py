@@ -622,18 +622,32 @@ def _funil_eventos(conn, a: dt.date, b: dt.date) -> tuple[list[int], int, int, f
     daquela ordem (mkt_stage_events, via /flow); Booking = ganhos (won) no
     período + receita. Taxas podem passar de 100%: o evento pode ser de deal
     criado antes do período (ex.: agendou em junho, compareceu em julho)."""
+    # Régua CONFIRMADA com o Otávio (08/07, números validados contra o app):
+    # MQL = Lead; SAL = criados no período c/ 1º contato (stages 2/13);
+    # SQL = criados no período c/ reunião agendada (6/15); Oportunidade = TODOS
+    # que entraram em Negociação (7) no período — indicações PULAM etapas e
+    # entram direto, por isso Oportunidade pode superar SQL.
     fim = b + dt.timedelta(days=1)
     with conn.cursor() as cur:
         cur.execute("""SELECT count(*) FROM mkt_deals_attribution
                         WHERE add_time >= %s AND add_time < %s""", (a, fim))
         total = cur.fetchone()[0]
-        passou = [total, 0, 0, 0, 0]
-        cur.execute("""SELECT stage_id, count(DISTINCT deal_id) FROM mkt_stage_events
-                        WHERE entered_at >= %s AND entered_at < %s GROUP BY 1""", (a, fim))
-        for sid, n in cur.fetchall():
-            o = _STAGE_ORDER.get(sid)
-            if o and 1 <= o <= 4:
-                passou[o] += n
+
+        def coorte_etapa(stages):
+            cur.execute("""SELECT count(DISTINCT e.deal_id) FROM mkt_stage_events e
+                             JOIN mkt_deals_attribution d ON d.deal_id = e.deal_id
+                            WHERE e.entered_at >= %s AND e.entered_at < %s
+                              AND d.add_time >= %s AND d.add_time < %s
+                              AND e.stage_id = ANY(%s)""", (a, fim, a, fim, list(stages)))
+            return cur.fetchone()[0]
+
+        sal = coorte_etapa((2, 13))
+        sql_n = coorte_etapa((6, 15))
+        cur.execute("""SELECT count(DISTINCT deal_id) FROM mkt_stage_events
+                        WHERE entered_at >= %s AND entered_at < %s AND stage_id = 7""",
+                    (a, fim))
+        oport = cur.fetchone()[0]
+        passou = [total, total, sal, sql_n, oport]
         cur.execute("""SELECT count(*), COALESCE(sum(valor), 0) FROM mkt_deals_attribution
                         WHERE status='won' AND won_time >= %s AND won_time < %s""", (a, fim))
         booked, receita = cur.fetchone()
