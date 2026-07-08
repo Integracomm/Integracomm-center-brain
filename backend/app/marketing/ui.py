@@ -543,7 +543,7 @@ def _svg_line(series, labels, fmt_y=None):
     W, H, L, B = 780, 190, 46, 30
     vmax = max((max(v) for _, _, v in series if v), default=1) or 1
     n = max(len(labels) - 1, 1)
-    out = [f"<svg viewBox='0 0 {W} {H + 14}' style='width:100%;max-width:840px'>"]
+    out = [f"<svg viewBox='0 0 {W} {H + 40}' style='width:100%;max-width:840px'>"]
     for fr in (0.5, 1.0):
         y = H - B - (H - B - 16) * fr
         out.append(f"<line x1='{L}' y1='{y:.0f}' x2='{W - 8}' y2='{y:.0f}' stroke='var(--border)' stroke-dasharray='3 4'/>")
@@ -566,7 +566,10 @@ def _svg_line(series, labels, fmt_y=None):
             out.append(f"<circle cx='{x:.0f}' cy='{y:.0f}' r='7' fill='transparent' stroke='none'>"
                        f"<title>{escape(labels[i])}: {fmt_y(v)}</title></circle>"
                        f"<circle cx='{x:.0f}' cy='{y:.0f}' r='2.5' fill='{cor}'/>")
-        out.append(f"<text x='{L + 4 + si * 130}' y='14' fill='{cor}' font-size='11' font-weight='600'>{escape(nome)}</text>")
+        # legenda ABAIXO do gráfico (no topo chocava com as linhas)
+        lx = L + 4 + si * 190
+        out.append(f"<circle cx='{lx}' cy='{H + 26}' r='4' fill='{cor}'/>")
+        out.append(f"<text x='{lx + 9}' y='{H + 30}' fill='{cor}' font-size='11' font-weight='600'>{escape(nome)}</text>")
     out.append("</svg>")
     return "".join(out)
 
