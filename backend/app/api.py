@@ -585,8 +585,15 @@ def dashboard(request: Request, view: str = Query("contas")):
         practices = _top_practices(c)
         interventions = _recent_interventions(c) if view == "playbooks" else None
         cancel = _cancel_rows(c) if view == "cancelamentos" else None
+        base_bundle = None
+        if view == "cancelamentos":
+            with c.cursor() as cur:
+                cur.execute("""SELECT COALESCE(substring(name FROM 'B[1-5]'), 'outros'), count(*)
+                                 FROM accounts GROUP BY 1""")
+                base_bundle = dict(cur.fetchall())
     return HTMLResponse(_render(role, scores, alerts, practices, view=view,
-                                interventions=interventions, cancel=cancel, usermail=user))
+                                interventions=interventions, cancel=cancel, usermail=user,
+                                request=request, base_bundle=base_bundle))
 
 
 def _recent_interventions(conn: Any, limit: int = 20) -> list[dict]:
@@ -1174,7 +1181,8 @@ _STAGE_LABEL = {"saudavel": "saudável", "desengajamento_inicial": "desengajamen
 def _render(role: str, scores: list[dict], alerts: list[dict],
             practices: dict | None = None, view: str = "contas",
             interventions: list | None = None, cancel: list | None = None,
-            usermail: str = "") -> str:
+            usermail: str = "", request: Request | None = None,
+            base_bundle: dict | None = None) -> str:
     evaluable = [s for s in scores if s["evaluable"]]
     non_eval = [s for s in scores if not s["evaluable"]]
     evaluable.sort(key=lambda s: (float(s["score"]), -_mrr_val(s)))
@@ -1381,7 +1389,7 @@ __SCRIPT__
     elif view == "playbooks":
         content = _playbooks_content(practices or {}, interventions or []) + foot
     elif view == "cancelamentos":
-        content = _cancel_content(cancel or []) + foot
+        content = _cancel_content(cancel or [], request, base_bundle or {}) + foot
     elif view == "relatorios":
         rep = _report_from(scores, alerts)
         content = _relatorios_content(rep, scores) + foot
@@ -1894,7 +1902,31 @@ def _cancel_rows(conn: Any) -> list[dict]:
         return [dict(zip(cols, r)) for r in cur.fetchall()]
 
 
-def _cancel_content(rows: list[dict]) -> str:
+_PLANOS_LEGADO = ("ASS", "ADS", "ESTRAT", "CONSULT", "ANTIGO", "MASTER + ADS")
+
+
+def _canc_bundle(r: dict) -> str | None:
+    """Bundle (B1-B5) do cancelamento: pela equipe (B2-S1) ou pelo plano."""
+    import re as _re
+    for campo in ("equipe", "plano"):
+        m = _re.search(r"B[1-5]", str(r.get(campo) or ""))
+        if m:
+            return m.group(0)
+    pl = str(r.get("plano") or "").upper()
+    mapa = {"START": "B1", "SMART": "B1", "TRACTION": "B2", "SCALE": "B3",
+            "MASTER": "B4", "PLATINUM": "B5"}
+    for k, b in mapa.items():
+        if k in pl and "ADS" not in pl.split("+")[0]:
+            return b
+    return None
+
+
+def _canc_legado(r: dict) -> bool:
+    pl = str(r.get("plano") or "").upper()
+    return any(x in pl for x in _PLANOS_LEGADO) and "TRACTION" not in pl
+
+
+def _cancel_content(rows: list[dict], request: Request, base_bundle: dict | None = None) -> str:
     """Aba Cancelamentos — análises sobre as planilhas do time (fonte oficial
     de churn realizado; ClickUp de cancelados é mal preenchido)."""
     if not rows:
@@ -1903,13 +1935,33 @@ def _cancel_content(rows: list[dict]) -> str:
                 "<code>python -m scripts.sync_cancelamentos</code> (usa as planilhas "
                 "do time; cópia local em data/ quando não houver acesso público).</div></section>")
     import statistics as _st
-    canc = [r for r in rows if r["tipo"] == "cancelamento"]
-    term = [r for r in rows if r["tipo"] == "termino"]
-    trat = [r for r in rows if r["tipo"] == "tratativa"]
-    rev = [r for r in rows if r["tipo"] == "revertido"]
     hoje = dt.date.today()
     mes_atual = hoje.replace(day=1)
+    # ---- filtro temporal (?ini=YYYY-MM&fim=YYYY-MM; padrão = tudo)
+    qp = request.query_params
+    todos_meses = sorted({r["mes"] for r in rows}) or [mes_atual]
+    def _mes_qp(nome, padrao):
+        try:
+            return dt.date.fromisoformat((qp.get(nome) or "") + "-01")
+        except ValueError:
+            return padrao
+    f_ini = _mes_qp("ini", todos_meses[0])
+    f_fim = _mes_qp("fim", todos_meses[-1])
+    def _no_periodo(r):
+        return f_ini <= r["mes"] <= f_fim
+    canc = [r for r in rows if r["tipo"] == "cancelamento" and _no_periodo(r)]
+    term = [r for r in rows if r["tipo"] == "termino" and _no_periodo(r)]
+    trat = [r for r in rows if r["tipo"] == "tratativa"]
+    rev = [r for r in rows if r["tipo"] == "revertido" and _no_periodo(r)]
     meses = sorted({r["mes"] for r in canc})
+    opcoes = "".join(f"<option value='{m.strftime('%Y-%m')}'>{m.strftime('%m/%Y')}</option>" for m in todos_meses)
+    form_filtro = (
+        "<form method=get action=/growth><input type=hidden name=view value=cancelamentos>"
+        "<div class=filters style='display:flex;gap:12px;align-items:end;background:var(--surface-1);"
+        "border:1px solid var(--border-mid);border-radius:var(--radius-md);padding:12px 14px;margin:14px 0 4px'>"
+        f"<div class=grp><label>de (mês)</label><select name=ini>{opcoes.replace(chr(39) + f_ini.strftime('%Y-%m') + chr(39), chr(39) + f_ini.strftime('%Y-%m') + chr(39) + ' selected')}</select></div>"
+        f"<div class=grp><label>até (mês)</label><select name=fim>{opcoes.replace(chr(39) + f_fim.strftime('%Y-%m') + chr(39), chr(39) + f_fim.strftime('%Y-%m') + chr(39) + ' selected')}</select></div>"
+        "<button id=clearf type=submit>Aplicar</button></div></form>")
 
     def _f(v):
         return float(v) if v is not None else None
@@ -2002,10 +2054,69 @@ def _cancel_content(rows: list[dict]) -> str:
                       f"<td style='{td}'>{escape(r['plano'] or '—')}</td>"
                       f"<td style='{td};color:var(--text-2)'>{escape((r['motivo'] or '')[:160])}</td></tr>")
 
+    # ---- taxa de cancelamento por bundle (base = contas monitoradas HOJE)
+    base_bundle = base_bundle or {}
+    canc_bund: dict = {}
+    for r in canc:
+        canc_bund.setdefault(_canc_bundle(r) or "outros", []).append(r)
+    n_meses = max(1, len({r["mes"] for r in canc}) or 1)
+    tx_rows = ""
+    tot_base = sum(v for k, v in base_bundle.items() if k != "outros")
+    tot_canc_b = sum(len(v) for k, v in canc_bund.items() if k != "outros")
+    for b in ("B1", "B2", "B3", "B4", "B5"):
+        cb, bb = len(canc_bund.get(b, [])), base_bundle.get(b, 0)
+        tx = (cb / n_meses) / bb if bb else None
+        td = "text-align:right;padding:7px;border-bottom:1px solid var(--border);font-variant-numeric:tabular-nums"
+        tx_rows += (f"<tr><td style='padding:7px;border-bottom:1px solid var(--border)'><b>{b}</b></td>"
+                    f"<td style='{td}'>{bb or '—'}</td><td style='{td}'>{cb}</td>"
+                    f"<td style='{td}'>{(f'{tx*100:.1f}%/mês' if tx is not None else '—')}</td></tr>")
+    tx_tot = (tot_canc_b / n_meses) / tot_base if tot_base else None
+    tx_rows += (f"<tr style='border-top:2px solid var(--border-strong)'><td style='padding:7px'><b>Total bundles</b></td>"
+                f"<td style='text-align:right;padding:7px'><b>{tot_base}</b></td>"
+                f"<td style='text-align:right;padding:7px'><b>{tot_canc_b}</b></td>"
+                f"<td style='text-align:right;padding:7px'><b>{(f'{tx_tot*100:.1f}%/mês' if tx_tot is not None else '—')}</b></td></tr>")
+    taxa_html = ("<section><div class=sec-head><h2>Taxa de cancelamento por bundle</h2>"
+                 f"<span class=sub>média mensal do período filtrado ({n_meses} m) ÷ base monitorada ATUAL — aproximação: não temos a base histórica mês a mês</span></div>"
+                 + card(tbl("<tr>" + "".join(f"<th style='text-align:{al};padding:7px;border-bottom:1px solid var(--border-strong);color:var(--text-muted);font-size:var(--fs-2xs);text-transform:uppercase'>{h}</th>" for h, al in (("Bundle", "left"), ("Base ativa", "right"), ("Saídas no período", "right"), ("Taxa média", "right"))) + "</tr>", tx_rows))
+                 + "</section>")
+
+    # ---- gráfico de evolução mensal (total × novos × antigos) + MRR
+    from .marketing.ui import _svg_line
+    lbls = [m.strftime("%m/%y") for m in meses]
+    tot_s = [float(sum(1 for r in canc if r["mes"] == m)) for m in meses]
+    novo_s = [float(sum(1 for r in canc if r["mes"] == m and not _canc_legado(r))) for m in meses]
+    leg_s = [float(sum(1 for r in canc if r["mes"] == m and _canc_legado(r))) for m in meses]
+    mrr_s = [float(sum(_f(r["valor"]) or 0 for r in canc if r["mes"] == m)) for m in meses]
+    g1 = _svg_line([("Total", "var(--status-critico)", tot_s),
+                    ("Planos novos (bundles)", "var(--brand)", novo_s),
+                    ("Planos antigos/ADS", "var(--text-muted)", leg_s)], lbls)
+    g2 = _svg_line([("MRR perdido (R$)", "var(--status-alto)", mrr_s)], lbls,
+                   fmt_y=lambda v: f"R$ {v:,.0f}".replace(",", "."))
+    evolucao_html = ("<section><div class=sec-head><h2>Evolução mensal</h2>"
+                     "<span class=sub>cancelamentos por mês — total e separado por planos novos (bundles) × antigos/ADS</span></div>"
+                     + card(g1) + "</section>"
+                     "<section><div class=sec-head><h2>MRR perdido por mês</h2></div>" + card(g2) + "</section>")
+
+    # ---- tempo de casa por bundle (visão complementar)
+    tc_rows = ""
+    for b in ("B1", "B2", "B3", "B4", "B5", "outros"):
+        tps = [_f(r["meses"]) for r in canc_bund.get(b, []) if r.get("meses") is not None]
+        if not tps:
+            continue
+        td = "text-align:right;padding:7px;border-bottom:1px solid var(--border)"
+        tc_rows += (f"<tr><td style='padding:7px;border-bottom:1px solid var(--border)'><b>{b}</b></td>"
+                    f"<td style='{td}'>{len(tps)}</td><td style='{td}'>{_st.median(tps):.0f} m</td>"
+                    f"<td style='{td}'>{sum(1 for x in tps if x <= 3) / len(tps) * 100:.0f}%</td></tr>")
+    tempo_html = ""
+    if tc_rows:
+        tempo_html = ("<section><div class=sec-head><h2>Tempo de casa na saída, por bundle</h2>"
+                      "<span class=sub>mediana e % de churn PRECOCE (≤3 meses) — churn precoce = problema de onboarding/expectativa, não de entrega</span></div>"
+                      + card(tbl("<tr>" + "".join(f"<th style='text-align:{al};padding:7px;border-bottom:1px solid var(--border-strong);color:var(--text-muted);font-size:var(--fs-2xs);text-transform:uppercase'>{h}</th>" for h, al in (("Bundle", "left"), ("Saídas c/ dado", "right"), ("Mediana", "right"), ("≤3 meses", "right"))) + "</tr>", tc_rows)) + "</section>")
+
     return (
         "<div class=page-head><h1>Cancelamentos</h1>"
         "<span class=role-chip>fonte: planilhas do time (Saídas de Clientes + Bonificação Squads)</span></div>"
-        + kpis +
+        + form_filtro + kpis + taxa_html + evolucao_html +
         f"<section><div class=sec-head><h2>Fila de retenção — clientes em tratativa</h2>"
         f"<span class=sub>saída ainda NÃO formalizada: é aqui que a retenção acontece</span></div>"
         + card(tbl(f"<tr>{th_t}</tr>", linhas_t) if linhas_t else "<span class=note>nenhuma tratativa aberta registrada</span>") +
@@ -2015,6 +2126,7 @@ def _cancel_content(rows: list[dict]) -> str:
         "<section><div class=sec-head><h2>Por plano e por equipe</h2><span class=sub>todo o período das planilhas (dez-2025 em diante)</span></div>"
         "<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px'>"
         + card(grupo("plano", "Plano")) + card(grupo("equipe", "Equipe/Squad")) + "</div></section>"
+        + tempo_html +
         f"<section><div class=sec-head><h2>Motivos informados</h2><span class=sub>{len(com_motivo)} saídas com motivo registrado — 15 mais recentes</span></div>"
         + card(tbl("<tr>" + "".join(f"<th style='text-align:left;padding:7px;border-bottom:1px solid var(--border-strong);color:var(--text-muted);font-size:var(--fs-2xs);text-transform:uppercase'>{h}</th>" for h in ("Mês", "Cliente", "Plano", "Motivo")) + "</tr>", linhas_mo)) +
         "</section>"
