@@ -206,3 +206,62 @@ def sync_stage_events(conn: Any, *, full: bool = False, window_days: int = 60) -
             if i and i % 200 == 0:
                 print(f"  [flow] {i}/{len(ids)} deals...", flush=True)
     return n
+
+
+# ---------------------------------------------------------------------------
+# Primeiro contato por deal (speed-to-lead das áreas de Pré-vendas/Vendas).
+# Uma passada paginada em /activities (todas as pessoas, concluídas) guardando
+# o PRIMEIRO toque de cada deal — barato (500/página) e incremental por data.
+# ---------------------------------------------------------------------------
+_TOUCH_DDL = """
+CREATE TABLE IF NOT EXISTS sales_first_touch (
+    deal_id     BIGINT PRIMARY KEY,
+    first_at    TIMESTAMPTZ NOT NULL,   -- criação da 1ª atividade do deal
+    done_at     TIMESTAMPTZ,            -- quando foi concluída
+    tipo        TEXT,                   -- call|whatsapp|email|fluxo_de_cadencia...
+    quem        TEXT,                   -- responsável pela atividade
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+"""
+
+
+def sync_first_touch(conn: Any, since: dt.date | None = None) -> int:
+    """Varre atividades (desc) e registra o 1º contato de cada deal; para na
+    página inteira anterior a `since` (default: 10 dias — incremental diário)."""
+    corte = (since or (dt.date.today() - dt.timedelta(days=10))).isoformat()
+    n, start = 0, 0
+    with conn.cursor() as cur:
+        cur.execute(_TOUCH_DDL)
+        while start is not None:
+            j = _get("activities", {"user_id": 0, "limit": 500, "start": start,
+                                    "done": 1, "sort": "add_time DESC"})
+            data = j.get("data") or []
+            page_old = True
+            for a in data:
+                add = a.get("add_time")
+                if not add:
+                    continue
+                if add[:10] >= corte:
+                    page_old = False
+                if not a.get("deal_id"):
+                    continue
+                cur.execute(
+                    """INSERT INTO sales_first_touch (deal_id, first_at, done_at, tipo, quem, updated_at)
+                       VALUES (%s,%s,%s,%s,%s,now())
+                       ON CONFLICT (deal_id) DO UPDATE SET
+                            first_at=LEAST(sales_first_touch.first_at, EXCLUDED.first_at),
+                            done_at=LEAST(COALESCE(sales_first_touch.done_at, EXCLUDED.done_at),
+                                          COALESCE(EXCLUDED.done_at, sales_first_touch.done_at)),
+                            tipo=CASE WHEN EXCLUDED.first_at < sales_first_touch.first_at
+                                      THEN EXCLUDED.tipo ELSE sales_first_touch.tipo END,
+                            quem=CASE WHEN EXCLUDED.first_at < sales_first_touch.first_at
+                                      THEN EXCLUDED.quem ELSE sales_first_touch.quem END,
+                            updated_at=now()""",
+                    (a["deal_id"], add, a.get("marked_as_done_time") or None,
+                     a.get("type"), (a.get("owner_name") or "")))
+                n += 1
+            p = (j.get("additional_data") or {}).get("pagination") or {}
+            if page_old and data:
+                break
+            start = p.get("next_start") if p.get("more_items_in_collection") else None
+    return n

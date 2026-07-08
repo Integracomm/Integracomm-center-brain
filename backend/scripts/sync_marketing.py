@@ -62,6 +62,8 @@ def main() -> None:
         conn, since=dt.date(2025, 1, 1) if args.backfill else hoje - dt.timedelta(days=60)))
     step("pipedrive etapas (/flow)", lambda: pipedrive_deals.sync_stage_events(
         conn, full=args.backfill))
+    step("pipedrive 1º contato (speed-to-lead)", lambda: pipedrive_deals.sync_first_touch(
+        conn, since=dt.date(2026, 1, 1) if args.backfill else None))
     if args.weekly or args.backfill:
         step("metas (planilha)", lambda: mkt_goals_sheet.sync_goals(conn))
         step("plano mkt (planilha de metas)", lambda: mkt_plan_sheet.sync_plan(conn))
