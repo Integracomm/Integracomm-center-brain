@@ -1003,7 +1003,7 @@ h2{font-family:var(--font-display);font-weight:600;font-size:var(--fs-lg);margin
    <div class=brand><div class=logo></div><div><div class=bt>Integracomm IA</div><div class=bs>Central</div></div></div>
    <nav>
      <a class="nav-item__HOME_ON__" href="/">Início</a>
-     <a class="nav-item__ADM_ON__" href="/admin">Administração</a>
+     <a class="nav-item__ADM_ON__" href="/admin">Painel Administrativo</a>
      <a class="nav-item" href="/growth">Growth / Assessoria</a>
      <a class="nav-item" href="/marketing">Marketing</a>
      <a class="nav-item soon">Pré-vendas <span class=tag>em breve</span></a>
@@ -1020,7 +1020,7 @@ __BODY__
 </body></html>"""
     if page == "admin":
         body = (
-            "<h1>Administração</h1>"
+            "<h1>Painel Administrativo</h1>"
             "<p class=sub>controle de acessos por conta — aprovar/bloquear cadastros e definir quais áreas cada usuário enxerga</p>"
             "<section><h2>Contas e permissões</h2>"
             "<p class=secsub>pendentes primeiro · os interruptores aplicam NA HORA (vale em até 60s) · busca por nome/e-mail</p>"
