@@ -915,13 +915,18 @@ def _render_hub(role: str, st: dict, users: list[dict] | None = None,
                     "<div class=ad>tráfego pago, leads, funil e planejador — sem cache do mês "
                     "(rode o sync de marketing)</div></a>")
 
-    area_cards = growth_card + mkt_card + "".join(
+    pv_card = ("<a class='area' href='/prevendas'><div class=ahead>"
+               f"<div class=an>Pré-vendas</div>{_chip('ativa', '--status-baixo')}</div>"
+               "<div class=ad>funil de qualificação, speed-to-lead e planos por SDR — do lead à reunião agendada</div></a>")
+    vd_card = ("<a class='area' href='/vendas'><div class=ahead>"
+               f"<div class=an>Vendas</div>{_chip('ativa', '--status-baixo')}</div>"
+               "<div class=ad>Oportunidade→Booking, win/loss, ciclo, forecast e planos por closer</div></a>")
+    area_cards = growth_card + mkt_card + pv_card + vd_card + "".join(
         "<div class='area soon'>"
         + f"<div class='an'>{escape(nm)}</div>"
         + f"<div class='ast'>{_chip('em breve', '--status-semdados')}</div>"
         + f"<div class='ad'>{escape(desc)}</div></div>"
-        for nm, desc in (("Pré-vendas", "qualificação e conversão"),
-                         ("Financeiro", "inadimplência e margem"),
+        for nm, desc in (("Financeiro", "inadimplência e margem"),
                          ("Operações", "capacidade e SLA"))
     )
 
@@ -1006,7 +1011,8 @@ h2{font-family:var(--font-display);font-weight:600;font-size:var(--fs-lg);margin
      <a class="nav-item__ADM_ON__" href="/admin">Painel Administrativo</a>
      <a class="nav-item" href="/growth">Growth / Assessoria</a>
      <a class="nav-item" href="/marketing">Marketing</a>
-     <a class="nav-item soon">Pré-vendas <span class=tag>em breve</span></a>
+     <a class="nav-item" href="/prevendas">Pré-vendas</a>
+     <a class="nav-item" href="/vendas">Vendas</a>
      <a class="nav-item soon">Financeiro <span class=tag>em breve</span></a>
      <a class="nav-item soon">Operações <span class=tag>em breve</span></a>
    </nav>
@@ -2077,6 +2083,8 @@ def _relatorios_content(rep: dict, scores: list[dict]) -> str:
 # (FastAPI casa na ordem de registro). Import tardio evita ciclo.
 from .report_api import router as _report_router  # noqa: E402
 from .marketing.ui import router as _marketing_router  # noqa: E402
+from .sales.ui import router as _sales_router  # noqa: E402
 
 app.include_router(_report_router)
 app.include_router(_marketing_router)
+app.include_router(_sales_router)
