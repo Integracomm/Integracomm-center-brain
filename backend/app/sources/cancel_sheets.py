@@ -88,6 +88,21 @@ def _num(v: Any) -> float | None:
         return None
 
 
+# linhas que NÃO são cliente: rodapés/resumos ("PREVISÃO TOTAL...", "casos"),
+# cabeçalhos repetidos no meio da aba, erros de fórmula, rótulos de status e
+# células numéricas — tudo já visto nas planilhas reais
+_NAO_CLIENTE = ("em andamento", "total", "previsao", "casos", "media", "cancelamento",
+                "clientes", "empresa", "motivo", "resultado", "reverteu", "#ref",
+                "nao entrega", "data", "situacao")
+
+
+def _cliente_valido(cliente: Any) -> bool:
+    nc = _norm(cliente)
+    if not nc or nc.startswith(_NAO_CLIENTE):
+        return False
+    return not re.fullmatch(r"[\d\s.,%r$#!]+", nc)
+
+
 def _mes_da_aba(nome: str) -> dt.date | None:
     n = _norm(nome)
     mes = next((v for k, v in _MES.items() if _norm(k) in n), None)
@@ -149,7 +164,12 @@ def _parse_saidas(wb: openpyxl.Workbook) -> list[dict]:
             cliente = col("cliente", "seller")
             if not cliente or not str(cliente).strip():
                 continue
-            if _norm(cliente).startswith(("em andamento", "total")):
+            if not _cliente_valido(cliente):
+                continue
+            # linhas que NÃO são saída: cliente renovou/prorrogou (aparecem na
+            # aba de maio com esse texto na coluna de plano)
+            pl = _norm(col("plano", "planos"))
+            if pl.startswith(("renovado", "prorrogado")) or "renovado sta" in pl:
                 continue
             out.append({
                 "tipo": tipo, "fonte": "saidas", "mes": mes,
@@ -210,10 +230,23 @@ def _parse_squads(wb: openpyxl.Workbook) -> list[dict]:
                                 return row[j] if j < len(row) else None
                     return None
                 cliente = col("empresa")
-                if not cliente or not str(cliente).strip():
+                if not cliente or not _cliente_valido(cliente):
                     continue
+                # a coluna "Plano" das abas de squads carrega status às vezes:
+                # Renovado/Prorrogado = ficou (não é saída); "Não renovará" =
+                # ainda em curso (vira tratativa); bloco START = término de
+                # contrato (semântica própria, como no arquivo 1)
+                pl = _norm(col("plano"))
+                tipo_r = tipo
+                if tipo == "cancelamento":
+                    if pl.startswith(("renovado", "prorrogado")):
+                        continue
+                    if pl.startswith("nao renovara"):
+                        tipo_r = "tratativa"
+                    elif pl == "start":
+                        tipo_r = "termino"
                 out.append({
-                    "tipo": tipo, "fonte": "squads", "mes": mes,
+                    "tipo": tipo_r, "fonte": "squads", "mes": mes,
                     "cliente": str(cliente).strip()[:120],
                     "data_inicio": _data(col("inicio")),
                     "data_saida": _data(col("data final")),
