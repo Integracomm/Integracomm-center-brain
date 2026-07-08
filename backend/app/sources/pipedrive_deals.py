@@ -86,7 +86,11 @@ def sync_deals(conn: Any, since: dt.date = dt.date(2025, 1, 1)) -> int:
                             status=EXCLUDED.status, valor=EXCLUDED.valor, origem=EXCLUDED.origem,
                             utm_medium=EXCLUDED.utm_medium, utm_campaign=EXCLUDED.utm_campaign,
                             utm_term=EXCLUDED.utm_term, utm_content=EXCLUDED.utm_content,
-                            produto=EXCLUDED.produto, stage_id=EXCLUDED.stage_id, updated_at=now()""",
+                            produto=EXCLUDED.produto, stage_id=EXCLUDED.stage_id, updated_at=now()
+                       WHERE (mkt_deals_attribution.status, mkt_deals_attribution.stage_id,
+                              mkt_deals_attribution.won_time, mkt_deals_attribution.valor)
+                             IS DISTINCT FROM
+                             (EXCLUDED.status, EXCLUDED.stage_id, EXCLUDED.won_time, EXCLUDED.valor)""",
                     (d["id"], add, d.get("won_time"), d.get("lost_time"), d.get("status"),
                      d.get("value"), (_txt(d.get(F_SOURCE)) or "").lower() or None,
                      _txt(d.get(F_MEDIUM)), _txt(d.get(F_CAMPAIGN)), _txt(d.get(F_TERM)),

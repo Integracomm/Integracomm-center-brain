@@ -627,7 +627,9 @@ def _funil_eventos(conn, a: dt.date, b: dt.date) -> tuple[list[int], int, int, f
     # SQL = criados no período c/ reunião agendada (6/15); Oportunidade = TODOS
     # que entraram em Negociação (7) no período — indicações PULAM etapas e
     # entram direto, por isso Oportunidade pode superar SQL.
-    fim = b + dt.timedelta(days=1)
+    # cortes de período em HORÁRIO DE BRASÍLIA (o Insights do Pipedrive corta
+    # assim; em UTC os leads de fim de noite caíam no dia errado)
+    a, fim = f"{a} 00:00-03", f"{b + dt.timedelta(days=1)} 00:00-03"
     with conn.cursor() as cur:
         cur.execute("""SELECT count(*) FROM mkt_deals_attribution
                         WHERE add_time >= %s AND add_time < %s""", (a, fim))
