@@ -667,6 +667,10 @@ def _funil_vs_meta(conn, ini: dt.date, fim: dt.date) -> str:
             f"<p class='note' style='margin:10px 0 0'>Realizado = coorte de deals criados no mês (Pipedrive). Detalhe completo do semestre na aba <a href='/marketing?view=metas' style='color:var(--brand)'>Metas do Semestre</a>.</p></div></section>")
 
 
+# cores do funil = mesma paleta do app Lovable do time (Lead amarelo → Booking verde)
+_FUNIL_CORES = {"Lead": "#d9b532", "MQL": "#dd8a3d", "SAL": "#e06060", "SQL": "#b57fdc",
+                "Oportunidade": "#5b8def", "Booking": "#3fce8f"}
+
 _FUNIL_SUGESTOES = {
     "MQL": "Gargalo na VELOCIDADE de resposta: lead sem contato esfria em horas — revisar o SLA do primeiro toque (referência: <15 min em horário comercial) e a automação de disparo.",
     "SAL": "Muitos contatos sem conexão: variar canal (WhatsApp + ligação + e-mail), horários alternados e cadência de 5-7 tentativas antes de descartar.",
@@ -723,21 +727,58 @@ def _funil(conn, request: Request) -> str:
             pior, pior_taxa = nome, taxa  # prioriza a etapa mais LONGE da própria meta
         elif taxa is not None and not metas_taxa and taxa < pior_taxa and passou[i - 1] >= 20:
             pior, pior_taxa = nome, taxa
-        pct_total = n / total if total else 0
-        barras += (f"<div title='{nome} — {_FUNIL_DEFS.get(nome, '')} · {n} deals ({_fmt(pct_total, 'pct')} do total)' style='display:grid;grid-template-columns:150px 1fr 120px;gap:10px;align-items:center;padding:4px 0'>"
-                   f"<div style='font-size:var(--fs-sm)'>{nome}</div>"
-                   f"<div class=bar style='height:22px;border-radius:6px'><div style='width:{pct_total * 100:.1f}%'></div></div>"
-                   f"<div style='font-size:var(--fs-sm);text-align:right'><b>{n}</b> ({_fmt(pct_total, 'pct')})</div></div>")
         meta_q = (plan_mes.get(nome) or {}).get("qtde")
         linhas += (f"<tr title='{_FUNIL_DEFS.get(nome, '')}'><td>{nome}</td><td class=num>{n}</td>"
                    f"<td class=num style='color:var(--text-muted)'>{_fmt(meta_q)}</td>"
                    f"<td class=num>{_fmt(taxa, 'pct') if taxa is not None else '—'}{delta}</td>"
                    f"<td class=num>{meta_td}</td></tr>")
-    pct_book = booked / total if total else 0
-    barras += ("<div style='display:grid;grid-template-columns:150px 1fr 120px;gap:10px;align-items:center;padding:4px 0'>"
-               "<div style='font-size:var(--fs-sm)'><b>Booking</b></div>"
-               f"<div class=bar style='height:22px;border-radius:6px'><div style='width:{pct_book * 100:.1f}%;background:var(--status-baixo)'></div></div>"
-               f"<div style='font-size:var(--fs-sm);text-align:right'><b>{booked}</b> ({_fmt(pct_book, 'pct')})</div></div>")
+    # ---- funil visual (modelo do app Lovable do time): barras centradas com
+    # largura proporcional, pílula de conversão VS ETAPA ANTERIOR entre elas,
+    # receita no Booking; ao lado, o Resumo do Funil (TX vs anterior + TX Lead)
+    with conn.cursor() as cur:
+        cur.execute("""SELECT COALESCE(sum(valor) FILTER (WHERE status='won'), 0)
+                         FROM mkt_deals_attribution
+                        WHERE add_time >= %s AND add_time < %s""",
+                    (ini, fim + dt.timedelta(days=1)))
+        receita_book = float(cur.fetchone()[0] or 0)
+    seq = [(nome, passou[i]) for i, (nome, _) in enumerate(_FUNIL_ETAPAS)] + [("Booking", booked)]
+    for i2 in range(len(seq)):
+        nome, n2 = seq[i2]
+        taxa2 = (n2 / seq[i2 - 1][1]) if i2 and seq[i2 - 1][1] else None
+        cor = _FUNIL_CORES[nome]
+        if i2:
+            barras += (f"<div style='text-align:center;margin:7px 0'><span style='background:var(--surface-3);"
+                       f"border:1px solid var(--border-strong);border-radius:999px;padding:2px 12px;"
+                       f"font-size:var(--fs-xs);color:var(--text-2)'>{_fmt(taxa2, 'pct') if taxa2 is not None else '—'} conv.</span></div>")
+        w = max(30.0, (n2 / total * 100) if total else 30.0)
+        extra = (f"<div style='font-size:var(--fs-xs);font-weight:600;opacity:.8'>{_fmt(receita_book, 'brl')}</div>"
+                 if nome == "Booking" else "")
+        barras += (f"<div title='{escape(_FUNIL_DEFS.get(nome, ''))}' style='width:{w:.1f}%;margin:0 auto;"
+                   f"background:{cor};border-radius:10px;padding:11px 16px;display:flex;"
+                   f"justify-content:space-between;align-items:center;gap:10px;color:#16181d'>"
+                   f"<b style='font-size:var(--fs-md)'>{nome}</b>"
+                   f"<div style='text-align:right'><span style='font-family:var(--font-display);"
+                   f"font-weight:700;font-size:21px'>{n2}</span>{extra}</div></div>")
+    resumo_rows = ""
+    for i2, (nome, n2) in enumerate(seq):
+        taxa2 = (n2 / seq[i2 - 1][1]) if i2 and seq[i2 - 1][1] else None
+        tx_lead = n2 / total if total and i2 else None
+        td = "padding:9px 8px;border-bottom:1px solid var(--border);font-size:var(--fs-sm)"
+        resumo_rows += (f"<tr><td style='{td};white-space:nowrap'><span style='display:inline-block;width:9px;"
+                        f"height:9px;border-radius:50%;background:{_FUNIL_CORES[nome]};margin-right:7px'></span><b>{nome}</b></td>"
+                        f"<td style='{td};color:var(--text-muted);line-height:1.4'>{escape(_FUNIL_DEFS.get(nome, ''))}</td>"
+                        f"<td style='{td};text-align:right;font-variant-numeric:tabular-nums'><b>{n2}</b></td>"
+                        f"<td style='{td};text-align:right'>{_fmt(taxa2, 'pct') if taxa2 is not None else '—'}</td>"
+                        f"<td style='{td};text-align:right'>{_fmt(tx_lead, 'pct') if tx_lead is not None else '—'}</td></tr>")
+    th_r = "".join(f"<th style='text-align:{al};padding:8px;border-bottom:1px solid var(--border-strong);"
+                   f"color:var(--text-muted);font-size:var(--fs-2xs);text-transform:uppercase;letter-spacing:var(--tracking-label)'>{h}</th>"
+                   for h, al in (("Etapa", "left"), ("Definição", "left"), ("Total", "right"),
+                                 ("TX", "right"), ("TX Lead", "right")))
+    funil_visual = (
+        "<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:14px;align-items:start'>"
+        f"<div class=card>{barras}</div>"
+        f"<div class=card><table style='width:100%;border-collapse:collapse'><tr>{th_r}</tr>{resumo_rows}</table>"
+        "<p class='note' style='margin:10px 0 0'>TX = conversão sobre a etapa ANTERIOR · TX Lead = sobre o total de leads.</p></div></div>")
     taxa_final = booked / passou[4] if passou[4] else None
     meta_bk = metas_taxa.get("Booking")
     meta_bk_td = "—"
@@ -816,14 +857,10 @@ def _funil(conn, request: Request) -> str:
     return (f"<h1>Funil de Prospecção</h1><div class=sub>coorte: deals criados no período · “passou da etapa” = alcançou etapa igual/posterior (won passa por todas)</div>"
             f"<form method=get action=/marketing><input type=hidden name=view value=funil>{form}</form>"
             + meta_html +
-            f"<section><h2>Funil</h2><div class=card>{barras}</div></section>"
+            f"<section><h2>Funil</h2><p class=secsub>largura proporcional ao volume · pílula = conversão sobre a etapa anterior</p>{funil_visual}</section>"
             f"<section><h2>Taxas por etapa</h2><p class=secsub>vs período anterior equivalente ({ini_p.strftime('%d-%m')} a {fim_p.strftime('%d-%m')}) · “Meta qtde” = volume planejado do mês ({mes_ref.strftime('%m-%Y')}) na planilha de metas</p>"
             f"<div class=card><table><tr><th>Etapa</th><th class=num>Deals</th><th class=num>Meta qtde (mês)</th><th class=num>Conversão da etapa</th><th class=num>Meta taxa</th></tr>{linhas}</table></div></section>"
-            + form_metas + sugestoes
-            + "<section><h2>Definições das etapas</h2><div class=card><table>"
-            + "".join(f"<tr><td style='width:130px'><b>{e}</b></td><td class=note>{d}</td></tr>"
-                      for e, d in _FUNIL_DEFS.items())
-            + "</table></div></section>")
+            + form_metas + sugestoes)
 
 
 # ---------------------------------------------------------------------------
