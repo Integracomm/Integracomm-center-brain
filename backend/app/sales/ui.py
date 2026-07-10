@@ -26,7 +26,7 @@ _PV_VIEWS = [("funil", "Funil de Qualificação"), ("speed", "Speed-to-Lead"),
              ("sdrs", "Time & Planos")]
 _VD_VIEWS = [("funil", "Funil de Fechamento"), ("winloss", "Win/Loss"),
              ("ciclo", "Ciclo & Empacados"), ("closers", "Time & Planos"),
-             ("forecast", "Forecast & Meta")]
+             ("forecast", "Performance & Meta")]
 
 # etapas (validadas na inspeção do Pipedrive 08/07)
 _ST_CONTATO = (2, 13)     # Primeiro contato (p1/p2)
@@ -481,11 +481,32 @@ def _vd_closers(conn, request: Request) -> str:
 
 
 def _vd_forecast(conn, request: Request) -> str:
+    """Performance mensal detalhada: meta por plano (qtde e R$) x fechado x
+    pacing x o que FALTA FAZER (bookings -> oportunidades -> leads no ritmo
+    atual). Mes selecionavel (?mes=YYYY-MM); meses passados = meta x realizado."""
     hoje = dt.date.today()
-    mes = hoje.replace(day=1)
-    a, b = _brt(mes, hoje)
-    a90, _ = _brt(hoje - dt.timedelta(days=90), hoje)
+    qp = request.query_params
+    try:
+        mes = dt.date.fromisoformat((qp.get("mes") or hoje.strftime("%Y-%m")) + "-01")
+    except ValueError:
+        mes = hoje.replace(day=1)
+    mes_atual = hoje.replace(day=1)
+    corrente = (mes == mes_atual)
+    prox = (mes.replace(day=28) + dt.timedelta(days=4)).replace(day=1)
+    fim_mes = min(hoje, prox - dt.timedelta(days=1)) if corrente else (prox - dt.timedelta(days=1))
+    a, b = _brt(mes, fim_mes)
+    a90, _b90 = _brt(hoje - dt.timedelta(days=90), hoje)
+    import calendar
+    frac = min(1.0, hoje.day / calendar.monthrange(mes.year, mes.month)[1]) if corrente else 1.0
+
     with conn.cursor() as cur:
+        cur.execute("SELECT plano, meta_qtde, meta_valor FROM mkt_goals WHERE mes=%s AND plano <> 'total'", (mes,))
+        metas = {p_: (float(q or 0), float(v or 0)) for p_, q, v in cur.fetchall()}
+        cur.execute("""SELECT COALESCE(substring(produto FROM 'B[1-5]'), 'outros'),
+                              count(*), COALESCE(sum(valor), 0)
+                         FROM mkt_deals_attribution
+                        WHERE status='won' AND won_time >= %s AND won_time < %s GROUP BY 1""", (a, b))
+        feito = {p_: (n, float(v)) for p_, n, v in cur.fetchall()}
         cur.execute("""SELECT COALESCE(substring(produto FROM 'B[1-5]'), 'outros'), count(*)
                          FROM mkt_deals_attribution WHERE status='open' AND stage_id IN (6, 5, 7)
                         GROUP BY 1""")
@@ -495,34 +516,103 @@ def _vd_forecast(conn, request: Request) -> str:
         oport90 = cur.fetchone()[0]
         cur.execute("SELECT count(*) FROM mkt_deals_attribution WHERE status='won' AND won_time >= %s", (a90,))
         win90 = cur.fetchone()[0]
-        cur.execute("SELECT plano, meta_qtde FROM mkt_goals WHERE mes=%s AND plano <> 'total'", (mes,))
-        metas = dict(cur.fetchall())
-        cur.execute("""SELECT COALESCE(substring(produto FROM 'B[1-5]'), 'outros'), count(*)
-                         FROM mkt_deals_attribution
-                        WHERE status='won' AND won_time >= %s AND won_time < %s GROUP BY 1""", (a, b))
-        feito = dict(cur.fetchall())
+        cur.execute("SELECT count(*) FROM mkt_deals_attribution WHERE add_time >= %s", (a90,))
+        leads90 = cur.fetchone()[0]
     conv90 = win90 / oport90 if oport90 else 0
+    conv_lead90 = win90 / leads90 if leads90 else 0
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT DISTINCT mes FROM mkt_goals ORDER BY mes")
+        meses_opts = [m for (m,) in cur.fetchall()]
+    opts = "".join(
+        f"<option value='{m.strftime('%Y-%m')}' {'selected' if m == mes else ''}>{m.strftime('%m/%Y')}</option>"
+        for m in meses_opts)
+    form = (f"<form method=get action=/vendas><input type=hidden name=view value=forecast>"
+            f"<div class=filters><div><label>mes</label><select name=mes>{opts}</select></div>"
+            f"<button type=submit>Ver</button></div></form>")
+
     rows = ""
+    tot = {"meta_q": 0.0, "meta_v": 0.0, "real_q": 0, "real_v": 0.0, "gap": 0.0, "oport": 0.0, "leads": 0.0}
+    faltantes = []
     for plano in ("B1", "B2", "B3", "B4", "B5"):
-        meta = float(metas.get(plano) or 0)
-        real = feito.get(plano, 0)
+        meta_q, meta_v = metas.get(plano, (0.0, 0.0))
+        real_q, real_v = feito.get(plano, (0, 0.0))
         aberto = pipe.get(plano, 0)
-        proj = real + aberto * conv90
-        gap = max(0.0, meta - proj)
-        pipe_nec = gap / conv90 if conv90 else None
+        pct = real_q / meta_q if meta_q else None
+        gap = max(0.0, meta_q - real_q)
+        oport_nec = gap / conv90 if conv90 else None
+        leads_nec = gap / conv_lead90 if conv_lead90 else None
+        tot["meta_q"] += meta_q
+        tot["meta_v"] += meta_v
+        tot["real_q"] += real_q
+        tot["real_v"] += real_v
+        tot["gap"] += gap
+        if oport_nec:
+            tot["oport"] += oport_nec
+        if leads_nec:
+            tot["leads"] += leads_nec
+        if gap and meta_q:
+            faltantes.append((plano, gap, oport_nec, aberto))
+        cor = "pos" if pct is not None and pct >= frac else ("neg" if meta_q else "")
+        marcador = (f"<div style='position:absolute;left:{frac * 100:.0f}%;top:-2px;bottom:-2px;width:2px;background:var(--text-muted)'></div>"
+                    if corrente else "")
+        cor_barra = "status-baixo" if (pct or 0) >= frac else "status-critico"
+        barra = (f"<div style='height:7px;background:var(--surface-3);border-radius:4px;overflow:visible;position:relative'>"
+                 f"<div style='height:100%;width:{min(100, (pct or 0) * 100):.0f}%;background:var(--{cor_barra});border-radius:4px'></div>{marcador}</div>")
         destaque = " style='background:color-mix(in srgb,var(--brand) 5%,transparent)'" if plano in ("B3", "B4", "B5") else ""
-        cor = "pos" if proj >= meta and meta else ("neg" if meta else "")
         rows += (f"<tr{destaque}><td style='{_TD}'><b>{plano}</b></td>"
-                 f"<td style='{_TD};text-align:right'>{meta:.0f}</td>"
-                 f"<td style='{_TD};text-align:right'>{real}</td>"
+                 f"<td style='{_TD};text-align:right'>{meta_q:.0f}</td>"
+                 f"<td style='{_TD};text-align:right'>{_fmt(meta_v, 'brl')}</td>"
+                 f"<td style='{_TD};text-align:right'><b>{real_q}</b></td>"
+                 f"<td style='{_TD};text-align:right'>{_fmt(real_v, 'brl')}</td>"
+                 f"<td style='{_TD};text-align:right' class='{cor}'>{_fmt(pct, 'pct') if pct is not None else chr(8212)}</td>"
+                 f"<td style='{_TD};min-width:110px'>{barra}</td>"
+                 f"<td style='{_TD};text-align:right'>{gap:.0f}</td>"
                  f"<td style='{_TD};text-align:right'>{aberto}</td>"
-                 f"<td style='{_TD};text-align:right' class='{cor}'>{proj:.1f}</td>"
-                 f"<td style='{_TD};text-align:right'>{_fmt(pipe_nec) if gap else '✓'}</td></tr>")
-    return (f"<h1>Forecast & Cobertura de Meta</h1><div class=sub>mês {mes.strftime('%m-%Y')} · projeção = fechado + pipeline aberto × conversão 90d ({_fmt(conv90, 'pct')}) · metas da planilha financeira · B3-B5 em destaque</div>"
-            f"<section><h2>Cobertura por plano</h2>"
-            + _card(_tbl([("Plano", "left"), ("Meta", "right"), ("Fechado", "right"), ("Pipeline aberto", "right"),
-                          ("Projeção", "right"), ("Pipeline extra nec.", "right")], rows)
-                    + "<p class='note' style='margin:10px 0 0'>“Pipeline extra nec.” = oportunidades ADICIONAIS para fechar o gap no ritmo de conversão atual — é o pedido concreto à Pré-vendas/Marketing.</p>") + "</section>")
+                 f"<td style='{_TD};text-align:right'>{_fmt(oport_nec) if gap else chr(10003)}</td></tr>")
+    pct_t = tot["real_q"] / tot["meta_q"] if tot["meta_q"] else None
+    cor_t = "pos" if pct_t is not None and pct_t >= frac else "neg"
+    pipe_tot = sum(pipe.get(p_, 0) for p_ in ("B1", "B2", "B3", "B4", "B5"))
+    rows += (f"<tr style='border-top:2px solid var(--border-strong)'><td style='{_TD}'><b>TOTAL</b></td>"
+             f"<td style='{_TD};text-align:right'><b>{tot['meta_q']:.0f}</b></td>"
+             f"<td style='{_TD};text-align:right'><b>{_fmt(tot['meta_v'], 'brl')}</b></td>"
+             f"<td style='{_TD};text-align:right'><b>{tot['real_q']}</b></td>"
+             f"<td style='{_TD};text-align:right'><b>{_fmt(tot['real_v'], 'brl')}</b></td>"
+             f"<td style='{_TD};text-align:right' class='{cor_t}'><b>{_fmt(pct_t, 'pct') if pct_t is not None else chr(8212)}</b></td>"
+             f"<td style='{_TD}'></td>"
+             f"<td style='{_TD};text-align:right'><b>{tot['gap']:.0f}</b></td>"
+             f"<td style='{_TD};text-align:right'><b>{pipe_tot}</b></td>"
+             f"<td style='{_TD};text-align:right'><b>{_fmt(tot['oport']) if tot['gap'] else chr(10003)}</b></td></tr>")
+
+    plano_gap = ""
+    if corrente and faltantes:
+        itens = ""
+        for plano, gap, oport_nec, aberto in sorted(faltantes, key=lambda x: -x[1]):
+            if oport_nec is not None:
+                sufic = " — INSUFICIENTE" if aberto < oport_nec else " — suficiente se converter no ritmo"
+                cobre = f" (pipeline atual: {aberto} abertas{sufic})"
+            else:
+                cobre = ""
+            itens += (f"<div class=sug-item><b>{plano}</b>: faltam <b>{gap:.0f} bookings</b> "
+                      f"&rarr; &asymp; <b>{_fmt(oport_nec)} oportunidades</b> no ritmo de conversao 90d ({_fmt(conv90, 'pct')}){cobre}</div>")
+        itens += (f"<div class=sug-item><b>Total</b>: {tot['gap']:.0f} bookings &asymp; {_fmt(tot['oport'])} oportunidades "
+                  f"&asymp; <b>{_fmt(tot['leads'])} leads novos</b> (conversao lead&rarr;booking 90d: {_fmt(conv_lead90, 'pct')}) "
+                  "&mdash; e o pedido concreto a Pre-vendas e ao Marketing para fechar o mes.</div>")
+        estilo = ("<style>.sug-item{padding:8px 0;border-top:1px solid var(--border);font-size:var(--fs-sm);"
+                  "line-height:1.6;color:var(--text-2)}.sug-item:first-child{border-top:none}</style>")
+        plano_gap = ("<section><h2>O que falta para bater as metas</h2>"
+                     "<p class=secsub>gap por plano traduzido em oportunidades e leads necessarios no ritmo atual</p>"
+                     + _card(itens + estilo) + "</section>")
+
+    ritmo = f" &middot; ritmo esperado: {frac * 100:.0f}% do mes" if corrente else " (mes encerrado)"
+    return (f"<h1>Performance & Meta &mdash; {mes.strftime('%m/%Y')}</h1>"
+            f"<div class=sub>metas da planilha financeira por plano &middot; fechado no mes &middot; pacing{ritmo} &middot; conversao 90d: {_fmt(conv90, 'pct')} (oport&rarr;booking)</div>"
+            + form +
+            "<section><h2>Meta &times; realizado por plano</h2><p class=secsub>B3-B5 em destaque (prioridade da empresa) &middot; traco vertical = ritmo esperado</p>"
+            + _card(_tbl([("Plano", "left"), ("Meta", "right"), ("Meta R$", "right"), ("Fechado", "right"),
+                          ("Receita", "right"), ("% meta", "right"), ("", "left"), ("Gap", "right"),
+                          ("Pipeline", "right"), ("Oport. nec.", "right")], rows)) + "</section>"
+            + plano_gap)
 
 
 # ---------------------------------------------------------------------------

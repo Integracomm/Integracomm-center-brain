@@ -33,9 +33,20 @@ def _token() -> str:
     return t
 
 
+class DailyBudgetExceeded(RuntimeError):
+    """Orçamento DIÁRIO da API do Pipedrive esgotado — parar limpo e retomar
+    amanhã (os marcadores incrementais garantem a retomada sem retrabalho)."""
+
+
+_REQS = {"n": 0}  # requisições feitas neste processo (visibilidade nos logs)
+
+
 def _get(path: str, params: dict) -> dict:
     r = httpx.get(f"https://api.pipedrive.com/v1/{path}",
                   params=dict(params, api_token=_token()), timeout=90)
+    _REQS["n"] += 1
+    if r.status_code == 429 and "daily request budget" in r.text:
+        raise DailyBudgetExceeded(r.text[:120])
     r.raise_for_status()
     return r.json()
 
@@ -172,7 +183,8 @@ def _flow_events(deal_id: int) -> list[tuple[int, str]]:
         start = p.get("next_start")
 
 
-def sync_stage_events(conn: Any, *, full: bool = False, window_days: int = 60) -> int:
+def sync_stage_events(conn: Any, *, full: bool = False, window_days: int = 60,
+                      max_deals: int = 1500) -> int:
     """Enriquece com o histórico de etapas os deals NOVOS/ALTERADOS desde o
     último enriquecimento (updated_at > synced_at); `full` refaz todos."""
     import time
@@ -187,11 +199,15 @@ def sync_stage_events(conn: Any, *, full: bool = False, window_days: int = 60) -
                                OR d.updated_at > f.synced_at ORDER BY d.add_time""",
                         (window_days,))
         ids = [r[0] for r in cur.fetchall()]
+    ids = ids[:max_deals]  # teto diário: o resto retoma amanhã (marcador)
     n = 0
     with conn.cursor() as cur:
         for i, did in enumerate(ids):
             try:
                 evs = _flow_events(did)
+            except DailyBudgetExceeded:
+                print(f"  [flow] orçamento diário esgotou em {i}/{len(ids)} — retoma amanhã", flush=True)
+                break
             except httpx.HTTPError:
                 continue  # deal problemático não trava o lote; re-tenta amanhã
             for sid, quando in evs:
@@ -225,14 +241,16 @@ CREATE TABLE IF NOT EXISTS sales_first_touch (
 """
 
 
-def sync_first_touch(conn: Any, since: dt.date | None = None) -> int:
+def sync_first_touch(conn: Any, since: dt.date | None = None,
+                     max_pages: int = 200) -> int:
     """Varre atividades (desc) e registra o 1º contato de cada deal; para na
     página inteira anterior a `since` (default: 10 dias — incremental diário)."""
     corte = (since or (dt.date.today() - dt.timedelta(days=10))).isoformat()
-    n, start = 0, 0
+    n, start, paginas = 0, 0, 0
     with conn.cursor() as cur:
         cur.execute(_TOUCH_DDL)
-        while start is not None:
+        while start is not None and paginas < max_pages:
+            paginas += 1
             j = _get("activities", {"user_id": 0, "limit": 500, "start": start,
                                     "done": 1, "sort": "add_time DESC"})
             data = j.get("data") or []
