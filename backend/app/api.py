@@ -184,9 +184,9 @@ button{{width:100%;margin-top:20px;cursor:pointer;background:var(--brand);color:
   <div style="margin-bottom:18px"><span class=logo></span><h1>Integracomm IA</h1></div>
   {msg}
   <label>usuário / e-mail</label>
-  <input type=text name=user placeholder="adm@integracomm.com.br" autofocus autocomplete=username>
+  <input type=text name=user placeholder="insira o e-mail..." autofocus autocomplete=username>
   <label>senha</label>
-  <input type=password name=password autocomplete=current-password>
+  <input type=password name=password placeholder="insira sua senha..." autocomplete=current-password>
   <button type=submit>Entrar</button>
   <div class=hint style="text-align:center;margin-top:16px">
     Primeiro acesso? <a href="/signup" style="color:var(--brand);font-weight:600;text-decoration:none">Criar sua conta</a>
@@ -510,6 +510,29 @@ def hub(request: Request):
     return HTMLResponse(_render_hub(user, stats, users, mkt))
 
 
+@app.get("/admin", response_class=HTMLResponse)
+def admin_panel(request: Request):
+    """Painel administrativo (só admin): contas e permissões por área."""
+    s = _session(request)
+    if not s:
+        return RedirectResponse("/login", status_code=302)
+    user, role = s
+    if role != "admin":
+        return RedirectResponse("/growth", status_code=302)
+    with _conn() as c:
+        _audit_view(c, user, scope="admin")
+        stats = _hub_stats(c)
+        users = list_users(c)
+        with c.cursor() as cur:
+            cur.execute("""SELECT actor, count(*), max(at) FROM audit_log
+                            WHERE action='view' GROUP BY actor""")
+            acessos = {a: (n, ult) for a, n, ult in cur.fetchall()}
+    for u in users:
+        n, ult = acessos.get(u["email"], (0, None))
+        u["views"], u["last_seen"] = n, (ult.strftime("%d/%m/%Y às %H:%M") if ult else None)
+    return HTMLResponse(_render_hub(user, stats, users, None, page="admin"))
+
+
 @app.post("/api/users/{user_id}/status")
 def api_user_status(user_id: str, request: Request, payload: dict = Body(...)):
     """Aprova/bloqueia uma conta criada no cadastro. Só admin."""
@@ -562,8 +585,15 @@ def dashboard(request: Request, view: str = Query("contas")):
         practices = _top_practices(c)
         interventions = _recent_interventions(c) if view == "playbooks" else None
         cancel = _cancel_rows(c) if view == "cancelamentos" else None
+        base_bundle = None
+        if view == "cancelamentos":
+            with c.cursor() as cur:
+                cur.execute("""SELECT COALESCE(substring(name FROM 'B[1-5]'), 'outros'), count(*)
+                                 FROM accounts GROUP BY 1""")
+                base_bundle = dict(cur.fetchall())
     return HTMLResponse(_render(role, scores, alerts, practices, view=view,
-                                interventions=interventions, cancel=cancel))
+                                interventions=interventions, cancel=cancel, usermail=user,
+                                request=request, base_bundle=base_bundle))
 
 
 def _recent_interventions(conn: Any, limit: int = 20) -> list[dict]:
@@ -731,8 +761,67 @@ def _users_html(users: list[dict]) -> str:
     return rows + js
 
 
+def _admin_html(users: list[dict]) -> str:
+    """Painel administrativo: linha por conta com interruptor POR ÁREA (aplica
+    na hora via /api/users/{id}/areas), nº de acessos e último login (audit_log),
+    aprovar/bloquear e busca — modelo do painel da calculadora."""
+    if not users:
+        return "<div class=central><div class='id_'>nenhuma conta criada ainda — os gestores usam “Criar sua conta” na tela de login</div></div>"
+    _UST = {"pendente": "--status-medio", "aprovado": "--status-baixo", "bloqueado": "--status-critico"}
+    ths = "".join(f"<th>{nome.split(' /')[0]}</th>" for nome in AREAS.values())
+    rows = ""
+    for u in users:
+        acts = ""
+        if u["status"] != "aprovado":
+            acts += f"<button class=abtn onclick=\"userSt('{u['id']}','aprovado')\">aprovar</button> "
+        if u["status"] != "bloqueado":
+            acts += f"<button class=abtn onclick=\"userSt('{u['id']}','bloqueado')\">bloquear</button>"
+        tgls = "".join(
+            f"<td class=tgl-td><label class=tgl><input type=checkbox data-uid='{u['id']}' value='{slug}' "
+            f"{'checked' if slug in (u.get('areas') or []) else ''} onchange=\"tglArea('{u['id']}')\">"
+            f"<span></span></label></td>" for slug in AREAS)
+        rows += (f"<tr data-busca=\"{escape((u['name'] + ' ' + u['email']).lower())}\">"
+                 f"<td><b>{escape(u['name'][:34])}</b><br><span class=amail>{escape(u['email'][:44])}</span></td>"
+                 f"<td>{_chip(u['status'], _UST.get(u['status'], '--status-semdados'))}<div style='margin-top:5px'>{acts}</div></td>"
+                 f"<td class=anum>{u.get('views', 0)}</td>"
+                 f"<td class=anum>{escape(u.get('last_seen') or '—')}</td>"
+                 f"{tgls}</tr>")
+    return (
+        "<div class=central style='padding:0;overflow-x:auto'>"
+        "<div style='padding:14px 16px 0'><input id=abusca placeholder='pesquisar por nome ou e-mail…' oninput='aFiltra()' "
+        "style='width:100%;max-width:420px;background:var(--bg-panel);border:1px solid var(--border-strong);border-radius:var(--radius-sm);color:var(--text);font-family:var(--font-body);font-size:var(--fs-sm);padding:9px 11px'></div>"
+        "<table class=atbl><tr><th>Usuário</th><th>Status</th><th>Acessos</th><th>Último login</th>" + ths + "</tr>"
+        + rows + "</table></div>"
+        "<script>"
+        "function userSt(id,st){if(st==='bloqueado'&&!confirm('Bloquear esta conta?'))return;"
+        "fetch('/api/users/'+id+'/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:st})})"
+        ".then(function(r){return r.json();}).then(function(j){if(j.error)alert(j.error);else location.reload();}).catch(function(){alert('falha de rede');});}"
+        "function tglArea(id){var areas=[].slice.call(document.querySelectorAll(\"input[data-uid='\"+id+\"']:checked\")).map(function(c){return c.value;});"
+        "fetch('/api/users/'+id+'/areas',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({areas:areas})})"
+        ".then(function(r){return r.json();}).then(function(j){if(j.error){alert(j.error);location.reload();}}).catch(function(){alert('falha de rede');location.reload();});}"
+        "function aFiltra(){var q=document.getElementById('abusca').value.toLowerCase();"
+        "[].slice.call(document.querySelectorAll('tr[data-busca]')).forEach(function(tr){tr.style.display=tr.getAttribute('data-busca').indexOf(q)>=0?'':'none';});}"
+        "</script>"
+        "<style>"
+        ".atbl{width:100%;border-collapse:collapse;font-size:var(--fs-sm);margin-top:12px}"
+        ".atbl th{text-align:left;color:var(--text-muted);font-size:var(--fs-2xs);text-transform:uppercase;letter-spacing:var(--tracking-label);padding:9px 12px;border-bottom:1px solid var(--border-strong);white-space:nowrap}"
+        ".atbl td{padding:10px 12px;border-bottom:1px solid var(--border);vertical-align:middle}"
+        ".amail{color:var(--text-muted);font-size:var(--fs-xs)}"
+        ".anum{font-variant-numeric:tabular-nums;white-space:nowrap}"
+        ".tgl-td{text-align:center}"
+        ".tgl{position:relative;display:inline-block;width:38px;height:21px;cursor:pointer}"
+        ".tgl input{opacity:0;width:0;height:0}"
+        ".tgl span{position:absolute;inset:0;background:var(--surface-3);border:1px solid var(--border-strong);border-radius:999px;transition:background .15s}"
+        ".tgl span::after{content:'';position:absolute;width:15px;height:15px;border-radius:50%;background:var(--text-muted);top:2px;left:3px;transition:all .15s}"
+        ".tgl input:checked+span{background:var(--brand);border-color:var(--brand)}"
+        ".tgl input:checked+span::after{left:18px;background:var(--brand-ink)}"
+        ".abtn{cursor:pointer;background:var(--surface-3);border:1px solid var(--border-strong);border-radius:var(--radius-sm);color:var(--text-2);font-family:var(--font-body);font-size:var(--fs-2xs);padding:3px 8px}"
+        ".abtn:hover{border-color:var(--brand);color:var(--brand)}"
+        "</style>")
+
+
 def _render_hub(role: str, st: dict, users: list[dict] | None = None,
-                mkt: dict | None = None) -> str:
+                mkt: dict | None = None, page: str = "home") -> str:
     n_alerts = sum(st["sev"].values())
     crit = st["sev"].get("critico", 0)
     # Iniciativas sugeridas pela inteligência central — derivadas dos dados
@@ -833,13 +922,18 @@ def _render_hub(role: str, st: dict, users: list[dict] | None = None,
                     "<div class=ad>tráfego pago, leads, funil e planejador — sem cache do mês "
                     "(rode o sync de marketing)</div></a>")
 
-    area_cards = growth_card + mkt_card + "".join(
+    pv_card = ("<a class='area' href='/prevendas'><div class=ahead>"
+               f"<div class=an>Pré-vendas</div>{_chip('ativa', '--status-baixo')}</div>"
+               "<div class=ad>funil de qualificação, speed-to-lead e planos por SDR — do lead à reunião agendada</div></a>")
+    vd_card = ("<a class='area' href='/vendas'><div class=ahead>"
+               f"<div class=an>Vendas</div>{_chip('ativa', '--status-baixo')}</div>"
+               "<div class=ad>Oportunidade→Booking, win/loss, ciclo, forecast e planos por closer</div></a>")
+    area_cards = growth_card + mkt_card + pv_card + vd_card + "".join(
         "<div class='area soon'>"
         + f"<div class='an'>{escape(nm)}</div>"
         + f"<div class='ast'>{_chip('em breve', '--status-semdados')}</div>"
         + f"<div class='ad'>{escape(desc)}</div></div>"
-        for nm, desc in (("Pré-vendas", "qualificação e conversão"),
-                         ("Financeiro", "inadimplência e margem"),
+        for nm, desc in (("Financeiro", "inadimplência e margem"),
                          ("Operações", "capacidade e SLA"))
     )
 
@@ -920,42 +1014,45 @@ h2{font-family:var(--font-display);font-weight:600;font-size:var(--fs-lg);margin
  <aside class=rail>
    <div class=brand><div class=logo></div><div><div class=bt>Integracomm IA</div><div class=bs>Central</div></div></div>
    <nav>
-     <a class="nav-item active" href="/">Início</a>
+     <a class="nav-item__HOME_ON__" href="/">Início</a>
+     <a class="nav-item__ADM_ON__" href="/admin">Painel Administrativo</a>
      <a class="nav-item" href="/growth">Growth / Assessoria</a>
      <a class="nav-item" href="/marketing">Marketing</a>
-     <a class="nav-item soon">Pré-vendas <span class=tag>em breve</span></a>
+     <a class="nav-item" href="/prevendas">Pré-vendas</a>
+     <a class="nav-item" href="/vendas">Vendas</a>
      <a class="nav-item soon">Financeiro <span class=tag>em breve</span></a>
      <a class="nav-item soon">Operações <span class=tag>em breve</span></a>
    </nav>
-   <div class=rail-foot>papel: <b>__ROLE__</b> · <a href="/logout" style="color:var(--text-muted);text-decoration:underline">sair</a><br>humano no loop — a IA só sinaliza</div>
+   <div class=rail-foot><b>__USERMAIL__</b> · <a href="/logout" style="color:var(--text-muted);text-decoration:underline">sair</a><br>humano no loop — a IA só sinaliza</div>
  </aside>
  <main>
-  <h1>Visão central</h1>
-  <p class=sub>A inteligência central consolida os sinais de todas as áreas e sugere iniciativas alinhadas entre elas. Hoje 2 de 5 áreas estão ativas (Growth e Marketing); as demais entram como novos agentes na mesma casca.</p>
-  <div class=kpis>__KPIS__</div>
-  <section>
-    <h2>Iniciativas sugeridas</h2>
-    <p class=secsub>derivadas dos sinais das áreas ativas — priorização da empresa, não de uma área só</p>
-    <div class=central>__INITS__</div>
-  </section>
-  <section>
-    <h2>Áreas</h2>
-    <p class=secsub>resumo do andamento de cada área — clique para abrir o painel completo; verde = no ritmo/meta, vermelho = atenção</p>
-    <div class=areas>__AREAS__</div>
-  </section>
-  <section>
-    <h2>Contas de acesso</h2>
-    <p class=secsub>cadastros feitos na tela de login — pendentes primeiro; aprovar libera o acesso à área de Growth</p>
-    <div class=central>__USERS__</div>
-  </section>
+__BODY__
   <p class=foot>Derivados do Postgres próprio (LGPD: sem conteúdo bruto). A IA calcula, exibe e sinaliza — a decisão é sempre humana.</p>
  </main>
 </div>
 </body></html>"""
-    return (head.replace("__TOKENS__", _tokens_css()).replace("__ROLE__", escape(role))
-            .replace("__KPIS__", kpi_html)
-            .replace("__INITS__", init_html).replace("__AREAS__", area_cards)
-            .replace("__USERS__", _users_html(users or [])))
+    if page == "admin":
+        body = (
+            "<h1>Painel Administrativo</h1>"
+            "<p class=sub>controle de acessos por conta — aprovar/bloquear cadastros e definir quais áreas cada usuário enxerga</p>"
+            "<section><h2>Contas e permissões</h2>"
+            "<p class=secsub>pendentes primeiro · os interruptores aplicam NA HORA (vale em até 60s) · busca por nome/e-mail</p>"
+            + _admin_html(users or []))
+    else:
+        body = (
+            "<h1>Visão central</h1>"
+            "<p class=sub>A inteligência central consolida os sinais de todas as áreas e sugere iniciativas alinhadas entre elas. Hoje 2 de 5 áreas estão ativas (Growth e Marketing); as demais entram como novos agentes na mesma casca.</p>"
+            f"<div class=kpis>{kpi_html}</div>"
+            "<section><h2>Iniciativas sugeridas</h2>"
+            "<p class=secsub>derivadas dos sinais das áreas ativas — priorização da empresa, não de uma área só</p>"
+            f"<div class=central>{init_html}</div></section>"
+            "<section><h2>Áreas</h2>"
+            "<p class=secsub>resumo do andamento de cada área — clique para abrir o painel completo; verde = no ritmo/meta, vermelho = atenção</p>"
+            f"<div class=areas>{area_cards}</div></section>")
+    return (head.replace("__TOKENS__", _tokens_css()).replace("__USERMAIL__", escape(role))
+            .replace("__HOME_ON__", " active" if page != "admin" else "")
+            .replace("__ADM_ON__", " active" if page == "admin" else "")
+            .replace("__BODY__", body))
 
 
 # mapeamento semântico -> variável de token (design-tokens.css é a fonte da verdade)
@@ -1083,7 +1180,9 @@ _STAGE_LABEL = {"saudavel": "saudável", "desengajamento_inicial": "desengajamen
 
 def _render(role: str, scores: list[dict], alerts: list[dict],
             practices: dict | None = None, view: str = "contas",
-            interventions: list | None = None, cancel: list | None = None) -> str:
+            interventions: list | None = None, cancel: list | None = None,
+            usermail: str = "", request: Request | None = None,
+            base_bundle: dict | None = None) -> str:
     evaluable = [s for s in scores if s["evaluable"]]
     non_eval = [s for s in scores if not s["evaluable"]]
     evaluable.sort(key=lambda s: (float(s["score"]), -_mrr_val(s)))
@@ -1246,7 +1345,7 @@ section{margin-top:var(--space-8)}
  <aside class=rail>
    <div class=brand><div class=logo></div><div><div class=bt>Integracomm IA</div><div class=bs>Growth · Saúde de clientes</div></div></div>
    <nav>__NAV__</nav>
-   <div class=rail-foot>papel: <b>__ROLE__</b> · <a href="/logout" style="color:var(--text-muted);text-decoration:underline">sair</a><br>humano no loop — o agente só sinaliza</div>
+   <div class=rail-foot><b>__USERMAIL__</b> · <a href="/logout" style="color:var(--text-muted);text-decoration:underline">sair</a><br>humano no loop — o agente só sinaliza</div>
  </aside>
  <main>__CONTENT__</main>
 </div>
@@ -1290,7 +1389,7 @@ __SCRIPT__
     elif view == "playbooks":
         content = _playbooks_content(practices or {}, interventions or []) + foot
     elif view == "cancelamentos":
-        content = _cancel_content(cancel or []) + foot
+        content = _cancel_content(cancel or [], request, base_bundle or {}) + foot
     elif view == "relatorios":
         rep = _report_from(scores, alerts)
         content = _relatorios_content(rep, scores) + foot
@@ -1329,7 +1428,7 @@ __SCRIPT__
         script = _CONTAS_JS
 
     return (head.replace("__TOKENS__", _tokens_css())
-            .replace("__NAV__", nav).replace("__ROLE__", escape(role))
+            .replace("__NAV__", nav).replace("__USERMAIL__", escape(usermail or role))
             .replace("__CONTENT__", content).replace("__SCRIPT__", script))
 
 
@@ -1803,7 +1902,31 @@ def _cancel_rows(conn: Any) -> list[dict]:
         return [dict(zip(cols, r)) for r in cur.fetchall()]
 
 
-def _cancel_content(rows: list[dict]) -> str:
+_PLANOS_LEGADO = ("ASS", "ADS", "ESTRAT", "CONSULT", "ANTIGO", "MASTER + ADS")
+
+
+def _canc_bundle(r: dict) -> str | None:
+    """Bundle (B1-B5) do cancelamento: pela equipe (B2-S1) ou pelo plano."""
+    import re as _re
+    for campo in ("equipe", "plano"):
+        m = _re.search(r"B[1-5]", str(r.get(campo) or ""))
+        if m:
+            return m.group(0)
+    pl = str(r.get("plano") or "").upper()
+    mapa = {"START": "B1", "SMART": "B1", "TRACTION": "B2", "SCALE": "B3",
+            "MASTER": "B4", "PLATINUM": "B5"}
+    for k, b in mapa.items():
+        if k in pl and "ADS" not in pl.split("+")[0]:
+            return b
+    return None
+
+
+def _canc_legado(r: dict) -> bool:
+    pl = str(r.get("plano") or "").upper()
+    return any(x in pl for x in _PLANOS_LEGADO) and "TRACTION" not in pl
+
+
+def _cancel_content(rows: list[dict], request: Request, base_bundle: dict | None = None) -> str:
     """Aba Cancelamentos — análises sobre as planilhas do time (fonte oficial
     de churn realizado; ClickUp de cancelados é mal preenchido)."""
     if not rows:
@@ -1812,13 +1935,33 @@ def _cancel_content(rows: list[dict]) -> str:
                 "<code>python -m scripts.sync_cancelamentos</code> (usa as planilhas "
                 "do time; cópia local em data/ quando não houver acesso público).</div></section>")
     import statistics as _st
-    canc = [r for r in rows if r["tipo"] == "cancelamento"]
-    term = [r for r in rows if r["tipo"] == "termino"]
-    trat = [r for r in rows if r["tipo"] == "tratativa"]
-    rev = [r for r in rows if r["tipo"] == "revertido"]
     hoje = dt.date.today()
     mes_atual = hoje.replace(day=1)
+    # ---- filtro temporal (?ini=YYYY-MM&fim=YYYY-MM; padrão = tudo)
+    qp = request.query_params
+    todos_meses = sorted({r["mes"] for r in rows}) or [mes_atual]
+    def _mes_qp(nome, padrao):
+        try:
+            return dt.date.fromisoformat((qp.get(nome) or "") + "-01")
+        except ValueError:
+            return padrao
+    f_ini = _mes_qp("ini", todos_meses[0])
+    f_fim = _mes_qp("fim", todos_meses[-1])
+    def _no_periodo(r):
+        return f_ini <= r["mes"] <= f_fim
+    canc = [r for r in rows if r["tipo"] == "cancelamento" and _no_periodo(r)]
+    term = [r for r in rows if r["tipo"] == "termino" and _no_periodo(r)]
+    trat = [r for r in rows if r["tipo"] == "tratativa"]
+    rev = [r for r in rows if r["tipo"] == "revertido" and _no_periodo(r)]
     meses = sorted({r["mes"] for r in canc})
+    opcoes = "".join(f"<option value='{m.strftime('%Y-%m')}'>{m.strftime('%m/%Y')}</option>" for m in todos_meses)
+    form_filtro = (
+        "<form method=get action=/growth><input type=hidden name=view value=cancelamentos>"
+        "<div class=filters style='display:flex;gap:12px;align-items:end;background:var(--surface-1);"
+        "border:1px solid var(--border-mid);border-radius:var(--radius-md);padding:12px 14px;margin:14px 0 4px'>"
+        f"<div class=grp><label>de (mês)</label><select name=ini>{opcoes.replace(chr(39) + f_ini.strftime('%Y-%m') + chr(39), chr(39) + f_ini.strftime('%Y-%m') + chr(39) + ' selected')}</select></div>"
+        f"<div class=grp><label>até (mês)</label><select name=fim>{opcoes.replace(chr(39) + f_fim.strftime('%Y-%m') + chr(39), chr(39) + f_fim.strftime('%Y-%m') + chr(39) + ' selected')}</select></div>"
+        "<button id=clearf type=submit>Aplicar</button></div></form>")
 
     def _f(v):
         return float(v) if v is not None else None
@@ -1911,10 +2054,69 @@ def _cancel_content(rows: list[dict]) -> str:
                       f"<td style='{td}'>{escape(r['plano'] or '—')}</td>"
                       f"<td style='{td};color:var(--text-2)'>{escape((r['motivo'] or '')[:160])}</td></tr>")
 
+    # ---- taxa de cancelamento por bundle (base = contas monitoradas HOJE)
+    base_bundle = base_bundle or {}
+    canc_bund: dict = {}
+    for r in canc:
+        canc_bund.setdefault(_canc_bundle(r) or "outros", []).append(r)
+    n_meses = max(1, len({r["mes"] for r in canc}) or 1)
+    tx_rows = ""
+    tot_base = sum(v for k, v in base_bundle.items() if k != "outros")
+    tot_canc_b = sum(len(v) for k, v in canc_bund.items() if k != "outros")
+    for b in ("B1", "B2", "B3", "B4", "B5"):
+        cb, bb = len(canc_bund.get(b, [])), base_bundle.get(b, 0)
+        tx = (cb / n_meses) / bb if bb else None
+        td = "text-align:right;padding:7px;border-bottom:1px solid var(--border);font-variant-numeric:tabular-nums"
+        tx_rows += (f"<tr><td style='padding:7px;border-bottom:1px solid var(--border)'><b>{b}</b></td>"
+                    f"<td style='{td}'>{bb or '—'}</td><td style='{td}'>{cb}</td>"
+                    f"<td style='{td}'>{(f'{tx*100:.1f}%/mês' if tx is not None else '—')}</td></tr>")
+    tx_tot = (tot_canc_b / n_meses) / tot_base if tot_base else None
+    tx_rows += (f"<tr style='border-top:2px solid var(--border-strong)'><td style='padding:7px'><b>Total bundles</b></td>"
+                f"<td style='text-align:right;padding:7px'><b>{tot_base}</b></td>"
+                f"<td style='text-align:right;padding:7px'><b>{tot_canc_b}</b></td>"
+                f"<td style='text-align:right;padding:7px'><b>{(f'{tx_tot*100:.1f}%/mês' if tx_tot is not None else '—')}</b></td></tr>")
+    taxa_html = ("<section><div class=sec-head><h2>Taxa de cancelamento por bundle</h2>"
+                 f"<span class=sub>média mensal do período filtrado ({n_meses} m) ÷ base monitorada ATUAL — aproximação: não temos a base histórica mês a mês</span></div>"
+                 + card(tbl("<tr>" + "".join(f"<th style='text-align:{al};padding:7px;border-bottom:1px solid var(--border-strong);color:var(--text-muted);font-size:var(--fs-2xs);text-transform:uppercase'>{h}</th>" for h, al in (("Bundle", "left"), ("Base ativa", "right"), ("Saídas no período", "right"), ("Taxa média", "right"))) + "</tr>", tx_rows))
+                 + "</section>")
+
+    # ---- gráfico de evolução mensal (total × novos × antigos) + MRR
+    from .marketing.ui import _svg_line
+    lbls = [m.strftime("%m/%y") for m in meses]
+    tot_s = [float(sum(1 for r in canc if r["mes"] == m)) for m in meses]
+    novo_s = [float(sum(1 for r in canc if r["mes"] == m and not _canc_legado(r))) for m in meses]
+    leg_s = [float(sum(1 for r in canc if r["mes"] == m and _canc_legado(r))) for m in meses]
+    mrr_s = [float(sum(_f(r["valor"]) or 0 for r in canc if r["mes"] == m)) for m in meses]
+    g1 = _svg_line([("Total", "var(--status-critico)", tot_s),
+                    ("Planos novos (bundles)", "var(--brand)", novo_s),
+                    ("Planos antigos/ADS", "var(--text-muted)", leg_s)], lbls)
+    g2 = _svg_line([("MRR perdido (R$)", "var(--status-alto)", mrr_s)], lbls,
+                   fmt_y=lambda v: f"R$ {v:,.0f}".replace(",", "."))
+    evolucao_html = ("<section><div class=sec-head><h2>Evolução mensal</h2>"
+                     "<span class=sub>cancelamentos por mês — total e separado por planos novos (bundles) × antigos/ADS</span></div>"
+                     + card(g1) + "</section>"
+                     "<section><div class=sec-head><h2>MRR perdido por mês</h2></div>" + card(g2) + "</section>")
+
+    # ---- tempo de casa por bundle (visão complementar)
+    tc_rows = ""
+    for b in ("B1", "B2", "B3", "B4", "B5", "outros"):
+        tps = [_f(r["meses"]) for r in canc_bund.get(b, []) if r.get("meses") is not None]
+        if not tps:
+            continue
+        td = "text-align:right;padding:7px;border-bottom:1px solid var(--border)"
+        tc_rows += (f"<tr><td style='padding:7px;border-bottom:1px solid var(--border)'><b>{b}</b></td>"
+                    f"<td style='{td}'>{len(tps)}</td><td style='{td}'>{_st.median(tps):.0f} m</td>"
+                    f"<td style='{td}'>{sum(1 for x in tps if x <= 3) / len(tps) * 100:.0f}%</td></tr>")
+    tempo_html = ""
+    if tc_rows:
+        tempo_html = ("<section><div class=sec-head><h2>Tempo de casa na saída, por bundle</h2>"
+                      "<span class=sub>mediana e % de churn PRECOCE (≤3 meses) — churn precoce = problema de onboarding/expectativa, não de entrega</span></div>"
+                      + card(tbl("<tr>" + "".join(f"<th style='text-align:{al};padding:7px;border-bottom:1px solid var(--border-strong);color:var(--text-muted);font-size:var(--fs-2xs);text-transform:uppercase'>{h}</th>" for h, al in (("Bundle", "left"), ("Saídas c/ dado", "right"), ("Mediana", "right"), ("≤3 meses", "right"))) + "</tr>", tc_rows)) + "</section>")
+
     return (
         "<div class=page-head><h1>Cancelamentos</h1>"
         "<span class=role-chip>fonte: planilhas do time (Saídas de Clientes + Bonificação Squads)</span></div>"
-        + kpis +
+        + form_filtro + kpis + taxa_html + evolucao_html +
         f"<section><div class=sec-head><h2>Fila de retenção — clientes em tratativa</h2>"
         f"<span class=sub>saída ainda NÃO formalizada: é aqui que a retenção acontece</span></div>"
         + card(tbl(f"<tr>{th_t}</tr>", linhas_t) if linhas_t else "<span class=note>nenhuma tratativa aberta registrada</span>") +
@@ -1924,6 +2126,7 @@ def _cancel_content(rows: list[dict]) -> str:
         "<section><div class=sec-head><h2>Por plano e por equipe</h2><span class=sub>todo o período das planilhas (dez-2025 em diante)</span></div>"
         "<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px'>"
         + card(grupo("plano", "Plano")) + card(grupo("equipe", "Equipe/Squad")) + "</div></section>"
+        + tempo_html +
         f"<section><div class=sec-head><h2>Motivos informados</h2><span class=sub>{len(com_motivo)} saídas com motivo registrado — 15 mais recentes</span></div>"
         + card(tbl("<tr>" + "".join(f"<th style='text-align:left;padding:7px;border-bottom:1px solid var(--border-strong);color:var(--text-muted);font-size:var(--fs-2xs);text-transform:uppercase'>{h}</th>" for h in ("Mês", "Cliente", "Plano", "Motivo")) + "</tr>", linhas_mo)) +
         "</section>"
@@ -1992,6 +2195,8 @@ def _relatorios_content(rep: dict, scores: list[dict]) -> str:
 # (FastAPI casa na ordem de registro). Import tardio evita ciclo.
 from .report_api import router as _report_router  # noqa: E402
 from .marketing.ui import router as _marketing_router  # noqa: E402
+from .sales.ui import router as _sales_router  # noqa: E402
 
 app.include_router(_report_router)
 app.include_router(_marketing_router)
+app.include_router(_sales_router)

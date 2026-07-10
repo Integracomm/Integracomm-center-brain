@@ -33,9 +33,20 @@ def _token() -> str:
     return t
 
 
+class DailyBudgetExceeded(RuntimeError):
+    """Orçamento DIÁRIO da API do Pipedrive esgotado — parar limpo e retomar
+    amanhã (os marcadores incrementais garantem a retomada sem retrabalho)."""
+
+
+_REQS = {"n": 0}  # requisições feitas neste processo (visibilidade nos logs)
+
+
 def _get(path: str, params: dict) -> dict:
     r = httpx.get(f"https://api.pipedrive.com/v1/{path}",
                   params=dict(params, api_token=_token()), timeout=90)
+    _REQS["n"] += 1
+    if r.status_code == 429 and "daily request budget" in r.text:
+        raise DailyBudgetExceeded(r.text[:120])
     r.raise_for_status()
     return r.json()
 
@@ -63,6 +74,11 @@ def sync_deals(conn: Any, since: dt.date = dt.date(2025, 1, 1)) -> int:
     labels = produto_labels()
     n, start = 0, 0
     with conn.cursor() as cur:
+        # colunas p/ as áreas de Pré-vendas/Vendas (dono e motivo de perda)
+        cur.execute("""ALTER TABLE mkt_deals_attribution
+                       ADD COLUMN IF NOT EXISTS owner_id BIGINT,
+                       ADD COLUMN IF NOT EXISTS owner_name TEXT,
+                       ADD COLUMN IF NOT EXISTS lost_reason TEXT""")
         while start is not None:
             j = _get("deals", {"limit": 500, "start": start, "sort": "add_time DESC"})
             data = j.get("data") or []
@@ -79,18 +95,29 @@ def sync_deals(conn: Any, since: dt.date = dt.date(2025, 1, 1)) -> int:
                     """INSERT INTO mkt_deals_attribution
                            (deal_id, add_time, won_time, lost_time, status, valor, origem,
                             utm_medium, utm_campaign, utm_term, utm_content, produto,
-                            stage_id, updated_at)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now())
+                            stage_id, owner_id, owner_name, lost_reason, updated_at)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now())
                        ON CONFLICT (deal_id) DO UPDATE SET
                             won_time=EXCLUDED.won_time, lost_time=EXCLUDED.lost_time,
                             status=EXCLUDED.status, valor=EXCLUDED.valor, origem=EXCLUDED.origem,
                             utm_medium=EXCLUDED.utm_medium, utm_campaign=EXCLUDED.utm_campaign,
                             utm_term=EXCLUDED.utm_term, utm_content=EXCLUDED.utm_content,
-                            produto=EXCLUDED.produto, stage_id=EXCLUDED.stage_id, updated_at=now()""",
+                            produto=EXCLUDED.produto, stage_id=EXCLUDED.stage_id,
+                            owner_id=EXCLUDED.owner_id, owner_name=EXCLUDED.owner_name,
+                            lost_reason=EXCLUDED.lost_reason, updated_at=now()
+                       WHERE (mkt_deals_attribution.status, mkt_deals_attribution.stage_id,
+                              mkt_deals_attribution.won_time, mkt_deals_attribution.valor,
+                              mkt_deals_attribution.owner_id, mkt_deals_attribution.lost_reason)
+                             IS DISTINCT FROM
+                             (EXCLUDED.status, EXCLUDED.stage_id, EXCLUDED.won_time, EXCLUDED.valor,
+                              EXCLUDED.owner_id, EXCLUDED.lost_reason)""",
                     (d["id"], add, d.get("won_time"), d.get("lost_time"), d.get("status"),
                      d.get("value"), (_txt(d.get(F_SOURCE)) or "").lower() or None,
                      _txt(d.get(F_MEDIUM)), _txt(d.get(F_CAMPAIGN)), _txt(d.get(F_TERM)),
-                     _txt(d.get(F_CONTENT)), prod, d.get("stage_id")))
+                     _txt(d.get(F_CONTENT)), prod, d.get("stage_id"),
+                     (d.get("user_id") or {}).get("id") if isinstance(d.get("user_id"), dict) else d.get("user_id"),
+                     (d.get("user_id") or {}).get("name") if isinstance(d.get("user_id"), dict) else None,
+                     _txt(d.get("lost_reason"))))
                 n += 1
             p = (j.get("additional_data") or {}).get("pagination") or {}
             if page_old and data:
@@ -156,7 +183,8 @@ def _flow_events(deal_id: int) -> list[tuple[int, str]]:
         start = p.get("next_start")
 
 
-def sync_stage_events(conn: Any, *, full: bool = False, window_days: int = 60) -> int:
+def sync_stage_events(conn: Any, *, full: bool = False, window_days: int = 60,
+                      max_deals: int = 1500) -> int:
     """Enriquece com o histórico de etapas os deals NOVOS/ALTERADOS desde o
     último enriquecimento (updated_at > synced_at); `full` refaz todos."""
     import time
@@ -171,11 +199,15 @@ def sync_stage_events(conn: Any, *, full: bool = False, window_days: int = 60) -
                                OR d.updated_at > f.synced_at ORDER BY d.add_time""",
                         (window_days,))
         ids = [r[0] for r in cur.fetchall()]
+    ids = ids[:max_deals]  # teto diário: o resto retoma amanhã (marcador)
     n = 0
     with conn.cursor() as cur:
         for i, did in enumerate(ids):
             try:
                 evs = _flow_events(did)
+            except DailyBudgetExceeded:
+                print(f"  [flow] orçamento diário esgotou em {i}/{len(ids)} — retoma amanhã", flush=True)
+                break
             except httpx.HTTPError:
                 continue  # deal problemático não trava o lote; re-tenta amanhã
             for sid, quando in evs:
@@ -189,4 +221,65 @@ def sync_stage_events(conn: Any, *, full: bool = False, window_days: int = 60) -
             time.sleep(0.12)  # folga p/ o rate limit (~80 req/2s no plano)
             if i and i % 200 == 0:
                 print(f"  [flow] {i}/{len(ids)} deals...", flush=True)
+    return n
+
+
+# ---------------------------------------------------------------------------
+# Primeiro contato por deal (speed-to-lead das áreas de Pré-vendas/Vendas).
+# Uma passada paginada em /activities (todas as pessoas, concluídas) guardando
+# o PRIMEIRO toque de cada deal — barato (500/página) e incremental por data.
+# ---------------------------------------------------------------------------
+_TOUCH_DDL = """
+CREATE TABLE IF NOT EXISTS sales_first_touch (
+    deal_id     BIGINT PRIMARY KEY,
+    first_at    TIMESTAMPTZ NOT NULL,   -- criação da 1ª atividade do deal
+    done_at     TIMESTAMPTZ,            -- quando foi concluída
+    tipo        TEXT,                   -- call|whatsapp|email|fluxo_de_cadencia...
+    quem        TEXT,                   -- responsável pela atividade
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+"""
+
+
+def sync_first_touch(conn: Any, since: dt.date | None = None,
+                     max_pages: int = 200) -> int:
+    """Varre atividades (desc) e registra o 1º contato de cada deal; para na
+    página inteira anterior a `since` (default: 10 dias — incremental diário)."""
+    corte = (since or (dt.date.today() - dt.timedelta(days=10))).isoformat()
+    n, start, paginas = 0, 0, 0
+    with conn.cursor() as cur:
+        cur.execute(_TOUCH_DDL)
+        while start is not None and paginas < max_pages:
+            paginas += 1
+            j = _get("activities", {"user_id": 0, "limit": 500, "start": start,
+                                    "done": 1, "sort": "add_time DESC"})
+            data = j.get("data") or []
+            page_old = True
+            for a in data:
+                add = a.get("add_time")
+                if not add:
+                    continue
+                if add[:10] >= corte:
+                    page_old = False
+                if not a.get("deal_id"):
+                    continue
+                cur.execute(
+                    """INSERT INTO sales_first_touch (deal_id, first_at, done_at, tipo, quem, updated_at)
+                       VALUES (%s,%s,%s,%s,%s,now())
+                       ON CONFLICT (deal_id) DO UPDATE SET
+                            first_at=LEAST(sales_first_touch.first_at, EXCLUDED.first_at),
+                            done_at=LEAST(COALESCE(sales_first_touch.done_at, EXCLUDED.done_at),
+                                          COALESCE(EXCLUDED.done_at, sales_first_touch.done_at)),
+                            tipo=CASE WHEN EXCLUDED.first_at < sales_first_touch.first_at
+                                      THEN EXCLUDED.tipo ELSE sales_first_touch.tipo END,
+                            quem=CASE WHEN EXCLUDED.first_at < sales_first_touch.first_at
+                                      THEN EXCLUDED.quem ELSE sales_first_touch.quem END,
+                            updated_at=now()""",
+                    (a["deal_id"], add, a.get("marked_as_done_time") or None,
+                     a.get("type"), (a.get("owner_name") or "")))
+                n += 1
+            p = (j.get("additional_data") or {}).get("pagination") or {}
+            if page_old and data:
+                break
+            start = p.get("next_start") if p.get("more_items_in_collection") else None
     return n

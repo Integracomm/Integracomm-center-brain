@@ -51,7 +51,7 @@ def _fmt(v, kind="num") -> str:
     return f"{v:,.0f}".replace(",", ".")
 
 
-def _shell(A, role: str, view: str, content: str) -> str:
+def _shell(A, role: str, view: str, content: str, usermail: str = "") -> str:
     nav = "<a class='nav-item' href='/'>← Início (central)</a>" if role == "admin" else ""
     for v, label in _VIEWS:
         cls = "nav-item active" if v == view else "nav-item"
@@ -110,12 +110,12 @@ tr:hover td{background:var(--surface-2)}
  <aside class=rail>
    <div class=brand><div class=logo></div><div><div class=bt>Integracomm IA</div><div class=bs>Marketing · Tráfego & Leads</div></div></div>
    <nav>__NAV__</nav>
-   <div class=rail-foot>papel: <b>__ROLE__</b> · <a href="/logout" style="color:var(--text-muted);text-decoration:underline">sair</a><br>dados via cache local (coleta 06h)</div>
+   <div class=rail-foot><b>__USERMAIL__</b> · <a href="/logout" style="color:var(--text-muted);text-decoration:underline">sair</a><br>dados via cache local (coleta 06h)</div>
  </aside>
  <main>__CONTENT__</main>
 </div></body></html>"""
     return (head.replace("__TOKENS__", A._tokens_css()).replace("__NAV__", nav)
-            .replace("__ROLE__", escape(role)).replace("__CONTENT__", content))
+            .replace("__USERMAIL__", escape(usermail or role)).replace("__CONTENT__", content))
 
 
 # ---------------------------------------------------------------------------
@@ -543,7 +543,7 @@ def _svg_line(series, labels, fmt_y=None):
     W, H, L, B = 780, 190, 46, 30
     vmax = max((max(v) for _, _, v in series if v), default=1) or 1
     n = max(len(labels) - 1, 1)
-    out = [f"<svg viewBox='0 0 {W} {H + 14}' style='width:100%;max-width:840px'>"]
+    out = [f"<svg viewBox='0 0 {W} {H + 40}' style='width:100%;max-width:840px'>"]
     for fr in (0.5, 1.0):
         y = H - B - (H - B - 16) * fr
         out.append(f"<line x1='{L}' y1='{y:.0f}' x2='{W - 8}' y2='{y:.0f}' stroke='var(--border)' stroke-dasharray='3 4'/>")
@@ -566,7 +566,10 @@ def _svg_line(series, labels, fmt_y=None):
             out.append(f"<circle cx='{x:.0f}' cy='{y:.0f}' r='7' fill='transparent' stroke='none'>"
                        f"<title>{escape(labels[i])}: {fmt_y(v)}</title></circle>"
                        f"<circle cx='{x:.0f}' cy='{y:.0f}' r='2.5' fill='{cor}'/>")
-        out.append(f"<text x='{L + 4 + si * 130}' y='14' fill='{cor}' font-size='11' font-weight='600'>{escape(nome)}</text>")
+        # legenda ABAIXO do gráfico (no topo chocava com as linhas)
+        lx = L + 4 + si * 190
+        out.append(f"<circle cx='{lx}' cy='{H + 26}' r='4' fill='{cor}'/>")
+        out.append(f"<text x='{lx + 9}' y='{H + 30}' fill='{cor}' font-size='11' font-weight='600'>{escape(nome)}</text>")
     out.append("</svg>")
     return "".join(out)
 
@@ -627,7 +630,9 @@ def _funil_eventos(conn, a: dt.date, b: dt.date) -> tuple[list[int], int, int, f
     # SQL = criados no período c/ reunião agendada (6/15); Oportunidade = TODOS
     # que entraram em Negociação (7) no período — indicações PULAM etapas e
     # entram direto, por isso Oportunidade pode superar SQL.
-    fim = b + dt.timedelta(days=1)
+    # cortes de período em HORÁRIO DE BRASÍLIA (o Insights do Pipedrive corta
+    # assim; em UTC os leads de fim de noite caíam no dia errado)
+    a, fim = f"{a} 00:00-03", f"{b + dt.timedelta(days=1)} 00:00-03"
     with conn.cursor() as cur:
         cur.execute("""SELECT count(*) FROM mkt_deals_attribution
                         WHERE add_time >= %s AND add_time < %s""", (a, fim))
@@ -1219,4 +1224,4 @@ def marketing(request: Request, view: str = Query("visao")):
               "lag": lambda: _lag(c), "planejador": lambda: _planejador(c, request),
               "criativos": lambda: _criativos(c, request)}[view]
         content = fn() + "<p class=foot>Cache local das fontes (Meta, Google, Pipedrive, planilha de metas, ad-insightify) — coleta diária 06h. A decisão é sempre do gestor.</p>"
-    return HTMLResponse(_shell(A, role, view, content))
+    return HTMLResponse(_shell(A, role, view, content, usermail=user))
