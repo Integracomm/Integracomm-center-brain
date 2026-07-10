@@ -26,6 +26,10 @@ fi
 
 echo "== [3/6] sobe os serviços (build da imagem na 1ª vez: ~2 min) =="
 mkdir -p logs deploy/restore
+# o compose usa deploy/ (pasta do docker-compose.yml) como "project directory" e
+# procura o .env ali para interpolar ${DB_PASSWORD}/${DOMAIN} no YAML — o .env
+# de verdade mora na raiz, então precisa desse link para a interpolação funcionar.
+ln -sf ../.env deploy/.env
 docker compose -f deploy/docker-compose.yml up -d --build
 
 echo "== [4/6] restaura o banco local (se houver dump e o banco estiver vazio) =="
@@ -48,7 +52,7 @@ fi
 
 echo "== [5/6] cron da rodada diária (06:00) =="
 CRON_LINE="0 6 * * * cd $ROOT && /usr/bin/docker compose -f deploy/docker-compose.yml exec -T app sh /app/deploy/daily_run.sh >> $ROOT/logs/cron_diario.log 2>&1"
-( crontab -l 2>/dev/null | grep -v 'daily_run.sh' ; echo "$CRON_LINE" ) | crontab -
+( crontab -l 2>/dev/null | grep -v 'daily_run.sh' || true; echo "$CRON_LINE" ) | crontab -
 echo "   instalado: $CRON_LINE"
 
 echo "== [6/6] smoke test =="
