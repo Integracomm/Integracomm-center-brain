@@ -23,7 +23,7 @@ from . import especialista as ESP
 router = APIRouter()
 
 _PV_VIEWS = [("funil", "Funil de Qualificação"), ("speed", "Speed-to-Lead"),
-             ("sdrs", "Time & Planos")]
+             ("horarios", "Melhor Horário"), ("sdrs", "Time & Planos")]
 _VD_VIEWS = [("funil", "Funil de Fechamento"), ("winloss", "Win/Loss"),
              ("ciclo", "Ciclo & Empacados"), ("closers", "Time & Planos"),
              ("forecast", "Performance & Meta")]
@@ -289,6 +289,135 @@ def _pv_sdrs(conn, request: Request) -> str:
             f"<section><h2>Produtividade por SDR</h2>"
             + _card(_tbl([("SDR", "left"), ("Leads", "right"), ("Reuniões", "right"), ("Lead→Reunião", "right"), ("Speed (med.)", "right")], rows)) + "</section>"
             f"<section><h2>Planos de ação individuais</h2><p class=secsub>{ESP.PERSONA_PREVENDAS}</p>{_card(planos or '<span class=note>—</span>')}</section>")
+
+
+# --- Melhor Horário (pedido do time de Pré-vendas, 10/07/26) ----------------
+_DOW_NOME = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"]
+_ST_AGENDA = (6, 15)  # entrada em Reunião Agendada (p1) / equivalente da Prospecção (p2)
+
+
+def _pv_horarios(conn, request: Request) -> str:
+    """Estudo de dias/horários em que reuniões são AGENDADAS (entrada do deal na
+    etapa Reunião Agendada, horário de Brasília) — melhor janela p/ o SDR ligar,
+    geral e por bundle. Base: mkt_stage_events (o carimbo é o momento em que o
+    card foi movido — proxy da ligação que converteu)."""
+    hoje = dt.date.today()
+    qp = request.query_params
+    ini_s = qp.get("ini") or (hoje - dt.timedelta(days=180)).isoformat()
+    fim_s = qp.get("fim") or hoje.isoformat()
+    try:
+        ini, fim = dt.date.fromisoformat(ini_s), dt.date.fromisoformat(fim_s)
+    except ValueError:
+        ini, fim = hoje - dt.timedelta(days=180), hoje
+    a, b = _brt(ini, fim)
+    bundle = qp.get("bundle") or "todos"
+
+    filtro_b = ""
+    args: list = [a, b]
+    if bundle in ("B1", "B2", "B3", "B4", "B5"):
+        filtro_b = " AND substring(d.produto FROM 'B[1-5]') = %s"
+        args.append(bundle)
+    with conn.cursor() as cur:
+        cur.execute(f"""
+            SELECT extract(dow  FROM e.entered_at AT TIME ZONE 'America/Sao_Paulo')::int,
+                   extract(hour FROM e.entered_at AT TIME ZONE 'America/Sao_Paulo')::int,
+                   count(*)
+              FROM mkt_stage_events e
+              JOIN mkt_deals_attribution d ON d.deal_id = e.deal_id
+             WHERE e.stage_id = ANY(%s) AND e.entered_at >= %s AND e.entered_at < %s{filtro_b}
+             GROUP BY 1, 2""", [list(_ST_AGENDA)] + args)
+        celulas = {(dow, h): n for dow, h, n in cur.fetchall()}
+        # melhores janelas POR BUNDLE (independe do filtro acima)
+        cur.execute("""
+            SELECT COALESCE(substring(d.produto FROM 'B[1-5]'), 'sem produto'),
+                   extract(dow  FROM e.entered_at AT TIME ZONE 'America/Sao_Paulo')::int,
+                   extract(hour FROM e.entered_at AT TIME ZONE 'America/Sao_Paulo')::int,
+                   count(*)
+              FROM mkt_stage_events e
+              JOIN mkt_deals_attribution d ON d.deal_id = e.deal_id
+             WHERE e.stage_id = ANY(%s) AND e.entered_at >= %s AND e.entered_at < %s
+             GROUP BY 1, 2, 3""", (list(_ST_AGENDA), a, b))
+        por_bundle: dict[str, dict[tuple[int, int], int]] = {}
+        for p, dow, h, n in cur.fetchall():
+            por_bundle.setdefault(p, {})[(dow, h)] = n
+
+    total = sum(celulas.values())
+    if not total:
+        return ("<h1>Melhor Horário</h1><div class=sub>quando as reuniões são agendadas</div>"
+                "<section><div class=warn>sem agendamentos no período/filtro selecionado</div></section>")
+
+    # --- heatmap dia da semana × hora ---
+    dows = [1, 2, 3, 4, 5] + ([6] if any(d == 6 for d, _ in celulas) else []) \
+        + ([0] if any(d == 0 for d, _ in celulas) else [])
+    horas = sorted({h for _, h in celulas})
+    horas = list(range(min(horas), max(horas) + 1))
+    vmax = max(celulas.values())
+    linhas = ""
+    for h in horas:
+        tds = ""
+        for d in dows:
+            n = celulas.get((d, h), 0)
+            pct = n / total
+            alpha = int(8 + 62 * (n / vmax)) if n else 0
+            bg = f"background:color-mix(in srgb,var(--brand) {alpha}%,transparent);" if n else ""
+            tds += (f"<td title='{_DOW_NOME[d]} {h:02d}h — {n} agendamento(s) ({pct * 100:.1f}%)' "
+                    f"style='{_TD};text-align:center;{bg}'>{n or ''}</td>")
+        linhas += f"<tr><td style='{_TD};color:var(--text-muted)'>{h:02d}h</td>{tds}</tr>"
+    heat = _tbl([("", "left")] + [(_DOW_NOME[d], "left") for d in dows], linhas)
+
+    # --- top janelas e leitura de expediente ---
+    top = sorted(celulas.items(), key=lambda x: -x[1])[:5]
+    top_html = "".join(
+        f"<div class=sug-item><b>{i}º</b> — {_DOW_NOME[d]} às {h:02d}h: <b>{n}</b> agendamentos ({n / total * 100:.1f}%)</div>"
+        for i, ((d, h), n) in enumerate(top, 1))
+    antes9 = sum(n for (d, h), n in celulas.items() if h < 9)
+    almoco = sum(n for (d, h), n in celulas.items() if 12 <= h < 14)
+    depois18 = sum(n for (d, h), n in celulas.items() if h >= 18)
+    fds = sum(n for (d, h), n in celulas.items() if d in (0, 6))
+    kpis = ("<div class=kpis>"
+            f"<div class=kpi><div class=n>{total}</div><div class=l>agendamentos no período</div></div>"
+            f"<div class=kpi><div class=n>{_fmt(antes9 / total, 'pct')}</div><div class=l>antes das 9h</div></div>"
+            f"<div class=kpi><div class=n>{_fmt(almoco / total, 'pct')}</div><div class=l>12h-14h (almoço)</div></div>"
+            f"<div class=kpi><div class=n>{_fmt(depois18 / total, 'pct')}</div><div class=l>após as 18h</div></div>"
+            f"<div class=kpi><div class=n>{_fmt(fds / total, 'pct')}</div><div class=l>fim de semana</div></div></div>")
+
+    # --- melhores janelas por bundle ---
+    brows = ""
+    for p in ("B1", "B2", "B3", "B4", "B5", "sem produto"):
+        cel = por_bundle.get(p)
+        if not cel:
+            continue
+        tot_p = sum(cel.values())
+        melhores = [f"{_DOW_NOME[d]} {h:02d}h ({n})"
+                    for (d, h), n in sorted(cel.items(), key=lambda x: -x[1])[:3] if n >= 2]
+        brows += (f"<tr><td style='{_TD}'><b>{escape(p)}</b></td>"
+                  f"<td style='{_TD};text-align:right'>{tot_p}</td>"
+                  f"<td style='{_TD}'>{escape(' · '.join(melhores) or '—')}</td>"
+                  f"<td style='{_TD};text-align:right'>{'<span class=note>amostra pequena</span>' if tot_p < 30 else ''}</td></tr>")
+
+    opts_b = "".join(f"<option value='{v}' {'selected' if bundle == v else ''}>{lbl}</option>"
+                     for v, lbl in [("todos", "todos os bundles"), ("B1", "B1"), ("B2", "B2"),
+                                    ("B3", "B3"), ("B4", "B4"), ("B5", "B5")])
+    form = (f"<form method=get action=/prevendas><input type=hidden name=view value=horarios>"
+            f"<div class=filters><div><label>de</label><input type=date name=ini value='{ini}'></div>"
+            f"<div><label>até</label><input type=date name=fim value='{fim}'></div>"
+            f"<div><label>bundle</label><select name=bundle>{opts_b}</select></div>"
+            f"<button type=submit>Aplicar</button></div></form>")
+    estilo = ("<style>.sug-item{padding:7px 0;border-top:1px solid var(--border);font-size:var(--fs-sm);"
+              "line-height:1.55;color:var(--text-2)}.sug-item:first-child{border-top:none}</style>")
+    return (f"<h1>Melhor Horário — agendamentos de reunião</h1>"
+            "<div class=sub>momento em que o deal ENTROU em Reunião Agendada (horário de Brasília) — proxy da "
+            "ligação que converteu; o carimbo é a movimentação do card pelo SDR · pedido do time de Pré-vendas</div>"
+            + form + kpis +
+            "<section><h2>Mapa de calor — dia da semana × hora</h2>"
+            f"<p class=secsub>período {ini.strftime('%d-%m-%Y')} a {fim.strftime('%d-%m-%Y')}"
+            f"{' · bundle ' + bundle if bundle != 'todos' else ''} · quanto mais escuro, mais agendamentos</p>"
+            + _card(heat) + "</section>"
+            "<section><h2>Top 5 janelas</h2>" + _card(top_html + estilo) + "</section>"
+            "<section><h2>Melhores janelas por bundle</h2>"
+            "<p class=secsub>até 3 janelas com mais agendamentos por bundle no período — bundles com poucas "
+            "amostras merecem cautela antes de mudar escala de time</p>"
+            + _card(_tbl([("Bundle", "left"), ("Agendamentos", "right"), ("Melhores janelas", "left"), ("", "right")], brows)) + "</section>")
 
 
 # ---------------------------------------------------------------------------
@@ -629,7 +758,8 @@ def prevendas(request: Request, view: str = Query("funil")):
         with c.cursor() as cur:
             cur.execute("INSERT INTO audit_log (actor, action, scope) VALUES (%s,'view',%s)",
                         (user, f"prevendas/{view}"))
-        fn = {"funil": _pv_funil, "speed": _pv_speed, "sdrs": _pv_sdrs}[view]
+        fn = {"funil": _pv_funil, "speed": _pv_speed, "horarios": _pv_horarios,
+              "sdrs": _pv_sdrs}[view]
         content = fn(c, request) + "<p class=foot>Fonte: Pipedrive (cache local, coleta diária). A decisão é sempre do gestor — o especialista sinaliza.</p>"
     return HTMLResponse(_shell(A, "prevendas", _PV_VIEWS, view, content, user))
 
