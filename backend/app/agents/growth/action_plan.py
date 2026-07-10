@@ -66,22 +66,35 @@ def _dossie(data: dict, updates: list[dict]) -> str:
     return "\n".join(lines)
 
 
+_MODEL = "claude-sonnet-5"
+
+
 def _via_claude(dossie: str) -> str | None:
     # Só tenta o LLM quando explicitamente ligado (GROWTH_LLM_PLANS=1) E com
     # chave — evita pagar ~1s (e retries) numa chamada que hoje falha sem créditos.
+    # Passa pelo guarda de orçamento mensal (llm_budget): teto atingido -> None
+    # (o plano sai pelo motor determinístico, sem custo).
     s = get_settings()
     if not (s.growth_llm_plans and s.anthropic_api_key):
         return None
     try:
         import anthropic
-        cli = anthropic.Anthropic(api_key=s.anthropic_api_key, max_retries=0, timeout=30.0)
-        msg = cli.messages.create(
-            model="claude-sonnet-5", max_tokens=1200,
-            system=[{"type": "text", "text": _SYSTEM, "cache_control": {"type": "ephemeral"}}],
-            messages=[{"role": "user", "content": dossie}],
-        )
+        import psycopg
+
+        from ...llm_budget import ensure_budget, record_usage
+        with psycopg.connect(s.app_database_url) as bconn:
+            ensure_budget(bconn)
+            cli = anthropic.Anthropic(api_key=s.anthropic_api_key, max_retries=0, timeout=30.0)
+            msg = cli.messages.create(
+                model=_MODEL, max_tokens=1200,
+                system=[{"type": "text", "text": _SYSTEM, "cache_control": {"type": "ephemeral"}}],
+                messages=[{"role": "user", "content": dossie}],
+            )
+            tin = (msg.usage.input_tokens + (msg.usage.cache_read_input_tokens or 0)
+                   + (msg.usage.cache_creation_input_tokens or 0))
+            record_usage(bconn, "growth:plano_acao", _MODEL, tin, msg.usage.output_tokens)
         return msg.content[0].text.strip()
-    except Exception:  # noqa: BLE001 — sem créditos/rede -> fallback determinístico
+    except Exception:  # noqa: BLE001 — sem créditos/rede/orçamento -> fallback determinístico
         return None
 
 

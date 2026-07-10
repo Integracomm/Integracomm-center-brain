@@ -523,6 +523,8 @@ def admin_panel(request: Request):
         _audit_view(c, user, scope="admin")
         stats = _hub_stats(c)
         users = list_users(c)
+        from .llm_budget import month_summary
+        llm = month_summary(c)
         with c.cursor() as cur:
             cur.execute("""SELECT actor, count(*), max(at) FROM audit_log
                             WHERE action='view' GROUP BY actor""")
@@ -530,7 +532,7 @@ def admin_panel(request: Request):
     for u in users:
         n, ult = acessos.get(u["email"], (0, None))
         u["views"], u["last_seen"] = n, (ult.strftime("%d/%m/%Y às %H:%M") if ult else None)
-    return HTMLResponse(_render_hub(user, stats, users, None, page="admin"))
+    return HTMLResponse(_render_hub(user, stats, users, None, page="admin", llm=llm))
 
 
 @app.post("/api/users/{user_id}/status")
@@ -761,6 +763,44 @@ def _users_html(users: list[dict]) -> str:
     return rows + js
 
 
+_LLM_FEATURE_LABEL = {
+    "growth:tom_claude": "Growth · análise de tom das conversas",
+    "growth:plano_acao": "Growth · plano de ação individual (relatórios)",
+    "marketing:criativos": "Marketing · ideias de criativos",
+    "especialista": "Agentes especialistas (todas as áreas)",
+}
+
+
+def _llm_budget_html(llm: dict | None) -> str:
+    """Medidor do orçamento mensal de IA (US$ 20 carregados; teto de segurança
+    LLM_BUDGET_USD). Fonte: tabela llm_usage — custo REAL por chamada."""
+    if llm is None:
+        return ""
+    spent, cap, pct = llm["spent_usd"], llm["cap_usd"], min(1.0, llm["pct"])
+    cor = "--status-baixo" if pct < 0.7 else ("--status-medio" if pct < 0.9 else "--status-critico")
+    linhas = ""
+    for f in llm["por_funcao"]:
+        nome = _LLM_FEATURE_LABEL.get(f["feature"], f["feature"])
+        linhas += (f"<div style='display:flex;justify-content:space-between;gap:12px;padding:5px 0;"
+                   f"border-top:1px solid var(--border);font-size:var(--fs-xs);color:var(--text-2)'>"
+                   f"<span>{escape(nome)} · {f['chamadas']} chamada(s)</span>"
+                   f"<span style='font-variant-numeric:tabular-nums'>US$ {f['cost_usd']:.2f}</span></div>")
+    if not linhas:
+        linhas = ("<div style='padding:5px 0;font-size:var(--fs-xs);color:var(--text-muted)'>"
+                  "nenhuma chamada à IA neste mês ainda</div>")
+    return (
+        "<section><h2>Consumo de IA (Claude) no mês</h2>"
+        "<p class=secsub>custo real por chamada, todas as áreas · ao atingir o teto as chamadas são "
+        "bloqueadas automaticamente e os recursos caem no modo determinístico</p>"
+        "<div class=central style='max-width:560px'>"
+        f"<div style='display:flex;justify-content:space-between;align-items:baseline'>"
+        f"<b style='font-size:var(--fs-lg)'>US$ {spent:.2f}</b>"
+        f"<span style='color:var(--text-muted);font-size:var(--fs-xs)'>teto US$ {cap:.2f} ({pct * 100:.0f}%)</span></div>"
+        f"<div style='height:8px;background:var(--surface-3);border-radius:4px;overflow:hidden;margin:8px 0 10px'>"
+        f"<div style='height:100%;width:{pct * 100:.1f}%;background:var({cor});border-radius:4px'></div></div>"
+        + linhas + "</div></section>")
+
+
 def _admin_html(users: list[dict]) -> str:
     """Painel administrativo: linha por conta com interruptor POR ÁREA (aplica
     na hora via /api/users/{id}/areas), nº de acessos e último login (audit_log),
@@ -821,7 +861,8 @@ def _admin_html(users: list[dict]) -> str:
 
 
 def _render_hub(role: str, st: dict, users: list[dict] | None = None,
-                mkt: dict | None = None, page: str = "home") -> str:
+                mkt: dict | None = None, page: str = "home",
+                llm: dict | None = None) -> str:
     n_alerts = sum(st["sev"].values())
     crit = st["sev"].get("critico", 0)
     # Iniciativas sugeridas pela inteligência central — derivadas dos dados
@@ -1035,6 +1076,7 @@ __BODY__
         body = (
             "<h1>Painel Administrativo</h1>"
             "<p class=sub>controle de acessos por conta — aprovar/bloquear cadastros e definir quais áreas cada usuário enxerga</p>"
+            + _llm_budget_html(llm) +
             "<section><h2>Contas e permissões</h2>"
             "<p class=secsub>pendentes primeiro · os interruptores aplicam NA HORA (vale em até 60s) · busca por nome/e-mail</p>"
             + _admin_html(users or []))

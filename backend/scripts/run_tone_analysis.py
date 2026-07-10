@@ -26,7 +26,9 @@ from pathlib import Path
 import anthropic
 import psycopg
 
-from app.agents.growth.tone_claude import analyze_tone, build_transcript
+from app.agents.growth.tone_claude import MODEL, analyze_tone, build_transcript
+from app.llm_budget import (LlmBudgetExceeded, budget_cap, ensure_budget,
+                            month_spend, record_usage)
 from app.sources.whatsapp import WhatsAppReader
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -108,6 +110,8 @@ def main():
     ap.add_argument("--test", action="store_true", help="3 contas de validação (não persiste com --dry)")
     ap.add_argument("--limit", type=int, default=0, help="máx. de contas (0 = todas avaliáveis)")
     ap.add_argument("--dry", action="store_true", help="não persiste nem audita (só imprime)")
+    ap.add_argument("--page-limit", type=int, default=100,
+                    help="mensagens por página do conector (reduza p/ grupos que dão HTTP 546)")
     args = ap.parse_args()
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -121,8 +125,10 @@ def main():
     # page_limit menor: grupos com mensagens longas estouram o payload do gateway
     # (HTTP 546) com 200/página — 100 é seguro e o custo é só mais paginação.
     reader = WhatsAppReader(os.environ["WHATSAPP_READ_API_URL"], os.environ["WHATSAPP_READ_API_KEY"],
-                            page_limit=100)
+                            page_limit=args.page_limit)
     conn = psycopg.connect(os.environ["APP_DATABASE_URL"]) if not args.dry else None
+    # orçamento: mesmo em --dry o gasto na API é real — registra sempre
+    budget_conn = conn or psycopg.connect(os.environ["APP_DATABASE_URL"])
 
     # índice de grupos ao vivo (INCLUI finalizados — necessário p/ canceladas do --test)
     groups = list(reader.iter_groups())
@@ -165,16 +171,37 @@ def main():
         if args.limit:
             targets = targets[: args.limit]
 
-    print(f"analisando tom de {len(targets)} conta(s) com {anthropic.__name__} / claude-sonnet-5 …")
+    print(f"analisando tom de {len(targets)} conta(s) com {anthropic.__name__} / {MODEL} "
+          f"(orçamento mensal: US$ {budget_cap():.2f}) …")
     tot_in = tot_out = ok = 0
+    custo_lote = 0.0
     for label, g, asof in targets:
         try:
-            built = build_transcript(reader, g.id, asof)
+            ensure_budget(budget_conn)  # para o lote LIMPO se o teto do mês chegar
+        except LlmBudgetExceeded as e:
+            print(f"\n[orçamento] {e}\nlote interrompido — o que já foi analisado está persistido.",
+                  file=sys.stderr)
+            break
+        try:
+            try:
+                built = build_transcript(reader, g.id, asof)
+            except Exception as e:  # noqa: BLE001
+                if "546" not in str(e):
+                    raise
+                # payload grande demais p/ o gateway: repete com páginas menores
+                slow = WhatsAppReader(os.environ["WHATSAPP_READ_API_URL"],
+                                      os.environ["WHATSAPP_READ_API_KEY"], page_limit=30)
+                try:
+                    built = build_transcript(slow, g.id, asof)
+                finally:
+                    slow.close()
             if not built:
                 print(f"  [skip] {g.name[:40]}: sem mensagens na janela", file=sys.stderr)
                 continue
             transcript, weeks, wstart, n_msgs = built
             analysis = analyze_tone(claude, transcript, weeks, wstart, asof, n_msgs)
+            custo_lote += record_usage(budget_conn, "growth:tom_claude", MODEL,
+                                       analysis.tokens_in, analysis.tokens_out)
             _print_result(label, g.name, analysis)
             tot_in += analysis.tokens_in
             tot_out += analysis.tokens_out
@@ -187,8 +214,12 @@ def main():
                     print(f"  (conta não está no banco — resultado não persistido)")
         except Exception as e:  # noqa: BLE001 — uma conta não derruba o lote
             print(f"  [erro] {g.name[:40]}: {type(e).__name__}: {e}", file=sys.stderr)
-    print(f"\nconcluído: {ok}/{len(targets)} contas | tokens totais in={tot_in} out={tot_out}")
+    print(f"\nconcluído: {ok}/{len(targets)} contas | tokens totais in={tot_in} out={tot_out} | "
+          f"custo do lote: US$ {custo_lote:.4f} | gasto do mês: US$ {month_spend(budget_conn):.2f} "
+          f"de US$ {budget_cap():.2f}")
     reader.close()
+    if budget_conn is not conn:
+        budget_conn.close()
     if conn is not None:
         conn.close()
 
