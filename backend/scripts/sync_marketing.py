@@ -48,11 +48,27 @@ def main() -> None:
     ensure_mkt_tables(conn)
 
     def step(nome, fn):
-        try:
-            print(f"[{nome}] ...", flush=True)
-            print(f"[{nome}] ok: {fn()} registros", flush=True)
-        except Exception as e:  # noqa: BLE001 — uma fonte fora não derruba as demais
-            print(f"[{nome}] ERRO: {type(e).__name__}: {str(e)[:160]}", flush=True)
+        # RDS derruba conexões longas: OperationalError -> reconecta e tenta 1x
+        nonlocal conn
+        for tent in (1, 2):
+            try:
+                print(f"[{nome}] ...", flush=True)
+                print(f"[{nome}] ok: {fn()} registros", flush=True)
+                return
+            except psycopg.OperationalError as e:
+                if tent == 2:
+                    print(f"[{nome}] ERRO de conexão (2 tentativas): {str(e)[:120]}", flush=True)
+                    return
+                print(f"[{nome}] conexão caiu — reconectando…", flush=True)
+                try:
+                    conn.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                conn = psycopg.connect(os.environ["APP_DATABASE_URL"])
+                conn.autocommit = True
+            except Exception as e:  # noqa: BLE001 — uma fonte fora não derruba as demais
+                print(f"[{nome}] ERRO: {type(e).__name__}: {str(e)[:160]}", flush=True)
+                return
 
     step("meta campanhas", lambda: meta_ads.sync_campaigns(conn))
     step("meta insights", lambda: meta_ads.sync_insights(conn, since, hoje))

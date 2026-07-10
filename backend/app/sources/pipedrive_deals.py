@@ -179,11 +179,43 @@ def _labels_from_cache() -> dict[str, str]:
     return produto_labels()
 
 
+def _norm_ts(v) -> str | None:
+    if v is None:
+        return None
+    if isinstance(v, dt.datetime):
+        return v.astimezone(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    return str(v)[:19] or None
+
+
+def _norm_val(v) -> float | None:
+    return None if v is None else float(v)
+
+
+def _deal_tuplas(d: dict, labels: dict[str, str]) -> tuple[tuple, tuple]:
+    """(core, meta) normalizados do payload do cache — core muda o funil
+    (dispara /flow via updated_at), meta é atribuição/rótulo (update quieto)."""
+    prod = _txt(d.get(F_PRODUTO))
+    if prod and prod.isdigit():
+        prod = labels.get(prod, prod)
+    uid = d.get("user_id")
+    core = (d.get("status"), d.get("stage_id"), _norm_ts(d.get("won_time")),
+            _norm_val(d.get("value")),
+            (uid or {}).get("id") if isinstance(uid, dict) else uid,
+            _txt(d.get("lost_reason")))
+    meta = ((_txt(d.get(F_SOURCE)) or "").lower() or None, _txt(d.get(F_MEDIUM)),
+            _txt(d.get(F_TERM)), _txt(d.get(F_CAMPAIGN)), _txt(d.get(F_CONTENT)),
+            prod, (uid or {}).get("name") if isinstance(uid, dict) else _txt(d.get("owner_name")))
+    return core, meta
+
+
 def sync_deals_from_cache(conn: Any, since: dt.date = dt.date(2025, 1, 1)) -> int:
-    """Upsert dos deals lendo o cache do Lovable (zero requisições Pipedrive).
-    Levanta RuntimeError se o cache estiver velho/indisponível (o chamador cai
-    p/ sync_deals direto). Higiene de apagados: deals nossos que sumiram do
-    cache (status all_not_deleted) são removidos — só com cache íntegro."""
+    """Deals a partir do cache do Lovable (zero requisições Pipedrive). Compara
+    com o banco ANTES de escrever: só deals novos/alterados geram round-trip
+    (o RDS derruba conexões em cargas longas — 10/07). Mudança de funil passa
+    pelo upsert (avança updated_at -> /flow seletivo); mudança só de UTM/
+    produto/dono é um UPDATE quieto que NÃO avança updated_at (senão milhares
+    de deals re-entrariam na fila do /flow sem necessidade). Levanta
+    RuntimeError se o cache estiver velho/suspeito (chamador cai p/ API)."""
     import json
     r = httpx.get(f"{_LOVABLE_SB}/functions/v1/get-deals-cache",
                   headers=_lovable_headers(), timeout=180)
@@ -200,23 +232,45 @@ def sync_deals_from_cache(conn: Any, since: dt.date = dt.date(2025, 1, 1)) -> in
     if not isinstance(deals, list) or len(deals) < 15_000:
         raise RuntimeError(f"cache do Lovable suspeito ({len(deals) if isinstance(deals, list) else '?'} deals)")
     labels = _labels_from_cache()
-    n = 0
     corte = since.isoformat()
-    ids_cache: list[int] = []
     with conn.cursor() as cur:
         cur.execute(_DEALS_DDL_EXTRA)
+        cur.execute("""SELECT deal_id, status, stage_id, won_time, valor, owner_id, lost_reason,
+                              origem, utm_medium, utm_term, utm_campaign, utm_content,
+                              produto, owner_name
+                         FROM mkt_deals_attribution""")
+        db: dict[int, tuple[tuple, tuple]] = {}
+        for row in cur.fetchall():
+            db[row[0]] = ((row[1], row[2], _norm_ts(row[3]), _norm_val(row[4]), row[5], row[6]),
+                          tuple(row[7:14]))
+    novos = mudou_core = mudou_meta = 0
+    ids_cache: list[int] = []
+    with conn.cursor() as cur:
         for d in deals:
             add = d.get("add_time")
             if not add or add[:10] < corte:
                 continue
-            _upsert_deal(cur, d, labels)
-            ids_cache.append(d["id"])
-            n += 1
+            did = d["id"]
+            ids_cache.append(did)
+            core, meta = _deal_tuplas(d, labels)
+            atual = db.get(did)
+            if atual is None or core != atual[0]:
+                _upsert_deal(cur, d, labels)
+                novos += atual is None
+                mudou_core += atual is not None
+            elif meta != atual[1]:
+                cur.execute("""UPDATE mkt_deals_attribution SET origem=%s, utm_medium=%s,
+                                   utm_term=%s, utm_campaign=%s, utm_content=%s,
+                                   produto=%s, owner_name=%s WHERE deal_id=%s""",
+                            (*meta, did))
+                mudou_meta += 1
         # apagados: sumiu do cache íntegro = deletado no Pipedrive
         cur.execute("""DELETE FROM mkt_deals_attribution
                         WHERE add_time >= %s AND NOT (deal_id = ANY(%s))""",
                     (corte, ids_cache))
-    return n
+    print(f"  [deals] cache: {novos} novos, {mudou_core} mudança de funil, "
+          f"{mudou_meta} só atribuição (quieto)", flush=True)
+    return novos + mudou_core + mudou_meta
 
 
 def sync_deals_smart(conn: Any, since: dt.date = dt.date(2025, 1, 1)) -> int:

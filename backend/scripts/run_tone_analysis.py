@@ -139,12 +139,19 @@ def main():
             by_id.setdefault(gid_tok, g)
 
     def account_uuid_for(g) -> str | None:
+        nonlocal conn
         if conn is None:
             return None
         key = exid(g.name) or g.id
-        with conn.cursor() as cur:
-            cur.execute("SELECT id FROM accounts WHERE id_interno=%s", (key,))
-            row = cur.fetchone()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id FROM accounts WHERE id_interno=%s", (key,))
+                row = cur.fetchone()
+        except psycopg.OperationalError:
+            conn = psycopg.connect(os.environ["APP_DATABASE_URL"])
+            with conn.cursor() as cur:
+                cur.execute("SELECT id FROM accounts WHERE id_interno=%s", (key,))
+                row = cur.fetchone()
         return str(row[0]) if row else None
 
     targets: list[tuple[str, object, dt.date]] = []  # (label, group, asof)
@@ -157,27 +164,46 @@ def main():
             else:
                 print(f"  [skip] não achei grupo p/ {label}", file=sys.stderr)
     else:
-        # todas as contas AVALIÁVEIS do banco, casadas ao grupo ao vivo
+        # todas as contas AVALIÁVEIS do banco, casadas ao grupo ao vivo;
+        # pula quem já foi analisada nas últimas 20h (retomada sem custo duplo)
         with psycopg.connect(os.environ["APP_DATABASE_URL"]) as c, c.cursor() as cur:
-            cur.execute("""SELECT DISTINCT ON (s.account_id) a.id_interno, a.name
+            cur.execute("""SELECT DISTINCT ON (s.account_id) a.id_interno, a.name, a.id::text
                              FROM scores s JOIN accounts a ON a.id=s.account_id
                             ORDER BY s.account_id, s.computed_at DESC""")
             rows = [r for r in cur.fetchall()]
+            cur.execute("""SELECT DISTINCT account_id::text FROM audit_log
+                            WHERE action='tone_analysis' AND account_id IS NOT NULL
+                              AND at > now() - interval '20 hours'""")
+            feitas = {r[0] for r in cur.fetchall()}
         live = { (exid(g.name) or g.id): g for g in groups }
-        for id_interno, name in rows:
+        puladas = 0
+        for id_interno, name, auid in rows:
             g = live.get(id_interno)
-            if g:
-                targets.append(("conta", g, TODAY))
+            if not g:
+                continue
+            if auid in feitas:
+                puladas += 1
+                continue
+            targets.append(("conta", g, TODAY))
+        if puladas:
+            print(f"({puladas} contas já analisadas nas últimas 20h — puladas, sem custo)")
         if args.limit:
             targets = targets[: args.limit]
+
+    def _fresh():
+        return psycopg.connect(os.environ["APP_DATABASE_URL"])
 
     print(f"analisando tom de {len(targets)} conta(s) com {anthropic.__name__} / {MODEL} "
           f"(orçamento mensal: US$ {budget_cap():.2f}) …")
     tot_in = tot_out = ok = 0
     custo_lote = 0.0
     for label, g, asof in targets:
-        try:
-            ensure_budget(budget_conn)  # para o lote LIMPO se o teto do mês chegar
+        try:  # RDS derruba conexões longas — reconecta e segue
+            try:
+                ensure_budget(budget_conn)  # para o lote LIMPO se o teto do mês chegar
+            except psycopg.OperationalError:
+                budget_conn = _fresh()
+                ensure_budget(budget_conn)
         except LlmBudgetExceeded as e:
             print(f"\n[orçamento] {e}\nlote interrompido — o que já foi analisado está persistido.",
                   file=sys.stderr)
@@ -200,8 +226,13 @@ def main():
                 continue
             transcript, weeks, wstart, n_msgs = built
             analysis = analyze_tone(claude, transcript, weeks, wstart, asof, n_msgs)
-            custo_lote += record_usage(budget_conn, "growth:tom_claude", MODEL,
-                                       analysis.tokens_in, analysis.tokens_out)
+            try:
+                custo_lote += record_usage(budget_conn, "growth:tom_claude", MODEL,
+                                           analysis.tokens_in, analysis.tokens_out)
+            except psycopg.OperationalError:
+                budget_conn = _fresh()
+                custo_lote += record_usage(budget_conn, "growth:tom_claude", MODEL,
+                                           analysis.tokens_in, analysis.tokens_out)
             _print_result(label, g.name, analysis)
             tot_in += analysis.tokens_in
             tot_out += analysis.tokens_out
@@ -209,7 +240,11 @@ def main():
             if conn is not None:
                 uid = account_uuid_for(g)
                 if uid:
-                    persist(conn, uid, analysis, "test" if args.test else "batch")
+                    try:
+                        persist(conn, uid, analysis, "test" if args.test else "batch")
+                    except psycopg.OperationalError:
+                        conn = _fresh()
+                        persist(conn, uid, analysis, "test" if args.test else "batch")
                 else:
                     print(f"  (conta não está no banco — resultado não persistido)")
         except Exception as e:  # noqa: BLE001 — uma conta não derruba o lote
