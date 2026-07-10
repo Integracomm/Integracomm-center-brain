@@ -12,6 +12,32 @@ Da raiz do projeto local, com o código já commitado:
 roda `docker compose up -d --build` no servidor AWS. Não mexe em `.env` nem
 no banco.
 
+### Deploy de outra máquina/pessoa
+
+Não precisa de conta própria na AWS pra rodar `deploy.cmd` — só pra
+**administrar** a instância (ver IP, mexer no firewall, reiniciar, criar
+chave nova) é que precisaria de login no console Lightsail.
+
+Como funciona a chave: o `.pem` é a chave **privada** de SSH e **nunca fica
+no servidor** — só a chave **pública** correspondente fica lá (em
+`~/.ssh/authorized_keys` do usuário `ubuntu`), instalada pela AWS quando a
+instância foi criada com a chave "default" da região. Ou seja, **cada
+pessoa/máquina que for rodar `deploy.cmd` precisa ter uma cópia do arquivo
+`.pem`** — sem ele, `scp`/`ssh` não autentica.
+
+Pré-requisitos pra outra pessoa/máquina rodar o deploy:
+1. Clonar o repositório (git).
+2. Ter OpenSSH client instalado (`ssh`/`scp` no PATH — já vem por padrão no
+   Windows 10/11).
+3. Colocar o `lightsail.pem` em `Downloads\lightsail.pem` (ou passar
+   `-KeyPath` customizado pro `deploy\deploy.ps1`) — copiado por canal
+   seguro de quem já tem, nunca por e-mail/Slack aberto.
+4. Rodar `.\deploy.cmd` na raiz do projeto.
+
+Sem conta AWS própria, essa pessoa só **não consegue** administrar a
+instância (console Lightsail, firewall, resize etc.) — o deploy de código via
+SSH funciona normalmente com o `.pem`.
+
 ---
 
 ## O que desativar (e como)
