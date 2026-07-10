@@ -87,13 +87,14 @@ def _via_claude(dossie: str) -> str | None:
             cli = anthropic.Anthropic(api_key=s.anthropic_api_key, max_retries=0, timeout=30.0)
             msg = cli.messages.create(
                 model=_MODEL, max_tokens=1200,
+                thinking={"type": "disabled"},  # volume/custo; sem isso vem ThinkingBlock antes do texto
                 system=[{"type": "text", "text": _SYSTEM, "cache_control": {"type": "ephemeral"}}],
                 messages=[{"role": "user", "content": dossie}],
             )
             tin = (msg.usage.input_tokens + (msg.usage.cache_read_input_tokens or 0)
                    + (msg.usage.cache_creation_input_tokens or 0))
             record_usage(bconn, "growth:plano_acao", _MODEL, tin, msg.usage.output_tokens)
-        return msg.content[0].text.strip()
+        return next(b.text for b in msg.content if b.type == "text").strip()
     except Exception:  # noqa: BLE001 — sem créditos/rede/orçamento -> fallback determinístico
         return None
 
