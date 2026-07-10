@@ -68,17 +68,57 @@ def _txt(v) -> str | None:
     return s or None
 
 
+_DEALS_DDL_EXTRA = """ALTER TABLE mkt_deals_attribution
+    ADD COLUMN IF NOT EXISTS owner_id BIGINT,
+    ADD COLUMN IF NOT EXISTS owner_name TEXT,
+    ADD COLUMN IF NOT EXISTS lost_reason TEXT"""
+
+
+def _upsert_deal(cur, d: dict, labels: dict[str, str]) -> None:
+    """Upsert de UM deal (payload da API v1 ou do cache do Lovable — mesmo shape).
+    updated_at só avança quando algo relevante mudou (IS DISTINCT FROM) — é esse
+    carimbo que torna o enriquecimento /flow seletivo."""
+    prod = _txt(d.get(F_PRODUTO))
+    if prod and prod.isdigit():
+        prod = labels.get(prod, prod)
+    cur.execute(
+        """INSERT INTO mkt_deals_attribution
+               (deal_id, add_time, won_time, lost_time, status, valor, origem,
+                utm_medium, utm_campaign, utm_term, utm_content, produto,
+                stage_id, owner_id, owner_name, lost_reason, updated_at)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now())
+           ON CONFLICT (deal_id) DO UPDATE SET
+                won_time=EXCLUDED.won_time, lost_time=EXCLUDED.lost_time,
+                status=EXCLUDED.status, valor=EXCLUDED.valor, origem=EXCLUDED.origem,
+                utm_medium=EXCLUDED.utm_medium, utm_campaign=EXCLUDED.utm_campaign,
+                utm_term=EXCLUDED.utm_term, utm_content=EXCLUDED.utm_content,
+                produto=EXCLUDED.produto, stage_id=EXCLUDED.stage_id,
+                owner_id=EXCLUDED.owner_id, owner_name=EXCLUDED.owner_name,
+                lost_reason=EXCLUDED.lost_reason, updated_at=now()
+           WHERE (mkt_deals_attribution.status, mkt_deals_attribution.stage_id,
+                  mkt_deals_attribution.won_time, mkt_deals_attribution.valor,
+                  mkt_deals_attribution.owner_id, mkt_deals_attribution.lost_reason)
+                 IS DISTINCT FROM
+                 (EXCLUDED.status, EXCLUDED.stage_id, EXCLUDED.won_time, EXCLUDED.valor,
+                  EXCLUDED.owner_id, EXCLUDED.lost_reason)""",
+        (d["id"], d.get("add_time"), d.get("won_time"), d.get("lost_time"), d.get("status"),
+         d.get("value"), (_txt(d.get(F_SOURCE)) or "").lower() or None,
+         _txt(d.get(F_MEDIUM)), _txt(d.get(F_CAMPAIGN)), _txt(d.get(F_TERM)),
+         _txt(d.get(F_CONTENT)), prod, d.get("stage_id"),
+         (d.get("user_id") or {}).get("id") if isinstance(d.get("user_id"), dict) else d.get("user_id"),
+         (d.get("user_id") or {}).get("name") if isinstance(d.get("user_id"), dict)
+         else _txt(d.get("owner_name")),
+         _txt(d.get("lost_reason"))))
+
+
 def sync_deals(conn: Any, since: dt.date = dt.date(2025, 1, 1)) -> int:
-    """Upsert de todos os deals com add_time >= since (paginado, mais recentes
-    primeiro; para quando a página inteira é anterior ao corte)."""
+    """Upsert de todos os deals com add_time >= since DIRETO na API do Pipedrive
+    (paginado, mais recentes primeiro; para quando a página inteira é anterior ao
+    corte). Caro em requisições — preferir sync_deals_smart (cache do Lovable)."""
     labels = produto_labels()
     n, start = 0, 0
     with conn.cursor() as cur:
-        # colunas p/ as áreas de Pré-vendas/Vendas (dono e motivo de perda)
-        cur.execute("""ALTER TABLE mkt_deals_attribution
-                       ADD COLUMN IF NOT EXISTS owner_id BIGINT,
-                       ADD COLUMN IF NOT EXISTS owner_name TEXT,
-                       ADD COLUMN IF NOT EXISTS lost_reason TEXT""")
+        cur.execute(_DEALS_DDL_EXTRA)
         while start is not None:
             j = _get("deals", {"limit": 500, "start": start, "sort": "add_time DESC"})
             data = j.get("data") or []
@@ -88,36 +128,7 @@ def sync_deals(conn: Any, since: dt.date = dt.date(2025, 1, 1)) -> int:
                 if not add or add[:10] < since.isoformat():
                     continue
                 page_old = False
-                prod = _txt(d.get(F_PRODUTO))
-                if prod and prod.isdigit():
-                    prod = labels.get(prod, prod)
-                cur.execute(
-                    """INSERT INTO mkt_deals_attribution
-                           (deal_id, add_time, won_time, lost_time, status, valor, origem,
-                            utm_medium, utm_campaign, utm_term, utm_content, produto,
-                            stage_id, owner_id, owner_name, lost_reason, updated_at)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now())
-                       ON CONFLICT (deal_id) DO UPDATE SET
-                            won_time=EXCLUDED.won_time, lost_time=EXCLUDED.lost_time,
-                            status=EXCLUDED.status, valor=EXCLUDED.valor, origem=EXCLUDED.origem,
-                            utm_medium=EXCLUDED.utm_medium, utm_campaign=EXCLUDED.utm_campaign,
-                            utm_term=EXCLUDED.utm_term, utm_content=EXCLUDED.utm_content,
-                            produto=EXCLUDED.produto, stage_id=EXCLUDED.stage_id,
-                            owner_id=EXCLUDED.owner_id, owner_name=EXCLUDED.owner_name,
-                            lost_reason=EXCLUDED.lost_reason, updated_at=now()
-                       WHERE (mkt_deals_attribution.status, mkt_deals_attribution.stage_id,
-                              mkt_deals_attribution.won_time, mkt_deals_attribution.valor,
-                              mkt_deals_attribution.owner_id, mkt_deals_attribution.lost_reason)
-                             IS DISTINCT FROM
-                             (EXCLUDED.status, EXCLUDED.stage_id, EXCLUDED.won_time, EXCLUDED.valor,
-                              EXCLUDED.owner_id, EXCLUDED.lost_reason)""",
-                    (d["id"], add, d.get("won_time"), d.get("lost_time"), d.get("status"),
-                     d.get("value"), (_txt(d.get(F_SOURCE)) or "").lower() or None,
-                     _txt(d.get(F_MEDIUM)), _txt(d.get(F_CAMPAIGN)), _txt(d.get(F_TERM)),
-                     _txt(d.get(F_CONTENT)), prod, d.get("stage_id"),
-                     (d.get("user_id") or {}).get("id") if isinstance(d.get("user_id"), dict) else d.get("user_id"),
-                     (d.get("user_id") or {}).get("name") if isinstance(d.get("user_id"), dict) else None,
-                     _txt(d.get("lost_reason"))))
+                _upsert_deal(cur, d, labels)
                 n += 1
             p = (j.get("additional_data") or {}).get("pagination") or {}
             if page_old and data:
@@ -129,6 +140,94 @@ def sync_deals(conn: Any, since: dt.date = dt.date(2025, 1, 1)) -> int:
         if apagados:
             cur.execute("DELETE FROM mkt_deals_attribution WHERE deal_id = ANY(%s)", (apagados,))
     return n
+
+
+# ---------------------------------------------------------------------------
+# Cache do Lovable (10/07/26): o "Dashboard - Comercial (Pipedrive)" do time já
+# extrai TODOS os deals a cada ~15min (horário comercial) e publica no Supabase
+# dele. Ler de lá custa ZERO requisições ao Pipedrive — que é compartilhado com
+# aplicações em tempo real e tem orçamento diário. Acesso somente leitura:
+# edge function get-deals-cache (tabela sempre fresca) + PostgREST p/ os labels
+# do enum Produto (cache deal_fields). Chave anon é pública por desenho.
+# ---------------------------------------------------------------------------
+_LOVABLE_SB = "https://tmyvsccfuvgwayitvbav.supabase.co"
+_CACHE_MAX_AGE_H = 26  # cache mais velho que isso = suspeito -> fallback API
+
+
+def _lovable_headers() -> dict:
+    key = (os.environ.get("LOVABLE_SUPABASE_ANON_KEY") or "").strip().strip('"')
+    if not key:
+        raise RuntimeError("LOVABLE_SUPABASE_ANON_KEY ausente no .env")
+    return {"Authorization": f"Bearer {key}", "apikey": key}
+
+
+def _labels_from_cache() -> dict[str, str]:
+    """Labels do enum Produto a partir do cache deal_fields do Lovable
+    (PostgREST; policy pública de leitura). Fallback: 1 chamada à API."""
+    try:
+        r = httpx.get(f"{_LOVABLE_SB}/rest/v1/pipedrive_cache",
+                      params={"cache_key": "eq.deal_fields", "select": "data"},
+                      headers=_lovable_headers(), timeout=60)
+        r.raise_for_status()
+        import json
+        fields = json.loads(r.json()[0]["data"])
+        for f in fields:
+            if f.get("key") == F_PRODUTO:
+                return {str(o["id"]): o["label"] for o in (f.get("options") or [])}
+    except Exception:  # noqa: BLE001 — cache indisponível não trava o sync
+        pass
+    return produto_labels()
+
+
+def sync_deals_from_cache(conn: Any, since: dt.date = dt.date(2025, 1, 1)) -> int:
+    """Upsert dos deals lendo o cache do Lovable (zero requisições Pipedrive).
+    Levanta RuntimeError se o cache estiver velho/indisponível (o chamador cai
+    p/ sync_deals direto). Higiene de apagados: deals nossos que sumiram do
+    cache (status all_not_deleted) são removidos — só com cache íntegro."""
+    import json
+    r = httpx.get(f"{_LOVABLE_SB}/functions/v1/get-deals-cache",
+                  headers=_lovable_headers(), timeout=180)
+    r.raise_for_status()
+    upd = r.headers.get("X-Cache-Updated-At")
+    if upd:
+        age_h = (dt.datetime.now(dt.timezone.utc)
+                 - dt.datetime.fromisoformat(upd.replace("Z", "+00:00"))).total_seconds() / 3600
+        if age_h > _CACHE_MAX_AGE_H:
+            raise RuntimeError(f"cache do Lovable com {age_h:.0f}h — usando API direta")
+    deals = json.loads(r.text)
+    if isinstance(deals, str):  # a tabela guarda o JSON como string
+        deals = json.loads(deals)
+    if not isinstance(deals, list) or len(deals) < 15_000:
+        raise RuntimeError(f"cache do Lovable suspeito ({len(deals) if isinstance(deals, list) else '?'} deals)")
+    labels = _labels_from_cache()
+    n = 0
+    corte = since.isoformat()
+    ids_cache: list[int] = []
+    with conn.cursor() as cur:
+        cur.execute(_DEALS_DDL_EXTRA)
+        for d in deals:
+            add = d.get("add_time")
+            if not add or add[:10] < corte:
+                continue
+            _upsert_deal(cur, d, labels)
+            ids_cache.append(d["id"])
+            n += 1
+        # apagados: sumiu do cache íntegro = deletado no Pipedrive
+        cur.execute("""DELETE FROM mkt_deals_attribution
+                        WHERE add_time >= %s AND NOT (deal_id = ANY(%s))""",
+                    (corte, ids_cache))
+    return n
+
+
+def sync_deals_smart(conn: Any, since: dt.date = dt.date(2025, 1, 1)) -> int:
+    """Cache do Lovable primeiro (zero requisições); API direta só de fallback."""
+    try:
+        n = sync_deals_from_cache(conn, since=since)
+        print("  [deals] fonte: cache do Lovable (0 req Pipedrive)", flush=True)
+        return n
+    except Exception as e:  # noqa: BLE001
+        print(f"  [deals] cache indisponível ({type(e).__name__}: {str(e)[:80]}) — API direta", flush=True)
+        return sync_deals(conn, since=since)
 
 
 # ---------------------------------------------------------------------------

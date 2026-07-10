@@ -58,7 +58,7 @@ def main() -> None:
     step("meta insights", lambda: meta_ads.sync_insights(conn, since, hoje))
     step("google campanhas", lambda: google_ads_src.sync_campaigns(conn))
     step("google insights", lambda: google_ads_src.sync_insights(conn, since, hoje))
-    step("pipedrive deals", lambda: pipedrive_deals.sync_deals(
+    step("pipedrive deals", lambda: pipedrive_deals.sync_deals_smart(
         conn, since=dt.date(2025, 1, 1) if args.backfill else hoje - dt.timedelta(days=60)))
     step("pipedrive etapas (/flow)", lambda: pipedrive_deals.sync_stage_events(
         conn, full=args.backfill))
