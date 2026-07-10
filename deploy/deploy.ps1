@@ -36,7 +36,7 @@ scp -i $KeyPath $tarPath "ubuntu@${ServerIP}:/tmp/integracomm_update.tar.gz"
 if ($LASTEXITCODE -ne 0) { throw "scp falhou (codigo $LASTEXITCODE)." }
 
 Write-Host "== [3/3] extraindo e reconstruindo no servidor ==" -ForegroundColor Cyan
-$remoteCmd = "set -e; cd $RemotePath && tar -xzf /tmp/integracomm_update.tar.gz && sudo docker compose -f deploy/docker-compose.yml up -d --build && docker compose -f deploy/docker-compose.yml ps"
+$remoteCmd = "set -e; cd $RemotePath && tar -xzf /tmp/integracomm_update.tar.gz && sudo docker compose -f deploy/docker-compose.yml up -d --build && sudo docker compose -f deploy/docker-compose.yml ps"
 ssh -i $KeyPath "ubuntu@$ServerIP" $remoteCmd
 if ($LASTEXITCODE -ne 0) { throw "atualizacao no servidor falhou (codigo $LASTEXITCODE)." }
 
