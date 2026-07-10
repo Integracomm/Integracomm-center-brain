@@ -296,11 +296,7 @@ _DOW_NOME = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"]
 _ST_AGENDA = (6, 15)  # entrada em Reunião Agendada (p1) / equivalente da Prospecção (p2)
 
 
-def _pv_horarios(conn, request: Request) -> str:
-    """Estudo de dias/horários em que reuniões são AGENDADAS (entrada do deal na
-    etapa Reunião Agendada, horário de Brasília) — melhor janela p/ o SDR ligar,
-    geral e por bundle. Base: mkt_stage_events (o carimbo é o momento em que o
-    card foi movido — proxy da ligação que converteu)."""
+def _horarios_periodo(request: Request) -> tuple[dt.date, dt.date, str]:
     hoje = dt.date.today()
     qp = request.query_params
     ini_s = qp.get("ini") or (hoje - dt.timedelta(days=180)).isoformat()
@@ -309,9 +305,16 @@ def _pv_horarios(conn, request: Request) -> str:
         ini, fim = dt.date.fromisoformat(ini_s), dt.date.fromisoformat(fim_s)
     except ValueError:
         ini, fim = hoje - dt.timedelta(days=180), hoje
-    a, b = _brt(ini, fim)
     bundle = qp.get("bundle") or "todos"
+    if bundle not in ("B1", "B2", "B3", "B4", "B5"):
+        bundle = "todos"
+    return ini, fim, bundle
 
+
+def _horarios_calc(conn, ini: dt.date, fim: dt.date, bundle: str) -> dict:
+    """Agregados do estudo (célula dia×hora, por bundle, total) — usados pela
+    aba do painel e pelo relatório imprimível."""
+    a, b = _brt(ini, fim)
     filtro_b = ""
     args: list = [a, b]
     if bundle in ("B1", "B2", "B3", "B4", "B5"):
@@ -340,8 +343,17 @@ def _pv_horarios(conn, request: Request) -> str:
         por_bundle: dict[str, dict[tuple[int, int], int]] = {}
         for p, dow, h, n in cur.fetchall():
             por_bundle.setdefault(p, {})[(dow, h)] = n
+    return {"celulas": celulas, "por_bundle": por_bundle, "total": sum(celulas.values())}
 
-    total = sum(celulas.values())
+
+def _pv_horarios(conn, request: Request) -> str:
+    """Estudo de dias/horários em que reuniões são AGENDADAS (entrada do deal na
+    etapa Reunião Agendada, horário de Brasília) — melhor janela p/ o SDR ligar,
+    geral e por bundle. Base: mkt_stage_events (o carimbo é o momento em que o
+    card foi movido — proxy da ligação que converteu)."""
+    ini, fim, bundle = _horarios_periodo(request)
+    dados = _horarios_calc(conn, ini, fim, bundle)
+    celulas, por_bundle, total = dados["celulas"], dados["por_bundle"], dados["total"]
     if not total:
         return ("<h1>Melhor Horário</h1><div class=sub>quando as reuniões são agendadas</div>"
                 "<section><div class=warn>sem agendamentos no período/filtro selecionado</div></section>")
@@ -398,11 +410,16 @@ def _pv_horarios(conn, request: Request) -> str:
     opts_b = "".join(f"<option value='{v}' {'selected' if bundle == v else ''}>{lbl}</option>"
                      for v, lbl in [("todos", "todos os bundles"), ("B1", "B1"), ("B2", "B2"),
                                     ("B3", "B3"), ("B4", "B4"), ("B5", "B5")])
+    rel_url = f"/prevendas/horarios/relatorio?ini={ini}&fim={fim}&bundle={bundle}"
     form = (f"<form method=get action=/prevendas><input type=hidden name=view value=horarios>"
             f"<div class=filters><div><label>de</label><input type=date name=ini value='{ini}'></div>"
             f"<div><label>até</label><input type=date name=fim value='{fim}'></div>"
             f"<div><label>bundle</label><select name=bundle>{opts_b}</select></div>"
-            f"<button type=submit>Aplicar</button></div></form>")
+            f"<button type=submit>Aplicar</button>"
+            f"<a href='{rel_url}' target=_blank style='display:inline-flex;align-items:center;"
+            "margin-left:6px;padding:8px 14px;background:var(--brand);color:#111;border-radius:var(--radius-sm);"
+            "font-size:var(--fs-xs);font-weight:600;text-decoration:none'>Gerar relatório (validação)</a>"
+            "</div></form>")
     estilo = ("<style>.sug-item{padding:7px 0;border-top:1px solid var(--border);font-size:var(--fs-sm);"
               "line-height:1.55;color:var(--text-2)}.sug-item:first-child{border-top:none}</style>")
     return (f"<h1>Melhor Horário — agendamentos de reunião</h1>"
@@ -418,6 +435,153 @@ def _pv_horarios(conn, request: Request) -> str:
             "<p class=secsub>até 3 janelas com mais agendamentos por bundle no período — bundles com poucas "
             "amostras merecem cautela antes de mudar escala de time</p>"
             + _card(_tbl([("Bundle", "left"), ("Agendamentos", "right"), ("Melhores janelas", "left"), ("", "right")], brows)) + "</section>")
+
+
+def _horarios_relatorio_html(dados: dict, ini: dt.date, fim: dt.date,
+                             bundle: str, gerado_por: str) -> str:
+    """Relatório imprimível (fundo claro, pronto p/ salvar em PDF e enviar à
+    gestora de Pré-vendas) do estudo de dias/horários de agendamento."""
+    celulas, por_bundle, total = dados["celulas"], dados["por_bundle"], dados["total"]
+    per = f"{ini.strftime('%d-%m-%Y')} a {fim.strftime('%d-%m-%Y')}"
+    filtro = "todos os bundles" if bundle == "todos" else f"apenas {bundle}"
+    hoje = dt.date.today().strftime("%d-%m-%Y")
+    if not total:
+        corpo = "<p>Sem agendamentos no período/filtro selecionado.</p>"
+        return _REL_TPL.format(corpo=corpo, per=per, filtro=filtro, hoje=hoje,
+                               gerado_por=escape(gerado_por))
+
+    # agregados p/ o resumo executivo
+    por_dow: dict[int, int] = {}
+    por_hora: dict[int, int] = {}
+    for (d, h), n in celulas.items():
+        por_dow[d] = por_dow.get(d, 0) + n
+        por_hora[h] = por_hora.get(h, 0) + n
+    melhor_dow = max(por_dow, key=por_dow.get)
+    melhor_hora = max(por_hora, key=por_hora.get)
+    top = sorted(celulas.items(), key=lambda x: -x[1])[:5]
+    (td, th), tn = top[0]
+    depois18 = sum(n for (d, h), n in celulas.items() if h >= 18)
+    antes9 = sum(n for (d, h), n in celulas.items() if h < 9)
+    almoco = sum(n for (d, h), n in celulas.items() if 12 <= h < 14)
+    fds = sum(n for (d, h), n in celulas.items() if d in (0, 6))
+    p18 = depois18 / total
+    leitura_18 = (f"há volume relevante fora do expediente comercial ({p18 * 100:.0f}% dos agendamentos "
+                  "após as 18h) — estender o horário em dias selecionados tende a compensar"
+                  if p18 >= 0.08 else
+                  f"o volume após as 18h é baixo ({p18 * 100:.0f}%) — os dados atuais não justificam "
+                  "estender o expediente")
+    resumo = (f"<ul>"
+              f"<li><b>{total} agendamentos</b> de reunião no período analisado ({filtro}).</li>"
+              f"<li>Melhor dia: <b>{_DOW_NOME[melhor_dow]}</b> ({por_dow[melhor_dow]} agendamentos; "
+              f"{por_dow[melhor_dow] / total * 100:.0f}% do total). Melhor hora: <b>{melhor_hora:02d}h</b>.</li>"
+              f"<li>Janela mais forte: <b>{_DOW_NOME[td]} às {th:02d}h</b> ({tn} agendamentos).</li>"
+              f"<li>Fora do horário clássico: {antes9 / total * 100:.0f}% antes das 9h · "
+              f"{almoco / total * 100:.0f}% no almoço (12h-14h) · <b>{p18 * 100:.0f}% após as 18h</b> · "
+              f"{fds / total * 100:.0f}% em fim de semana.</li>"
+              f"<li>Leitura sobre estender o expediente: {leitura_18}.</li></ul>")
+
+    # heatmap (escala de azul, cor forçada na impressão)
+    dows = [1, 2, 3, 4, 5] + ([6] if any(d == 6 for d, _ in celulas) else []) \
+        + ([0] if any(d == 0 for d, _ in celulas) else [])
+    horas_l = sorted({h for _, h in celulas})
+    horas_l = list(range(min(horas_l), max(horas_l) + 1))
+    vmax = max(celulas.values())
+    head = "<tr><th></th>" + "".join(f"<th>{_DOW_NOME[d]}</th>" for d in dows) + "</tr>"
+    linhas = ""
+    for h in horas_l:
+        tds = ""
+        for d in dows:
+            n = celulas.get((d, h), 0)
+            alpha = 0.06 + 0.55 * (n / vmax) if n else 0
+            bg = f" style='background:rgba(37,99,235,{alpha:.2f})'" if n else ""
+            tds += f"<td{bg}>{n or ''}</td>"
+        linhas += f"<tr><th>{h:02d}h</th>{tds}</tr>"
+    heat = f"<table class=heat>{head}{linhas}</table>"
+
+    top_rows = "".join(f"<tr><td>{i}º</td><td>{_DOW_NOME[d]} às {h:02d}h</td>"
+                       f"<td class=num>{n}</td><td class=num>{n / total * 100:.1f}%</td></tr>"
+                       for i, ((d, h), n) in enumerate(top, 1))
+    top_tbl = ("<table class=plain><tr><th></th><th>Janela</th><th>Agendamentos</th><th>% do total</th></tr>"
+               + top_rows + "</table>")
+
+    brows = ""
+    for p in ("B1", "B2", "B3", "B4", "B5", "sem produto"):
+        cel = por_bundle.get(p)
+        if not cel:
+            continue
+        tot_p = sum(cel.values())
+        melhores = " · ".join(f"{_DOW_NOME[d]} {h:02d}h ({n})"
+                              for (d, h), n in sorted(cel.items(), key=lambda x: -x[1])[:3] if n >= 2)
+        obs = "amostra pequena — usar como indício, não como regra" if tot_p < 30 else ""
+        brows += (f"<tr><td><b>{escape(p)}</b></td><td class=num>{tot_p}</td>"
+                  f"<td>{escape(melhores) or '—'}</td><td class=obs>{obs}</td></tr>")
+    bund_tbl = ("<table class=plain><tr><th>Bundle</th><th>Agend.</th><th>Melhores janelas</th><th></th></tr>"
+                + brows + "</table>")
+
+    corpo = ("<h2>Resumo executivo</h2>" + resumo
+             + "<h2>Mapa de calor — dia da semana × hora (Brasília)</h2>" + heat
+             + "<h2>Top 5 janelas</h2>" + top_tbl
+             + "<h2>Melhores janelas por bundle</h2>"
+             "<p class=nota>Independe do filtro de bundle — sempre calculado sobre o período.</p>" + bund_tbl)
+    return _REL_TPL.format(corpo=corpo, per=per, filtro=filtro, hoje=hoje,
+                           gerado_por=escape(gerado_por))
+
+
+_REL_TPL = """<!doctype html><html lang=pt-BR><head><meta charset=utf-8>
+<title>Melhor horário de agendamento — Pré-vendas</title>
+<style>
+ body{{font-family:'Segoe UI',system-ui,sans-serif;color:#1a1d23;background:#fff;margin:0}}
+ .page{{max-width:820px;margin:0 auto;padding:36px 40px}}
+ h1{{font-size:22px;margin:0 0 2px}} h2{{font-size:15px;margin:26px 0 8px;border-bottom:2px solid #2563eb;
+    padding-bottom:4px;text-transform:uppercase;letter-spacing:.04em;color:#1e3a8a}}
+ .meta{{color:#6b7280;font-size:12px;margin-bottom:4px}}
+ ul{{margin:8px 0;padding-left:20px;font-size:13.5px;line-height:1.65}}
+ table{{border-collapse:collapse;width:100%;font-size:12.5px;margin:8px 0}}
+ .heat th,.heat td{{border:1px solid #e5e7eb;padding:4px 6px;text-align:center;min-width:34px;
+    font-variant-numeric:tabular-nums}}
+ .heat th{{background:#f3f4f6;font-weight:600}}
+ .plain th,.plain td{{border-bottom:1px solid #e5e7eb;padding:6px 8px;text-align:left}}
+ .plain th{{background:#f3f4f6;font-size:11px;text-transform:uppercase;letter-spacing:.03em}}
+ .num{{text-align:right;font-variant-numeric:tabular-nums}}
+ .obs{{color:#b45309;font-size:11.5px}}
+ .nota{{color:#6b7280;font-size:11.5px;margin:2px 0 6px}}
+ .rodape{{margin-top:28px;padding-top:10px;border-top:1px solid #e5e7eb;color:#6b7280;font-size:11px;line-height:1.6}}
+ .toolbar{{position:sticky;top:0;background:#fff;padding:10px 0;display:flex;gap:8px}}
+ .toolbar button,.toolbar a{{cursor:pointer;background:#2563eb;color:#fff;border:none;border-radius:6px;
+    padding:8px 16px;font-size:13px;text-decoration:none;display:inline-block}}
+ .toolbar a{{background:#6b7280}}
+ *{{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+ @media print{{.toolbar{{display:none}} .page{{padding:0}}}}
+</style></head><body><div class=page>
+<div class=toolbar><button onclick='window.print()'>Imprimir / salvar PDF</button>
+<a href='javascript:history.back()'>Voltar ao painel</a></div>
+<h1>Melhor dia e horário de agendamento de reuniões</h1>
+<div class=meta>Pré-vendas · Integracomm Central de Inteligência</div>
+<div class=meta>Período: <b>{per}</b> · Bundle: <b>{filtro}</b> · Gerado em {hoje} por {gerado_por}</div>
+{corpo}
+<div class=rodape><b>Metodologia:</b> cada agendamento é o momento (horário de Brasília) em que o deal
+entrou na etapa "Reunião Agendada" no Pipedrive — proxy da ligação/conversa que converteu; o carimbo é a
+movimentação do card pelo SDR e pode atrasar alguns minutos em relação ao contato em si. Reagendamentos
+contam como novos eventos. Fonte: histórico de mudanças de etapa (Pipedrive /flow), coletado diariamente.
+Documento para validação da coordenação de Pré-vendas — a decisão de escala de horário é sempre humana.</div>
+</div></body></html>"""
+
+
+@router.get("/prevendas/horarios/relatorio", response_class=HTMLResponse)
+def pv_horarios_relatorio(request: Request):
+    """Relatório imprimível do estudo Melhor Horário (respeita ?ini/fim/bundle)."""
+    A = _deps()
+    s, redir = A._require_area(request, "prevendas")
+    if redir:
+        return redir
+    user, _role = s
+    ini, fim, bundle = _horarios_periodo(request)
+    with A._conn() as c:
+        with c.cursor() as cur:
+            cur.execute("INSERT INTO audit_log (actor, action, scope) VALUES (%s,'view',%s)",
+                        (user, f"prevendas/horarios_relatorio {ini}..{fim} {bundle}"))
+        dados = _horarios_calc(c, ini, fim, bundle)
+    return HTMLResponse(_horarios_relatorio_html(dados, ini, fim, bundle, user))
 
 
 # ---------------------------------------------------------------------------
