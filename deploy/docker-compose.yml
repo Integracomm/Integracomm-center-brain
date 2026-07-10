@@ -24,9 +24,9 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile
     restart: unless-stopped
+    # APP_DATABASE_URL vem do .env da raiz -> RDS (unificação 10/07/26; antes
+    # apontava p/ o postgres em contêiner abaixo, mantido só como rollback)
     env_file: ../.env
-    environment:
-      APP_DATABASE_URL: postgresql://integracomm_app:${DB_PASSWORD}@db:5432/integracomm_ia
     volumes:
       - ../.env:/app/.env:ro          # o app lê o .env da raiz do projeto
       - ../data:/app/data             # caches offline (wa_analyses etc.) + logs de análise
