@@ -264,8 +264,17 @@ def sync_initiatives(conn: Any, year: int, quarter: int, area: str | None = None
                 continue
             dbs = collect_initiative_dbs(db_raw)
             if not dbs:
-                erros.append(f"{ar}: nenhuma database 'Iniciativas' encontrada (página compartilhada com a integração?).")
-                log(ar, False, 0, "nenhuma database encontrada")
+                # distingue "sem acesso" (404 = página NÃO compartilhada) de "vazia"
+                nid = normalize_id(db_raw)
+                try:
+                    _nfetch(f"/blocks/{nid}/children?page_size=1", method="GET")
+                    msg = "página acessível mas SEM database 'Iniciativas' (trimestre ainda vazio?)"
+                except httpx.HTTPStatusError as he:
+                    msg = ("página NÃO compartilhada com a integração — no Notion: ··· → Conexões → "
+                           "adicionar a integração" if he.response.status_code == 404
+                           else f"HTTP {he.response.status_code} ao acessar a página")
+                erros.append(f"{ar}: {msg}")
+                log(ar, False, 0, msg)
                 continue
             rows, seen = [], set()
             for db in dbs:
