@@ -371,7 +371,9 @@ def _flow_events(deal_id: int) -> list[tuple[int, str]]:
 
 
 def sync_stage_events(conn: Any, *, full: bool = False, window_days: int = 60,
-                      max_deals: int = 1500) -> int:
+                      max_deals: int = 400) -> int:
+    # teto 400/dia (13/07, ordem do Otávio): a API é compartilhada com apps em
+    # TEMPO REAL — nunca esgotar o orçamento diário; backlog drena aos poucos
     """Enriquece com o histórico de etapas os deals NOVOS/ALTERADOS desde o
     último enriquecimento (updated_at > synced_at); `full` refaz todos."""
     import time
