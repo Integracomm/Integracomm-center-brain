@@ -13,9 +13,9 @@ from typing import Any
 
 # (key, label, unit BRL|pct|num, direction min=maior-melhor|max=menor-melhor, is_ratio, auto)
 AREA_KPIS: dict[str, list[tuple[str, str, str, str, bool, bool]]] = {
-    "financeiro": [
-        ("recebimento", "Recebimento", "BRL", "min", False, False),
-        ("inadimplencia_pct", "Inadimplência", "pct", "max", False, False),
+    "financeiro": [  # realizado lido da planilha Planejamento_Receita (meses fechados)
+        ("recebimento", "Recebimento", "BRL", "min", False, True),
+        ("inadimplencia_pct", "Inadimplência", "pct", "max", False, True),
     ],
     "comercial": [
         ("bookings_receita", "Bookings (R$)", "BRL", "min", False, True),
@@ -156,6 +156,49 @@ def _auto_marketing(conn: Any, year: int, months: list[int]) -> dict[str, dict[i
     return out
 
 
+_FIN_CACHE: dict = {"t": 0.0, "rows": None}
+
+
+def _auto_financeiro(year: int, months: list[int]) -> dict[str, dict[int, float | None]]:
+    """Recebimento TOTAL [R$] e Inadimplência [%] da planilha Planejamento_Receita
+    (o Otávio lança o realizado do mês anterior no início de cada mês — só meses
+    FECHADOS contam como realizado; os demais são plano e ficam de fora)."""
+    import re
+    import time
+    if _FIN_CACHE["rows"] is None or time.time() - _FIN_CACHE["t"] > 600:
+        from ..sources.mkt_goals_sheet import fetch_rows
+        _FIN_CACHE.update(t=time.time(), rows=fetch_rows())
+    rows = _FIN_CACHE["rows"]
+    from ..sources.mkt_goals_sheet import _MES, _num
+    col: dict[tuple[int, int], int] = {}
+    for j, h in enumerate(rows[0]):
+        m = re.match(r"([a-zç]{3})\.?-?\s*(\d\d)", (h or "").strip().lower())
+        if m and m.group(1) in _MES:
+            col[(2000 + int(m.group(2)), _MES[m.group(1)])] = j
+
+    def linha(prefixo: str):
+        for r in rows:
+            if (r[0] or "").strip().lower().startswith(prefixo):
+                return r
+        return None
+
+    receb = linha("recebimento total [r$]")
+    inad = linha("inadimpl")  # 'Inadimplência [%]' vem antes de '[R$]'? garante o [%]
+    for r in rows:
+        rot = (r[0] or "").strip().lower()
+        if rot.startswith("inadimpl") and "[%]" in rot:
+            inad = r
+            break
+    mes_corrente = dt.date.today().replace(day=1)
+    out: dict[str, dict[int, float | None]] = {"recebimento": {}, "inadimplencia_pct": {}}
+    for m in months:
+        fechado = dt.date(year, m, 1) < mes_corrente
+        j = col.get((year, m))
+        out["recebimento"][m] = _num(receb[j]) if (fechado and receb and j and j < len(receb)) else None
+        out["inadimplencia_pct"][m] = _num(inad[j]) if (fechado and inad and j and j < len(inad)) else None
+    return out
+
+
 def auto_realizado(conn: Any, area: str, year: int, months: list[int]) -> dict[str, dict[int, float | None]]:
     """Realizado automático por KPI/mês; {} onde não há fonte (fica o manual)."""
     try:
@@ -165,6 +208,8 @@ def auto_realizado(conn: Any, area: str, year: int, months: list[int]) -> dict[s
             return _auto_marketing(conn, year, months)
         if area == "assessoria":
             return {"tx_cancelamento_pct": _auto_comercial(conn, year, months)["tx_cancelamento_pct"]}
+        if area == "financeiro":
+            return _auto_financeiro(year, months)
     except Exception:  # noqa: BLE001 — fonte automática fora não derruba a tela
         return {}
     return {}

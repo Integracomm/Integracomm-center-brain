@@ -95,6 +95,7 @@ HELP: dict[str, list[tuple[str, str]]] = {
     "prevendas/funil": [
         ("_intro", "Funil da qualificação: do lead recebido até a reunião agendada (handoff para Vendas), por evento no período. Inclui qualidade por origem, motivos de desqualificação e o diagnóstico do especialista. Responde: os leads estão virando reunião? Onde morrem os que não viram?"),
         ("Funil", "Leads recebidos → 1º contato → Conectado → Qualificação → Reunião agendada, com taxas vs etapa anterior e vs lead. Insights: (1) queda forte em 1º contato = problema de velocidade/fila (veja Speed-to-Lead); (2) queda em Conectado→Qualificação = lead ruim ou abordagem — cruze com a origem."),
+        ("Leads por bundle", "De quais planos são os leads que chegam para agendar: % de chegada (mix do topo) e % que vira reunião por bundle. Insights: (1) muito lead B1 com pouco agendamento = topo desalinhado com a prioridade B3-B5; (2) '(sem plano)' alto = campo Produto não preenchido no Pipedrive — disciplina de cadastro a cobrar; (3) bundle com % de agendamento muito acima da média = perfil que responde melhor ao pitch atual."),
         ("Qualidade do lead por origem", "Taxa lead→reunião POR CANAL. Insights: (1) realimenta o Marketing: canal com conversão 3x maior merece verba; (2) SDR reclamando de 'lead ruim' — aqui está a prova (ou não) por origem."),
         ("Motivos de desqualificação", "Por que os leads morrem antes da reunião. Insight: motivo dominante tipo 'sem faturamento mínimo' = filtro NA CAMPANHA (formulário/segmentação), não é falha de SDR."),
         ("Diagnóstico do especialista", "Leitura automática de um head de pré-vendas: taxa de contato, agendamento e desqualificação vs referências. Insight: pauta pronta para a reunião semanal da coordenação."),
@@ -120,6 +121,7 @@ HELP: dict[str, list[tuple[str, str]]] = {
         ("_intro", "Funil do fechamento: da Reunião Agendada (handoff de Pré-vendas) até o booking, com receita do período e tendência mensal de conversão. Responde: as reuniões estão virando contrato?"),
         ("Funil", "Reuniões → Negociação → Booking + receita. Insights: (1) queda Reunião→Negociação = no-show ou reunião fraca — cruze com no-shows; (2) queda Negociação→Booking = proposta/preço/urgência — veja os motivos de perda."),
         ("Tendência Oportunidade → Booking", "Conversão mês a mês. Insight: conversão caindo com volume estável = problema de FECHAMENTO (time/proposta/concorrência), não de topo de funil — o remédio é diferente de gerar mais lead."),
+        ("Conversões por origem × plano", "Quais origens de lead FECHAM quais bundles: bookings do período cruzados origem × plano, com TX = bookings ÷ leads da origem. Insights: (1) a origem que fecha B3-B5 é onde escalar verba mesmo com CPL maior; (2) origem com volume alto e TX baixa consome agenda de closer sem retorno; (3) indicação costuma fechar plano maior — se não estiver fechando, o programa de indicações merece atenção."),
     ],
     "vendas/winloss": [
         ("_intro", "Por que ganhamos e perdemos: motivos de perda categorizados do Pipedrive, win rate e o cruzamento motivo×plano. É a matéria-prima do playbook de objeções."),

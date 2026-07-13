@@ -164,6 +164,27 @@ def _pv_funil(conn, request: Request) -> str:
             tx = r / l if l else 0
             orows += (f"<tr><td style='{_TD}'>{escape(o[:34])}</td><td style='{_TD};text-align:right'>{l}</td>"
                       f"<td style='{_TD};text-align:right'>{r}</td><td style='{_TD};text-align:right'>{_fmt(tx, 'pct')}</td></tr>")
+    # leads por BUNDLE: % de chegada e % de agendamento (pedido do time 13/07)
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT COALESCE(substring(d.produto FROM 'B[1-5]'), '(sem plano)') AS b,
+                   count(DISTINCT d.deal_id) AS leads,
+                   count(DISTINCT e.deal_id) AS reunioes
+              FROM mkt_deals_attribution d
+              LEFT JOIN mkt_stage_events e ON e.deal_id = d.deal_id
+                   AND e.stage_id IN (6, 15) AND e.entered_at >= %s AND e.entered_at < %s
+             WHERE d.add_time >= %s AND d.add_time < %s
+             GROUP BY 1 ORDER BY 2 DESC""", (a, b, a, b))
+        bdados = cur.fetchall()
+    tot_bl = sum(l for _b, l, _r in bdados) or 1
+    brows = ""
+    for bn, l, r in bdados:
+        brows += (f"<tr><td style='{_TD}'><b>{escape(bn)}</b></td>"
+                  f"<td style='{_TD};text-align:right'>{l}</td>"
+                  f"<td style='{_TD};text-align:right'>{_fmt(l / tot_bl, 'pct')}</td>"
+                  f"<td style='{_TD};text-align:right'>{r}</td>"
+                  f"<td style='{_TD};text-align:right'>{_fmt(r / l if l else None, 'pct')}</td></tr>")
+
     # motivos de desqualificação (perdidos criados no período, etapa pré-handoff)
     with conn.cursor() as cur:
         cur.execute("""SELECT COALESCE(lost_reason, '(sem motivo)'), count(*)
@@ -183,6 +204,9 @@ def _pv_funil(conn, request: Request) -> str:
     return (f"<h1>Funil de Qualificação</h1><div class=sub>do lead recebido à reunião agendada (handoff p/ Vendas) · régua por evento no período, horário de Brasília</div>"
             f"<form method=get action=/prevendas><input type=hidden name=view value=funil>{form}</form>"
             f"<section><h2>Funil</h2>" + _card(_tbl([("Etapa", "left"), ("Deals", "right"), ("TX", "right"), ("TX Lead", "right")], rows)) + "</section>"
+            f"<section><h2>Leads por bundle</h2><p class=secsub>de quais planos são os leads que chegam p/ agendar — % de chegada e % que vira reunião · (sem plano) = deal ainda sem Produto preenchido no Pipedrive</p>"
+            + _card(_tbl([("Bundle", "left"), ("Leads", "right"), ("% dos leads", "right"),
+                          ("Reuniões", "right"), ("% agendamento", "right")], brows)) + "</section>"
             f"<section><h2>Qualidade do lead por origem</h2><p class=secsub>taxa lead→reunião por canal — realimenta a segmentação do Marketing</p>"
             + _card(_tbl([("Origem", "left"), ("Leads", "right"), ("Reuniões", "right"), ("Lead→Reunião", "right")], orows)) + "</section>"
             f"<section><h2>Motivos de desqualificação</h2><p class=secsub>perdidos antes do handoff</p>"
@@ -629,9 +653,41 @@ def _vd_funil(conn, request: Request) -> str:
     ins = ESP.insights_vendas({"conv_oport_book": conv, "meta_conv": 0.15,
                                "no_show": (reag / reunioes if reunioes else None)})
     ins_html = "".join(f"<div class=sug-item>→ {escape(i)}</div>" for i in ins)
+
+    # conversões por ORIGEM × PLANO (pedido 13/07): quais origens fecham quais bundles
+    with conn.cursor() as cur:
+        cur.execute("""
+            WITH wins AS (
+                SELECT COALESCE(origem, '(vazio)') o,
+                       COALESCE(substring(produto FROM 'B[1-5]'), 'outros') p, count(*) n
+                  FROM mkt_deals_attribution
+                 WHERE status='won' AND won_time >= %s AND won_time < %s GROUP BY 1, 2),
+                 leads AS (
+                SELECT COALESCE(origem, '(vazio)') o, count(*) n FROM mkt_deals_attribution
+                 WHERE add_time >= %s AND add_time < %s GROUP BY 1)
+            SELECT w.o, w.p, w.n, COALESCE(l.n, 0)
+              FROM wins w LEFT JOIN leads l ON l.o = w.o""", (a, b, a, b))
+        mx: dict[str, dict[str, int]] = {}
+        leads_por_origem: dict[str, int] = {}
+        for o, p_, n, l in cur.fetchall():
+            mx.setdefault(o, {})[p_] = n
+            leads_por_origem[o] = l
+    planos_cols = ["B1", "B2", "B3", "B4", "B5", "outros"]
+    oxrows = ""
+    for o in sorted(mx, key=lambda x: -sum(mx[x].values()))[:12]:
+        tot_o = sum(mx[o].values())
+        l_o = leads_por_origem.get(o, 0)
+        tds = "".join(f"<td style='{_TD};text-align:right'>{mx[o].get(p_, '') or ''}</td>" for p_ in planos_cols)
+        oxrows += (f"<tr><td style='{_TD}'>{escape(o[:30])}</td>{tds}"
+                   f"<td style='{_TD};text-align:right'><b>{tot_o}</b></td>"
+                   f"<td style='{_TD};text-align:right'>{_fmt(tot_o / l_o if l_o else None, 'pct')}</td></tr>")
+
     return (f"<h1>Funil de Fechamento</h1><div class=sub>da reunião agendada ao contrato · régua por evento no período (BRT)</div>"
             f"<form method=get action=/vendas><input type=hidden name=view value=funil>{form}</form>"
             + kpis +
+            f"<section><h2>Conversões por origem × plano</h2><p class=secsub>bookings do período por origem do lead e bundle fechado · TX = bookings ÷ leads da origem criados no período — mostra qual canal fecha qual plano</p>"
+            + _card(_tbl([("Origem", "left")] + [(p_, "right") for p_ in planos_cols]
+                         + [("Total", "right"), ("TX lead→booking", "right")], oxrows)) + "</section>"
             f"<section><h2>Tendência Oportunidade → Booking</h2><p class=secsub>6 meses · o ponto de underperformance apontado no Q3</p>"
             + _card(_tbl([("Mês", "left"), ("Oportunidades", "right"), ("Bookings", "right"), ("Conversão", "right")], trows)) + "</section>"
             f"<section><h2>Diagnóstico do especialista</h2><p class=secsub>{ESP.PERSONA_VENDAS}</p>"
