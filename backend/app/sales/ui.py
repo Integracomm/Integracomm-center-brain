@@ -169,16 +169,23 @@ def _pv_funil(conn, request: Request) -> str:
     # o que dá p/ medir com verdade é o mix de bundle das oportunidades que os
     # leads do período geraram (e quantas viraram booking).
     with conn.cursor() as cur:
-        cur.execute("SELECT count(*) FROM mkt_deals_attribution WHERE add_time >= %s AND add_time < %s", (a, b))
-        tot_leads_b = cur.fetchone()[0] or 1
         cur.execute("""
-            SELECT COALESCE(substring(d.produto FROM 'B[1-5]'), '(outros)') AS bnd,
-                   count(DISTINCT d.deal_id) AS oport,
-                   count(DISTINCT d.deal_id) FILTER (WHERE d.status = 'won') AS wins
-              FROM mkt_deals_attribution d
-              JOIN mkt_stage_events e ON e.deal_id = d.deal_id AND e.stage_id = 7
-             WHERE d.add_time >= %s AND d.add_time < %s
-             GROUP BY 1 ORDER BY 2 DESC""", (a, b))
+            WITH op AS (
+                SELECT COALESCE(substring(d.produto FROM 'B[1-5]'),
+                                left(COALESCE(d.produto, '(sem plano)'), 30)) AS bnd,
+                       count(DISTINCT d.deal_id) AS n
+                  FROM mkt_deals_attribution d
+                  JOIN mkt_stage_events e ON e.deal_id = d.deal_id
+                       AND e.stage_id = 7 AND e.entered_at >= %s AND e.entered_at < %s
+                 GROUP BY 1),
+                 wn AS (
+                SELECT COALESCE(substring(produto FROM 'B[1-5]'),
+                                left(COALESCE(produto, '(sem plano)'), 30)) AS bnd, count(*) AS n
+                  FROM mkt_deals_attribution
+                 WHERE status = 'won' AND won_time >= %s AND won_time < %s GROUP BY 1)
+            SELECT COALESCE(op.bnd, wn.bnd), COALESCE(op.n, 0), COALESCE(wn.n, 0)
+              FROM op FULL JOIN wn ON wn.bnd = op.bnd
+             ORDER BY 2 DESC, 3 DESC""", (a, b, a, b))
         bdados = cur.fetchall()
     tot_op = sum(o for _b, o, _w in bdados) or 1
     brows = ""
@@ -186,7 +193,6 @@ def _pv_funil(conn, request: Request) -> str:
         brows += (f"<tr><td style='{_TD}'><b>{escape(bn)}</b></td>"
                   f"<td style='{_TD};text-align:right'>{o}</td>"
                   f"<td style='{_TD};text-align:right'>{_fmt(o / tot_op, 'pct')}</td>"
-                  f"<td style='{_TD};text-align:right'>{_fmt(o / tot_leads_b, 'pct')}</td>"
                   f"<td style='{_TD};text-align:right'>{w}</td>"
                   f"<td style='{_TD};text-align:right'>{_fmt(w / o if o else None, 'pct')}</td></tr>")
 
@@ -209,9 +215,9 @@ def _pv_funil(conn, request: Request) -> str:
     return (f"<h1>Funil de Qualificação</h1><div class=sub>do lead recebido à reunião agendada (handoff p/ Vendas) · régua por evento no período, horário de Brasília</div>"
             f"<form method=get action=/prevendas><input type=hidden name=view value=funil>{form}</form>"
             f"<section><h2>Funil</h2>" + _card(_tbl([("Etapa", "left"), ("Deals", "right"), ("TX", "right"), ("TX Lead", "right")], rows)) + "</section>"
-            f"<section><h2>Oportunidades por bundle</h2><p class=secsub>o bundle nasce na Negociação (o campo Produto não existe na chegada do lead) — aqui: dos {tot_leads_b} leads do período, que mix de bundle as oportunidades geradas formaram e quantas fecharam</p>"
+            f"<section><h2>Oportunidades por bundle</h2><p class=secsub>oportunidades novas e contratos fechados no período, por plano — planos antigos/exceções aparecem pelo nome</p>"
             + _card(_tbl([("Bundle", "left"), ("Oportunidades", "right"), ("% do mix", "right"),
-                          ("% dos leads", "right"), ("Bookings", "right"), ("Oport→Booking", "right")], brows)) + "</section>"
+                          ("Bookings", "right"), ("Oport→Booking", "right")], brows)) + "</section>"
             f"<section><h2>Qualidade do lead por origem</h2><p class=secsub>taxa lead→reunião por canal — realimenta a segmentação do Marketing</p>"
             + _card(_tbl([("Origem", "left"), ("Leads", "right"), ("Reuniões", "right"), ("Lead→Reunião", "right")], orows)) + "</section>"
             f"<section><h2>Motivos de desqualificação</h2><p class=secsub>perdidos antes do handoff</p>"
