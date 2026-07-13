@@ -81,7 +81,7 @@ def _shell(A, area: str, views, view: str, content: str, usermail: str) -> str:
         cls = "nav-item active" if v == view else "nav-item"
         nav += f"<a class='{cls}' href='/{area}?view={v}'>{label}</a>"
     from ..marketing.ui import _shell as MS  # reaproveita o shell do Marketing
-    html = MS(A, usermail, view, content, usermail=usermail)
+    html = MS(A, usermail, view, content, usermail=usermail, help_area=area)
     # troca marca e navegação pela desta área
     html = html.replace("Marketing · Tráfego &amp; Leads", titulo).replace("Marketing · Tráfego & Leads", titulo)
     import re

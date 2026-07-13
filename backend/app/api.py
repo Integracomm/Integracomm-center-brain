@@ -754,6 +754,11 @@ def _hub_sales_stats(conn: Any) -> dict | None:
         return None
 
 
+def _growth_help(view: str) -> str:
+    from .help_texts import help_panel
+    return help_panel("growth", view)
+
+
 def _fmt_brl(v: float) -> str:
     return f"R$ {v:,.0f}".replace(",", ".")
 
@@ -1661,7 +1666,8 @@ __SCRIPT__
 
     return (head.replace("__TOKENS__", _tokens_css())
             .replace("__NAV__", nav).replace("__USERMAIL__", escape(usermail or role))
-            .replace("__CONTENT__", content).replace("__SCRIPT__", script))
+            .replace("__CONTENT__", _growth_help(view) + content)
+            .replace("__SCRIPT__", script))
 
 
 _CONTAS_JS = """<script>
