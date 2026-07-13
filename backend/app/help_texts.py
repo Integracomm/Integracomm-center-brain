@@ -34,8 +34,9 @@ HELP: dict[str, list[tuple[str, str]]] = {
     ],
     "marketing/visao": [
         ("KPIs vs mês anterior", "volume do mês corrente comparado ao anterior — direção geral da aquisição."),
-        ("Funil do mês vs meta", "cada etapa (Lead→Booking) contra a meta, com marcador do ritmo esperado pelo dia do mês — abaixo do traço = atrás da meta."),
-        ("Metas por plano (B3-B5)", "prioridade da empresa — o gap destes planos é a dor a atacar no trimestre."),
+        ("Funil do mês vs meta", "cada etapa (Lead→Booking) contra a meta do mês, com marcador do ritmo esperado pelo dia — barra abaixo do traço = atrás da meta. Insight: a PRIMEIRA etapa fora do ritmo é onde agir; as seguintes são consequência."),
+        ("Progresso vs meta do mês", "% da meta já realizado vs % do mês decorrido — acima do ritmo (verde) = tendência de bater; abaixo (vermelho) = precisa de ação ainda este mês, não no fechamento."),
+        ("Gap para a meta (B3-B5)", "quanto falta nos planos prioritários da empresa — o gap daqui é a pauta do trimestre; cruze com o Planejador para traduzir em leads e verba."),
     ],
     "marketing/metas": [
         ("Realizado × meta por etapa", "grade mês a mês da planilha de metas H2 — pacing = % da meta pelo % do mês decorrido."),
@@ -118,18 +119,59 @@ HELP: dict[str, list[tuple[str, str]]] = {
 }
 
 
-def help_panel(area: str, view: str) -> str:
-    """Painel recolhível "Como ler esta tela" — vazio se não houver textos."""
+import re
+import unicodedata
+
+
+def _norm(s: str) -> str:
+    x = unicodedata.normalize("NFD", (s or "").lower())
+    return "".join(c for c in x if unicodedata.category(c) != "Mn")
+
+
+def _hint(campo: str, txt: str) -> str:
+    return ("<details style='margin:2px 0 8px'><summary style='cursor:pointer;font-size:var(--fs-2xs);"
+            "color:var(--brand)'>ⓘ como ler este campo</summary>"
+            f"<div style='margin:5px 0 0;padding:8px 12px;background:var(--surface-1);border-left:3px solid var(--brand);"
+            f"border-radius:var(--radius-sm);font-size:var(--fs-xs);color:var(--text-2);line-height:1.55'>"
+            f"<b>{escape(campo)}</b> — {escape(txt)}</div></details>")
+
+
+def inject_help(area: str, view: str, content: str) -> str:
+    """Ancora cada explicação SOB o campo correspondente (match do título do
+    <h2> por tokens, sem acento); o que não achar âncora vai p/ o painel
+    'Visão geral desta página' no topo."""
     itens = HELP.get(f"{area}/{view}")
     if not itens:
-        return ""
-    linhas = "".join(
-        f"<div style='padding:6px 0;border-top:1px solid var(--border);font-size:var(--fs-sm);line-height:1.55'>"
-        f"<b>{escape(campo)}</b> — <span style='color:var(--text-2)'>{escape(txt)}</span></div>"
-        for campo, txt in itens)
-    return (
-        "<details style='margin:14px 0;background:var(--surface-1);border:1px solid var(--border-mid);"
-        "border-left:3px solid var(--brand);border-radius:var(--radius-md);padding:10px 16px'>"
-        "<summary style='cursor:pointer;font-size:var(--fs-sm);font-weight:600;color:var(--text-2)'>"
-        "❓ Como ler esta tela — o que significa cada campo</summary>"
-        f"<div style='margin-top:6px'>{linhas}</div></details>")
+        return content
+    sobras: list[tuple[str, str]] = []
+    for campo, txt in itens:
+        toks = [t for t in _norm(campo).split() if len(t) > 3]
+        achou = None
+        for m in re.finditer(r"<h2[^>]*>(.*?)</h2>(\s*<p class=secsub>.*?</p>)?", content, re.S):
+            h2 = _norm(re.sub(r"<[^>]+>", "", m.group(1)))
+            if toks and all(t in h2 for t in toks):
+                achou = m
+                break
+        if achou:
+            fim = achou.end()
+            content = content[:fim] + _hint(campo, txt) + content[fim:]
+        else:
+            sobras.append((campo, txt))
+    if sobras:
+        linhas = "".join(
+            f"<div style='padding:6px 0;border-top:1px solid var(--border);font-size:var(--fs-sm);line-height:1.55'>"
+            f"<b>{escape(c)}</b> — <span style='color:var(--text-2)'>{escape(t)}</span></div>"
+            for c, t in sobras)
+        content = (
+            "<details style='margin:14px 0;background:var(--surface-1);border:1px solid var(--border-mid);"
+            "border-left:3px solid var(--brand);border-radius:var(--radius-md);padding:10px 16px'>"
+            "<summary style='cursor:pointer;font-size:var(--fs-sm);font-weight:600;color:var(--text-2)'>"
+            "❓ Visão geral desta página</summary>"
+            f"<div style='margin-top:6px'>{linhas}</div></details>") + content
+    return content
+
+
+def help_panel(area: str, view: str) -> str:
+    """Compatibilidade: as cascas antigas chamavam help_panel e concatenavam.
+    Mantido vazio — a injeção agora é feita por inject_help (ancorada)."""
+    return ""

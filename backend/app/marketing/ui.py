@@ -53,8 +53,8 @@ def _fmt(v, kind="num") -> str:
 
 def _shell(A, role: str, view: str, content: str, usermail: str = "",
            help_area: str = "marketing") -> str:
-    from ..help_texts import help_panel
-    content = help_panel(help_area, view) + content
+    from ..help_texts import inject_help
+    content = inject_help(help_area, view, content)
     nav = "<a class='nav-item' href='/'>← Início (central)</a>" if role == "admin" else ""
     for v, label in _VIEWS:
         cls = "nav-item active" if v == view else "nav-item"

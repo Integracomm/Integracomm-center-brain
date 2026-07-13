@@ -754,9 +754,9 @@ def _hub_sales_stats(conn: Any) -> dict | None:
         return None
 
 
-def _growth_help(view: str) -> str:
-    from .help_texts import help_panel
-    return help_panel("growth", view)
+def _growth_help(view: str, content: str) -> str:
+    from .help_texts import inject_help
+    return inject_help("growth", view, content)
 
 
 def _fmt_brl(v: float) -> str:
@@ -1666,7 +1666,7 @@ __SCRIPT__
 
     return (head.replace("__TOKENS__", _tokens_css())
             .replace("__NAV__", nav).replace("__USERMAIL__", escape(usermail or role))
-            .replace("__CONTENT__", _growth_help(view) + content)
+            .replace("__CONTENT__", _growth_help(view, content))
             .replace("__SCRIPT__", script))
 
 
