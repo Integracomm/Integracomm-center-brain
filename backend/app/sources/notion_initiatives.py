@@ -322,12 +322,133 @@ def sync_initiatives(conn: Any, year: int, quarter: int, area: str | None = None
     return {"synced": total, "errors": erros}
 
 
+# ---------------------------------------------------------------------------
+# DESCOBERTA AUTOMÁTICA (pedido 13/07): com a integração conectada na árvore,
+# ninguém precisa colar URL — buscamos as databases "Iniciativas" e deduzimos
+# área/trimestre/gestor subindo pelos pais (Home → Área → Iniciativas → 2026 →
+# Q2 → [gestor] → database). Configs manuais existentes são preservadas.
+# ---------------------------------------------------------------------------
+_AREA_PAT = [("financeiro", re.compile(r"financeir", re.I)),
+             ("comercial", re.compile(r"comercial|vendas", re.I)),
+             ("marketing", re.compile(r"marketing", re.I)),
+             ("rh", re.compile(r"\brh\b|recursos humanos", re.I)),
+             ("assessoria", re.compile(r"assessoria", re.I)),
+             ("growth", re.compile(r"growth", re.I))]
+# árvore compartilhada Assessoria+Growth separa por gestor (dito pelo Otávio 13/07)
+_GESTOR_AREA = {"samantha": "assessoria", "eduardo": "growth"}
+_Q_RE = re.compile(r"\bQ([1-4])\b(?:\D*(20\d\d))?", re.I)
+_ANO_RE = re.compile(r"\b(20\d\d)\b")
+
+
+def _page_title(page_id: str) -> str | None:
+    try:
+        p = _nfetch(f"/pages/{page_id}", method="GET")
+        for v in (p.get("properties") or {}).values():
+            if v.get("type") == "title":
+                return "".join(t.get("plain_text", "") for t in v.get("title") or []).strip()
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+def _parent_chain(obj: dict, max_up: int = 6) -> list[tuple[str, str]]:
+    """[(page_id, título)] do pai imediato até a raiz acessível."""
+    chain: list[tuple[str, str]] = []
+    parent = obj.get("parent") or {}
+    for _ in range(max_up):
+        if parent.get("type") != "page_id":
+            break
+        pid = parent["page_id"]
+        titulo = _page_title(pid)
+        if titulo is None:
+            break
+        chain.append((pid, titulo))
+        try:
+            parent = (_nfetch(f"/pages/{pid}", method="GET").get("parent")) or {}
+        except Exception:  # noqa: BLE001
+            break
+    return chain
+
+
+def discover_configs(conn: Any) -> dict:
+    """Varre o Notion acessível e preenche notion_config sozinho.
+    Retorna {"achadas": n, "novas": n, "avisos": [...]}. Não sobrescreve
+    database_id/gestor_filter configurados manualmente."""
+    achadas = novas = 0
+    avisos: list[str] = []
+    with conn.cursor() as cur:
+        cur.execute(DDL)
+    data = _nfetch("/search", {"query": "iniciativas",
+                               "filter": {"value": "database", "property": "object"},
+                               "page_size": 100})
+    for db in data.get("results") or []:
+        titulo_db = "".join(t.get("plain_text", "") for t in db.get("title") or []).strip()
+        if not _PREFER.search(titulo_db) or _EXCLUI.search(titulo_db):
+            continue
+        chain = _parent_chain(db)
+        if not chain:
+            continue
+        achadas += 1
+        quarter = year = None
+        q_idx = None
+        for i, (_pid, t) in enumerate(chain):
+            m = _Q_RE.search(t)
+            if m:
+                quarter, q_idx = int(m.group(1)), i
+                if m.group(2):
+                    year = int(m.group(2))
+                break
+        if year is None:
+            for _pid, t in chain:
+                m = _ANO_RE.search(t)
+                if m and not _Q_RE.search(t):
+                    year = int(m.group(1))
+                    break
+        area = None
+        for slug, pat in _AREA_PAT:
+            if any(pat.search(t) for _pid, t in chain):
+                area = slug
+                break
+        if quarter is None or year is None or q_idx is None:
+            avisos.append(f"'{titulo_db}' sem trimestre identificável na árvore ({' / '.join(t for _p, t in chain)})")
+            continue
+        # gestor = página entre a database e a página do trimestre (se houver)
+        gestor = chain[0][1] if q_idx > 0 else None
+        if gestor:
+            for chave, slug in _GESTOR_AREA.items():
+                if chave in gestor.lower():
+                    area = slug
+                    break
+        if not area:
+            avisos.append(f"'{titulo_db}' Q{quarter}/{year} sem área identificável ({' / '.join(t for _p, t in chain)})")
+            continue
+        alvo = chain[q_idx][0]  # página do TRIMESTRE (a recursão pega os gestores)
+        with conn.cursor() as cur:
+            cur.execute("""INSERT INTO notion_config (area, year, quarter, database_id, database_name, gestor_filter)
+                           VALUES (%s,%s,%s,%s,%s,%s)
+                           ON CONFLICT (area, year, quarter) DO UPDATE SET
+                               database_id = COALESCE(notion_config.database_id, EXCLUDED.database_id),
+                               database_name = COALESCE(notion_config.database_name, EXCLUDED.database_name),
+                               gestor_filter = COALESCE(notion_config.gestor_filter, EXCLUDED.gestor_filter)""",
+                        (area, year, quarter, alvo, f"auto: {' / '.join(t for _p, t in chain[:2][::-1])}",
+                         gestor if area in _GESTOR_AREA.values() and gestor else None))
+            novas += cur.rowcount
+    return {"achadas": achadas, "novas": novas, "avisos": avisos}
+
+
 def sync_all_configured(conn: Any) -> int:
     """Rodada diária: sincroniza TODAS as configs existentes (todos os trimestres).
     Sem NOTION_API_KEY, avisa e não faz nada."""
     if not (os.environ.get("NOTION_API_KEY") or "").strip():
         print("  [notion] NOTION_API_KEY ausente — sync de iniciativas pulado", flush=True)
         return 0
+    try:  # descoberta automática antes do sync (novos trimestres entram sozinhos)
+        d = discover_configs(conn)
+        print(f"  [notion] descoberta: {d['achadas']} databases, {d['novas']} configs novas/atualizadas", flush=True)
+        for a in d["avisos"]:
+            print(f"  [notion] aviso: {a}", flush=True)
+    except Exception as e:  # noqa: BLE001 — descoberta fora não trava o sync
+        print(f"  [notion] descoberta falhou: {type(e).__name__}: {str(e)[:100]}", flush=True)
     with conn.cursor() as cur:
         cur.execute(DDL)
         cur.execute("SELECT DISTINCT year, quarter FROM notion_config WHERE database_id IS NOT NULL")
