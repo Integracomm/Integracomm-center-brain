@@ -22,13 +22,12 @@ AREA_KPIS: dict[str, list[tuple[str, str, str, str, bool, bool]]] = {
         ("oportunidades", "Oportunidades", "num", "min", False, True),
         ("receita_por_mql", "Receita / MQL", "BRL", "min", True, True),
         ("conversao_op_ganho_pct", "Conversão Op→Ganho", "pct", "min", True, True),
-        # régua do denominador ainda não bate com o dashboard do time (18,1% lá):
-        # manual até validar com o Marcos qual é a base da divisão
-        ("tx_cancelamento_pct", "Tx. Cancelamento", "pct", "max", False, False),
+        # régua definida pelo Otávio 13/07: cancelados ÷ total de clientes ativos
+        ("tx_cancelamento_pct", "Tx. Cancelamento", "pct", "max", False, True),
         ("mix_b2b5_pct", "Mix B2–B5 (novos)", "pct", "min", False, True),
     ],
     "assessoria": [
-        ("tx_cancelamento_pct", "Tx. Cancelamento", "pct", "max", False, False),
+        ("tx_cancelamento_pct", "Tx. Cancelamento", "pct", "max", False, True),
     ],
     "marketing": [
         ("mqls", "MQLs", "num", "min", False, True),
@@ -110,7 +109,9 @@ def _auto_comercial(conn: Any, year: int, months: list[int]) -> dict[str, dict[i
             a = f"{year}-{m:02d}-01 00:00-03"
             prox = dt.date(year + (m == 12), m % 12 + 1, 1)
             b = f"{prox} 00:00-03"
-            cur.execute("""SELECT count(*), COALESCE(sum(valor),0) FROM mkt_deals_attribution
+            # receita = campo VALOR do Pipedrive (régua do dashboard de metas); value é fallback
+            cur.execute("""SELECT count(*), COALESCE(sum(COALESCE(valor_custom, valor)), 0)
+                             FROM mkt_deals_attribution
                             WHERE status='won' AND won_time >= %s AND won_time < %s""", (a, b))
             wins, receita = cur.fetchone()
             cur.execute("""SELECT count(DISTINCT deal_id) FROM mkt_stage_events
@@ -126,14 +127,16 @@ def _auto_comercial(conn: Any, year: int, months: list[int]) -> dict[str, dict[i
             cur.execute("""SELECT count(*) FROM grw_cancelamentos
                             WHERE mes = %s AND tipo = 'cancelamento'""", (dt.date(year, m, 1),))
             canc = cur.fetchone()[0]
+            cur.execute("SELECT count(*) FROM accounts")
+            base_ativa = cur.fetchone()[0] or 1
             fut = dt.date(year, m, 1) > dt.date.today().replace(day=1)
             out["bookings_receita"][m] = None if fut else float(receita or 0)
             out["oportunidades"][m] = None if fut else float(oport)
             out["receita_por_mql"][m] = None if fut or not mqls else float(receita or 0) / mqls
             out["conversao_op_ganho_pct"][m] = None if fut or not oport else 100.0 * wins / oport
             out["mix_b2b5_pct"][m] = None if fut or not com_prod else 100.0 * b25 / com_prod
-            # régua do dashboard de metas do time: cancelamentos ÷ bookings NOVOS do mês
-            out["tx_cancelamento_pct"][m] = None if fut or not wins else 100.0 * canc / wins
+            # régua do Otávio (13/07): cancelados ÷ total de clientes ativos
+            out["tx_cancelamento_pct"][m] = None if fut else 100.0 * canc / base_ativa
     return out
 
 
@@ -184,6 +187,21 @@ def load_metas(conn: Any, area: str, year: int, quarter: int) -> list[dict]:
         manual: dict[str, dict[int, float | None]] = {}
         for k, m, v in cur.fetchall():
             manual.setdefault(k, {})[m] = float(v) if v is not None else None
+    if area == "marketing":  # Q3+: metas vêm da planilha de metas do Marketing (decisão 13/07)
+        try:
+            from ..marketing.ui import _plan_funil
+            meses_d = [dt.date(year, m, 1) for m in months]
+            plan = _plan_funil(conn, meses_d)
+            soma = {"mqls": 0.0, "oportunidades": 0.0}
+            for mes_d in meses_d:
+                p = plan.get(mes_d) or {}
+                soma["mqls"] += float(((p.get("MQL") or p.get("Lead")) or {}).get("qtde") or 0)
+                soma["oportunidades"] += float((p.get("Oportunidade") or {}).get("qtde") or 0)
+            for k, v in soma.items():
+                if targets.get(k) is None and v:
+                    targets[k] = v
+        except Exception:  # noqa: BLE001 — planilha fora não derruba a tela
+            pass
     auto = auto_realizado(conn, area, year, months)
     out = []
     for key, label, unit, direction, is_ratio, is_auto in defs:

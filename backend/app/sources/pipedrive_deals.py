@@ -24,6 +24,7 @@ F_TERM = "6988285b5eb437ac88ad90a75c932c9f8f6efa3d"
 F_CONTENT = "a4e181536d5f826605a31601bf992f4b50457b98"
 F_CAMPAIGN = "9a853495a426a500ce75a58fa52d59a080c7e1ef"
 F_PRODUTO = "9ad49f0040b563e8dfef6f58172830f0a115de12"
+F_VALOR = "c84d155bc50db5f4ce79ee4b71a56081671524ce"  # VALOR (contrato) — o dashboard de metas usa este, não o value padrão
 
 
 def _token() -> str:
@@ -71,7 +72,25 @@ def _txt(v) -> str | None:
 _DEALS_DDL_EXTRA = """ALTER TABLE mkt_deals_attribution
     ADD COLUMN IF NOT EXISTS owner_id BIGINT,
     ADD COLUMN IF NOT EXISTS owner_name TEXT,
-    ADD COLUMN IF NOT EXISTS lost_reason TEXT"""
+    ADD COLUMN IF NOT EXISTS lost_reason TEXT,
+    ADD COLUMN IF NOT EXISTS valor_custom NUMERIC"""
+
+
+def _num_br(v) -> float | None:
+    """Campo VALOR pode vir numérico ou como texto BR ('1.500,00')."""
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    s = str(v).strip().replace("R$", "").strip()
+    if not s:
+        return None
+    if "," in s:
+        s = s.replace(".", "").replace(",", ".")
+    try:
+        return float(s)
+    except ValueError:
+        return None
 
 
 def _upsert_deal(cur, d: dict, labels: dict[str, str]) -> None:
@@ -204,7 +223,8 @@ def _deal_tuplas(d: dict, labels: dict[str, str]) -> tuple[tuple, tuple]:
             _txt(d.get("lost_reason")))
     meta = ((_txt(d.get(F_SOURCE)) or "").lower() or None, _txt(d.get(F_MEDIUM)),
             _txt(d.get(F_TERM)), _txt(d.get(F_CAMPAIGN)), _txt(d.get(F_CONTENT)),
-            prod, (uid or {}).get("name") if isinstance(uid, dict) else _txt(d.get("owner_name")))
+            prod, (uid or {}).get("name") if isinstance(uid, dict) else _txt(d.get("owner_name")),
+            _num_br(d.get(F_VALOR)))
     return core, meta
 
 
@@ -237,12 +257,12 @@ def sync_deals_from_cache(conn: Any, since: dt.date = dt.date(2025, 1, 1)) -> in
         cur.execute(_DEALS_DDL_EXTRA)
         cur.execute("""SELECT deal_id, status, stage_id, won_time, valor, owner_id, lost_reason,
                               origem, utm_medium, utm_term, utm_campaign, utm_content,
-                              produto, owner_name
+                              produto, owner_name, valor_custom
                          FROM mkt_deals_attribution""")
         db: dict[int, tuple[tuple, tuple]] = {}
         for row in cur.fetchall():
             db[row[0]] = ((row[1], row[2], _norm_ts(row[3]), _norm_val(row[4]), row[5], row[6]),
-                          tuple(row[7:14]))
+                          tuple(row[7:14]) + (_norm_val(row[14]),))
     novos = mudou_core = mudou_meta = 0
     ids_cache: list[int] = []
     with conn.cursor() as cur:
@@ -261,7 +281,7 @@ def sync_deals_from_cache(conn: Any, since: dt.date = dt.date(2025, 1, 1)) -> in
             elif meta != atual[1]:
                 cur.execute("""UPDATE mkt_deals_attribution SET origem=%s, utm_medium=%s,
                                    utm_term=%s, utm_campaign=%s, utm_content=%s,
-                                   produto=%s, owner_name=%s WHERE deal_id=%s""",
+                                   produto=%s, owner_name=%s, valor_custom=%s WHERE deal_id=%s""",
                             (*meta, did))
                 mudou_meta += 1
         # apagados: sumiu do cache íntegro = deletado no Pipedrive
