@@ -344,26 +344,33 @@ def _horarios_calc(conn, ini: dt.date, fim: dt.date, bundle: str) -> dict:
     if bundle in ("B1", "B2", "B3", "B4", "B5"):
         filtro_b = " AND substring(d.produto FROM 'B[1-5]') = %s"
         args.append(bundle)
+    # régua do Pipedrive: cada DEAL conta UMA vez no período (1ª entrada na
+    # etapa) — reagendamento não duplica (13/07: 134 eventos vs 120 deals)
     with conn.cursor() as cur:
         cur.execute(f"""
-            SELECT extract(dow  FROM e.entered_at AT TIME ZONE 'America/Sao_Paulo')::int,
-                   extract(hour FROM e.entered_at AT TIME ZONE 'America/Sao_Paulo')::int,
+            WITH primeira AS (
+                SELECT e.deal_id, min(e.entered_at) AS entered_at
+                  FROM mkt_stage_events e
+                  JOIN mkt_deals_attribution d ON d.deal_id = e.deal_id
+                 WHERE e.stage_id = ANY(%s) AND e.entered_at >= %s AND e.entered_at < %s{filtro_b}
+                 GROUP BY e.deal_id)
+            SELECT extract(dow  FROM entered_at AT TIME ZONE 'America/Sao_Paulo')::int,
+                   extract(hour FROM entered_at AT TIME ZONE 'America/Sao_Paulo')::int,
                    count(*)
-              FROM mkt_stage_events e
-              JOIN mkt_deals_attribution d ON d.deal_id = e.deal_id
-             WHERE e.stage_id = ANY(%s) AND e.entered_at >= %s AND e.entered_at < %s{filtro_b}
-             GROUP BY 1, 2""", [list(_ST_AGENDA)] + args)
+              FROM primeira GROUP BY 1, 2""", [list(_ST_AGENDA)] + args)
         celulas = {(dow, h): n for dow, h, n in cur.fetchall()}
         # melhores janelas POR BUNDLE (independe do filtro acima)
         cur.execute("""
-            SELECT COALESCE(substring(d.produto FROM 'B[1-5]'), 'sem produto'),
-                   extract(dow  FROM e.entered_at AT TIME ZONE 'America/Sao_Paulo')::int,
-                   extract(hour FROM e.entered_at AT TIME ZONE 'America/Sao_Paulo')::int,
-                   count(*)
-              FROM mkt_stage_events e
-              JOIN mkt_deals_attribution d ON d.deal_id = e.deal_id
-             WHERE e.stage_id = ANY(%s) AND e.entered_at >= %s AND e.entered_at < %s
-             GROUP BY 1, 2, 3""", (list(_ST_AGENDA), a, b))
+            WITH primeira AS (
+                SELECT e.deal_id, min(e.entered_at) AS entered_at,
+                       COALESCE(substring(min(d.produto) FROM 'B[1-5]'), 'sem produto') AS p
+                  FROM mkt_stage_events e
+                  JOIN mkt_deals_attribution d ON d.deal_id = e.deal_id
+                 WHERE e.stage_id = ANY(%s) AND e.entered_at >= %s AND e.entered_at < %s
+                 GROUP BY e.deal_id)
+            SELECT p, extract(dow  FROM entered_at AT TIME ZONE 'America/Sao_Paulo')::int,
+                   extract(hour FROM entered_at AT TIME ZONE 'America/Sao_Paulo')::int, count(*)
+              FROM primeira GROUP BY 1, 2, 3""", (list(_ST_AGENDA), a, b))
         por_bundle: dict[str, dict[tuple[int, int], int]] = {}
         for p, dow, h, n in cur.fetchall():
             por_bundle.setdefault(p, {})[(dow, h)] = n
@@ -585,8 +592,9 @@ _REL_TPL = """<!doctype html><html lang=pt-BR><head><meta charset=utf-8>
 {corpo}
 <div class=rodape><b>Metodologia:</b> cada agendamento é o momento (horário de Brasília) em que o deal
 entrou na etapa "Reunião Agendada" no Pipedrive — proxy da ligação/conversa que converteu; o carimbo é a
-movimentação do card pelo SDR e pode atrasar alguns minutos em relação ao contato em si. Reagendamentos
-contam como novos eventos. Fonte: histórico de mudanças de etapa (Pipedrive /flow), coletado diariamente.
+movimentação do card pelo SDR e pode atrasar alguns minutos em relação ao contato em si. Cada deal conta
+UMA vez no período (primeira entrada na etapa) — mesma régua do Pipedrive; reagendamentos não duplicam.
+Fonte: histórico de mudanças de etapa (Pipedrive /flow), coletado diariamente.
 Documento para validação da coordenação de Pré-vendas — a decisão de escala de horário é sempre humana.</div>
 </div></body></html>"""
 
