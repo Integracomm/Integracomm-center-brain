@@ -1,9 +1,11 @@
-"""Área de OPERAÇÕES (/operacoes) — controle de iniciativas por área (Notion).
+"""Área de OPERAÇÕES (/operacoes) — réplica do app Lovable "Metas e Iniciativas".
 
-Réplica fiel do app Lovable "Metas e Iniciativas": agrupamento gestor →
-iniciativa (ordenada pelo nº no nome) → detalhamento (por menor prazo) →
-ações (por prazo), semáforo por prazo/status e badge de dependência
-sequencial. Fonte: Notion (somente leitura) → cache notion_initiatives_cache.
+Visão Geral (cards por área com contagem de iniciativas + atrasadas), página
+por área (KPIs vs meta trimestral, gráficos mensais com META ADAPTATIVA —
+redistribui o que faltou/sobrou dos meses fechados — e as iniciativas da
+área) e Configurações (URLs do Notion + metas trimestrais + realizado manual).
+Iniciativas: Notion (somente leitura). Metas: automáticas do nosso banco
+onde há fonte; manuais no resto.
 """
 from __future__ import annotations
 
@@ -15,11 +17,15 @@ from html import escape
 from fastapi import APIRouter, Body, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from . import metas as MT
+
 router = APIRouter()
 
-_AREAS_OP = [("financeiro", "Financeiro"), ("comercial", "Comercial (Pré-vendas + Vendas)"),
-             ("assessoria", "Assessoria"), ("marketing", "Marketing"), ("rh", "RH"),
-             ("growth", "Growth")]
+_AREAS_OP = [("financeiro", "Financeiro", "Letícia"), ("comercial", "Comercial", "Marcos"),
+             ("assessoria", "Assessoria", "Samantha / Eduardo Luiz"),
+             ("marketing", "Marketing", "Rafael"), ("rh", "RH", "Amanda"),
+             ("growth", "Growth", "—")]
+_MES_LBL = ["", "Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
 _SEM = {"verde": ("--status-baixo", "concluída"), "amarelo": ("--status-medio", "em andamento"),
         "vermelho": ("--status-critico", "atrasada"), "cinza": ("--status-semdados", "")}
 
@@ -30,7 +36,6 @@ def _deps():
 
 
 def _semaforo(status: str, prazo, hoje: dt.date) -> tuple[str, str]:
-    """(cor, rótulo) — regra exata da referência."""
     if status == "concluida":
         return "verde", "concluída"
     if not prazo:
@@ -51,9 +56,8 @@ def _ord_iniciativa(nome: str) -> tuple:
 
 
 def _render_grupos(rows: list[dict], hoje: dt.date) -> str:
-    """4 níveis de agrupamento + semáforo + badge de dependência."""
     if not rows:
-        return "<div class=warn>nenhuma iniciativa sincronizada para esta seleção — configure a URL do Notion abaixo e clique em Sincronizar.</div>"
+        return "<div class=warn>nenhuma iniciativa sincronizada — configure a URL do Notion em Configurações e clique em Sincronizar.</div>"
     gestores: dict[str, list[dict]] = {}
     for r in rows:
         gestores.setdefault(r["gestor"] or "Outros", []).append(r)
@@ -78,7 +82,6 @@ def _render_grupos(rows: list[dict], hoje: dt.date) -> str:
             for sub in sorted(subs, key=lambda s: _min_prazo(subs[s])):
                 srows = sorted(subs[sub], key=lambda r: ((0, r["prazo"]) if r["prazo"] else (1, dt.date.max),
                                                          (r["acao"] or r["titulo"] or "").casefold()))
-                # dependência sequencial: 1ª pendente atrasada trava as pendentes seguintes
                 bloqueia = False
                 for r in srows:
                     if r["status"] == "concluida":
@@ -94,10 +97,8 @@ def _render_grupos(rows: list[dict], hoje: dt.date) -> str:
                 for r in srows:
                     cor, rotulo = _semaforo(r["status"], r["prazo"], hoje)
                     var, _lbl = _SEM[cor]
-                    prazo_html = ""
-                    if r["prazo"]:
-                        prazo_html = (f"<span class=chip style='--c:var({var})'>"
-                                      f"{r['prazo'].strftime('%d/%m/%Y')}</span>")
+                    prazo_html = (f"<span class=chip style='--c:var({var})'>{r['prazo'].strftime('%d/%m/%Y')}</span>"
+                                  if r["prazo"] else "")
                     dep = ("<span class=chip style='--c:var(--status-alto)'>aguardando ação anterior atrasada</span>"
                            if r.get("_dep") else "")
                     prog = ""
@@ -134,6 +135,217 @@ def _render_grupos(rows: list[dict], hoje: dt.date) -> str:
     return html
 
 
+# ---------------------------------------------------------------------------
+# dados
+# ---------------------------------------------------------------------------
+def _load_rows(conn, year: int, quarter: int, area: str | None = None) -> list[dict]:
+    from ..sources.notion_initiatives import DDL
+    with conn.cursor() as cur:
+        cur.execute(DDL)
+        q = """SELECT notion_id, area, titulo, responsaveis_json, prazo, status, progresso,
+                      notion_url, subitems_json, iniciativa, acao, detalhamento, gestor
+                 FROM notion_initiatives_cache WHERE year=%s AND quarter=%s"""
+        args: list = [year, quarter]
+        if area:
+            q += " AND area=%s"
+            args.append(area)
+        cur.execute(q, args)
+        return [{"notion_id": r[0], "area": r[1], "titulo": r[2],
+                 "responsaveis": (r[3] if isinstance(r[3], list) else json.loads(r[3] or "[]")),
+                 "prazo": r[4], "status": r[5],
+                 "progresso": float(r[6]) if r[6] is not None else None,
+                 "notion_url": r[7],
+                 "subitems": (r[8] if isinstance(r[8], list) else json.loads(r[8] or "[]")),
+                 "iniciativa": r[9], "acao": r[10], "detalhamento": r[11], "gestor": r[12]}
+                for r in cur.fetchall()]
+
+
+def _contagem(rows: list[dict], hoje: dt.date) -> dict:
+    c = {"total": len(rows), "ok": 0, "prog": 0, "atras": 0, "ni": 0}
+    for r in rows:
+        cor, _ = _semaforo(r["status"], r["prazo"], hoje)
+        if cor == "verde":
+            c["ok"] += 1
+        elif cor == "vermelho":
+            c["atras"] += 1
+        elif cor == "amarelo":
+            c["prog"] += 1
+        else:
+            c["ni"] += 1
+    c["progresso"] = 100.0 * c["ok"] / c["total"] if c["total"] else 0.0
+    return c
+
+
+# ---------------------------------------------------------------------------
+# gráfico realizado × meta adaptativa (SVG simples)
+# ---------------------------------------------------------------------------
+def _grafico_kpi(k: dict) -> str:
+    months = k["months"]
+    reais = [k["realizado"].get(m) for m in months]
+    metas = [k["metas_mes"].get(m) for m in months]
+    vals = [v for v in reais + metas if v is not None]
+    if not vals:
+        return "<div class=note>sem dados no trimestre</div>"
+    vmax = max(vals) * 1.15 or 1
+    W, H, PAD = 320, 110, 26
+
+    def xy(i, v):
+        x = PAD + i * (W - 2 * PAD) / max(1, len(months) - 1)
+        y = H - 18 - (v / vmax) * (H - 34)
+        return x, y
+
+    def linha(serie, cor, dash=""):
+        pts = [(i, v) for i, v in enumerate(serie) if v is not None]
+        if not pts:
+            return ""
+        d = " ".join(f"{xy(i, v)[0]:.0f},{xy(i, v)[1]:.0f}" for i, v in pts)
+        dots = "".join(f"<circle cx='{xy(i, v)[0]:.0f}' cy='{xy(i, v)[1]:.0f}' r='3' fill='{cor}'>"
+                       f"<title>{_MES_LBL[months[i]]}: {MT.fmt_val(v, k['unit'])}</title></circle>" for i, v in pts)
+        return f"<polyline points='{d}' fill='none' stroke='{cor}' stroke-width='2'{dash}/>" + dots
+
+    eixo = "".join(f"<text x='{xy(i, 0)[0]:.0f}' y='{H - 4}' text-anchor='middle' "
+                   f"font-size='10' fill='var(--text-muted)'>{_MES_LBL[m]}</text>"
+                   for i, m in enumerate(months))
+    return (f"<svg viewBox='0 0 {W} {H}' style='width:100%;max-width:420px'>"
+            + linha(metas, "var(--status-medio)", " stroke-dasharray='5 4'")
+            + linha(reais, "var(--brand)") + eixo
+            + f"<text x='{PAD}' y='11' font-size='9' fill='var(--brand)'>— realizado</text>"
+            + f"<text x='{PAD + 80}' y='11' font-size='9' fill='var(--status-medio)'>--- meta (adaptativa)</text></svg>")
+
+
+# ---------------------------------------------------------------------------
+# páginas
+# ---------------------------------------------------------------------------
+def _pg_visao(conn, year: int, quarter: int, hoje: dt.date) -> str:
+    rows = _load_rows(conn, year, quarter)
+    cards, atrasadas = "", []
+    tot = _contagem(rows, hoje)
+    for slug, nome, gestor in _AREAS_OP:
+        arows = [r for r in rows if r["area"] == slug]
+        c = _contagem(arows, hoje)
+        for r in arows:
+            if _semaforo(r["status"], r["prazo"], hoje)[0] == "vermelho":
+                atrasadas.append((r, nome))
+        nums = "".join(
+            f"<div style='text-align:center'><div style='font-family:var(--font-display);font-weight:700;"
+            f"font-size:19px;color:{cor}'>{c[key]}</div><div style='font-size:9px;color:var(--text-muted);"
+            f"text-transform:uppercase'>{lbl}</div></div>"
+            for key, lbl, cor in (("total", "total", "var(--text)"), ("ok", "ok", "var(--status-baixo)"),
+                                  ("prog", "prog.", "var(--status-medio)"), ("atras", "atras.", "var(--status-critico)"),
+                                  ("ni", "n/i", "var(--text-muted)")))
+        cards += (f"<a class=card href='/operacoes?view={slug}&year={year}&quarter={quarter}' "
+                  f"style='display:block'><b style='font-size:var(--fs-md)'>{nome}</b>"
+                  f"<div style='font-size:var(--fs-2xs);color:var(--text-muted)'>Gestor(a): {escape(gestor)}</div>"
+                  f"<div style='display:flex;justify-content:space-between;gap:6px;margin:10px 0'>{nums}</div>"
+                  f"<div style='display:flex;justify-content:space-between;font-size:var(--fs-2xs);"
+                  f"color:var(--text-muted)'><span>Progresso</span><span>{c['progresso']:.0f}%</span></div>"
+                  f"<div style='height:7px;background:var(--surface-3);border-radius:4px;overflow:hidden'>"
+                  f"<div style='height:100%;width:{c['progresso']:.0f}%;background:var(--brand)'></div></div></a>")
+    atrasadas.sort(key=lambda x: x[0]["prazo"] or dt.date.max)
+    atr_html = "".join(
+        f"<div style='display:flex;justify-content:space-between;gap:10px;align-items:center;padding:8px 0;"
+        f"border-top:1px solid var(--border)'><div style='min-width:0'>"
+        f"<div style='font-size:var(--fs-sm)'>{escape((r['iniciativa'] or r['titulo'] or '')[:90])}</div>"
+        f"<div style='font-size:var(--fs-2xs);color:var(--text-muted)'>{nome} · {escape(r['acao'] or '')}</div></div>"
+        f"<span class=chip style='--c:var(--status-critico)'>{r['prazo'].strftime('%d/%m/%Y')}</span></div>"
+        for r, nome in atrasadas[:12]) or "<div class=note>nenhuma iniciativa atrasada 🎉</div>"
+    return (f"<div style='display:flex;justify-content:space-between;align-items:center;gap:12px'>"
+            f"<div></div><div style='min-width:230px'><div style='display:flex;justify-content:space-between;"
+            f"font-size:var(--fs-2xs);color:var(--text-muted)'><span>Progresso real das iniciativas</span>"
+            f"<span>{tot['progresso']:.0f}%</span></div>"
+            f"<div style='height:8px;background:var(--surface-3);border-radius:4px;overflow:hidden'>"
+            f"<div style='height:100%;width:{tot['progresso']:.0f}%;background:var(--brand)'></div></div></div></div>"
+            f"<section><div style='display:grid;grid-template-columns:repeat(auto-fill,minmax(215px,1fr));gap:12px'>"
+            f"{cards}</div></section>"
+            f"<section><h2>⚠️ Iniciativas atrasadas</h2><div class=card>{atr_html}</div></section>")
+
+
+def _pg_area(conn, slug: str, nome: str, gestor: str, year: int, quarter: int, hoje: dt.date) -> str:
+    kpis = MT.load_metas(conn, slug, year, quarter)
+    kcards = ""
+    for k in kpis:
+        badge = ""
+        if k["pct"] is not None:
+            cor = "--status-baixo" if k["ok"] else "--status-critico"
+            badge = f"<span class=chip style='--c:var({cor});float:right'>{k['pct']:.0f}%</span>"
+        auto = "" if k["auto"] else " <span style='font-size:9px;color:var(--text-faint)'>(manual)</span>"
+        kcards += (f"<div class=card>{badge}<div style='font-size:var(--fs-2xs);color:var(--text-muted);"
+                   f"text-transform:uppercase;letter-spacing:var(--tracking-label)'>{escape(k['label'])}{auto}</div>"
+                   f"<div style='font-family:var(--font-display);font-weight:700;font-size:24px;margin:4px 0'>"
+                   f"{MT.fmt_val(k['real_tri'], k['unit'])}</div>"
+                   f"<div style='font-size:var(--fs-2xs);color:var(--text-muted)'>Meta: {MT.fmt_val(k['meta_tri'], k['unit'])}"
+                   f"{' (teto)' if k['direction'] == 'max' else ''}</div></div>")
+    graficos = "".join(
+        f"<div class=card><b style='font-size:var(--fs-sm)'>{escape(k['label'])} · evolução mensal</b>"
+        f"<div style='margin-top:8px'>{_grafico_kpi(k)}</div></div>"
+        for k in kpis if k["meta_tri"] is not None or any(v is not None for v in k["realizado"].values()))
+    rows = _load_rows(conn, year, quarter, slug)
+    return (f"<div style='font-size:var(--fs-sm);color:var(--text-muted)'>Gestor(a): <b>{escape(gestor)}</b> · Q{quarter} {year}</div>"
+            + (f"<section><div style='display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px'>{kcards}</div></section>" if kcards else
+               "<section><div class=note>área sem KPIs de meta definidos — as iniciativas ficam abaixo</div></section>")
+            + (f"<section><div style='display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px'>{graficos}</div></section>" if graficos else "")
+            + f"<section><h2>Iniciativas</h2>{_render_grupos(rows, hoje)}</section>")
+
+
+def _pg_config(conn, year: int, quarter: int) -> str:
+    with conn.cursor() as cur:
+        cur.execute(MT.DDL)
+        cur.execute("SELECT area, database_id, database_name FROM notion_config WHERE year=%s AND quarter=%s",
+                    (year, quarter))
+        cfg = {a: (d, n) for a, d, n in cur.fetchall()}
+        cur.execute("SELECT area, kpi_key, meta FROM op_kpi_targets WHERE year=%s AND quarter=%s", (year, quarter))
+        targets = {(a, k): float(v) if v is not None else None for a, k, v in cur.fetchall()}
+        cur.execute("""SELECT area, ok, items_count, message, created_at FROM notion_sync_log
+                        WHERE year=%s AND quarter=%s ORDER BY created_at DESC LIMIT 8""", (year, quarter))
+        synclog = cur.fetchall()
+    cfg_rows = ""
+    for slug, nome, _g in _AREAS_OP:
+        did, dname = cfg.get(slug, (None, None))
+        st = f"<span class=note>{escape(dname or '')}</span>" if did else "<span class=note style='color:var(--text-faint)'>não configurado</span>"
+        cfg_rows += (f"<div style='display:flex;gap:8px;align-items:center;padding:7px 0;border-top:1px solid var(--border);flex-wrap:wrap'>"
+                     f"<b style='width:200px;font-size:var(--fs-sm)'>{nome}</b>"
+                     f"<input id='cfg-{slug}' placeholder='cole a URL da página do trimestre…' value='{escape(did or '')}' "
+                     f"style='flex:1;min-width:260px;background:var(--bg-panel);border:1px solid var(--border-strong);"
+                     f"border-radius:var(--radius-sm);color:var(--text);font-size:var(--fs-xs);padding:7px 9px'>"
+                     f"<button class=abtn2 onclick=\"salvarCfg('{slug}')\">salvar</button>{st}</div>")
+    metas_rows = ""
+    for slug, nome, _g in _AREAS_OP:
+        defs = MT.AREA_KPIS.get(slug) or []
+        if not defs:
+            continue
+        linhas = ""
+        for key, label, unit, direction, _ir, is_auto in defs:
+            v = targets.get((slug, key))
+            linhas += (f"<div style='display:flex;gap:8px;align-items:center;padding:5px 0;flex-wrap:wrap'>"
+                       f"<span style='width:210px;font-size:var(--fs-xs)'>{escape(label)}"
+                       f"{'' if is_auto else ' <span style=color:var(--text-faint)>(realizado manual)</span>'}</span>"
+                       f"<input id='meta-{slug}-{key}' type=number step=any value='{'' if v is None else v}' "
+                       f"placeholder='meta do trimestre ({unit})' style='width:190px;background:var(--bg-panel);"
+                       f"border:1px solid var(--border-strong);border-radius:var(--radius-sm);color:var(--text);"
+                       f"font-size:var(--fs-xs);padding:6px 8px'>"
+                       f"<button class=abtn2 onclick=\"salvarMeta('{slug}','{key}')\">salvar</button>"
+                       + ("" if is_auto else "".join(
+                           f"<input id='real-{slug}-{key}-{m}' type=number step=any placeholder='{_MES_LBL[m]}' "
+                           f"style='width:86px;background:var(--bg-panel);border:1px solid var(--border-strong);"
+                           f"border-radius:var(--radius-sm);color:var(--text);font-size:var(--fs-xs);padding:6px 8px' "
+                           f"onchange=\"salvarReal('{slug}','{key}',{m})\">"
+                           for m in MT.quarter_months(quarter)))
+                       + "</div>")
+        metas_rows += f"<div style='padding:8px 0;border-top:1px solid var(--border)'><b>{nome}</b>{linhas}</div>"
+    log_html = "".join(
+        f"<div class=note style='padding:3px 0'>{'✅' if ok else '⚠️'} {escape(a or '')} — "
+        f"{escape(msg or '')} <span style='color:var(--text-faint)'>({ts.strftime('%d/%m %H:%M')})</span></div>"
+        for a, ok, n, msg, ts in synclog) or "<div class=note>nenhuma sincronização registrada ainda</div>"
+    return ("<section><h2>URLs do Notion por área</h2>"
+            f"<p class=secsub>vale para Q{quarter}/{year} · a página precisa estar compartilhada com a integração no Notion</p>"
+            f"<div class=card>{cfg_rows}</div></section>"
+            "<section><h2>Metas do trimestre por KPI</h2>"
+            "<p class=secsub>meta trimestral (R$/qtde = soma dos meses; % = média) · KPIs marcados (realizado manual) "
+            "ganham campos por mês — os demais preenchem sozinhos do banco</p>"
+            f"<div class=card>{metas_rows}</div></section>"
+            "<section><h2>Últimas sincronizações</h2>" + f"<div class=card>{log_html}</div></section>")
+
+
 @router.get("/operacoes", response_class=HTMLResponse)
 def operacoes(request: Request):
     A = _deps()
@@ -149,77 +361,31 @@ def operacoes(request: Request):
         quarter = int(qp.get("quarter") or q_atual)
     except ValueError:
         year, quarter = hoje.year, q_atual
-    area = qp.get("area") or "todas"
+    view = qp.get("view") or "visao"
+    slugs = {s_: (n, g) for s_, n, g in _AREAS_OP}
+    if view not in {"visao", "config", *slugs}:
+        view = "visao"
 
-    from ..sources.notion_initiatives import DDL
     with A._conn() as c:
         with c.cursor() as cur:
             cur.execute("INSERT INTO audit_log (actor, action, scope) VALUES (%s,'view',%s)",
-                        (user, f"operacoes/iniciativas {year}Q{quarter} {area}"))
-            cur.execute(DDL)
-            q = """SELECT notion_id, area, titulo, responsaveis_json, prazo, status, progresso,
-                          notion_url, subitems_json, iniciativa, acao, detalhamento, gestor
-                     FROM notion_initiatives_cache WHERE year=%s AND quarter=%s"""
-            args: list = [year, quarter]
-            if area != "todas":
-                q += " AND area=%s"
-                args.append(area)
-            cur.execute(q, args)
-            rows = [{"notion_id": r[0], "area": r[1], "titulo": r[2],
-                     "responsaveis": (r[3] if isinstance(r[3], list) else json.loads(r[3] or "[]")),
-                     "prazo": r[4], "status": r[5],
-                     "progresso": float(r[6]) if r[6] is not None else None,
-                     "notion_url": r[7],
-                     "subitems": (r[8] if isinstance(r[8], list) else json.loads(r[8] or "[]")),
-                     "iniciativa": r[9], "acao": r[10], "detalhamento": r[11], "gestor": r[12]}
-                    for r in cur.fetchall()]
-            cur.execute("SELECT area, database_id, database_name FROM notion_config WHERE year=%s AND quarter=%s",
-                        (year, quarter))
-            cfg = {a: (d, n) for a, d, n in cur.fetchall()}
-            cur.execute("""SELECT area, ok, items_count, message, created_at FROM notion_sync_log
-                            WHERE year=%s AND quarter=%s ORDER BY created_at DESC LIMIT 8""", (year, quarter))
-            synclog = cur.fetchall()
+                        (user, f"operacoes/{view} {year}Q{quarter}"))
+        if view == "visao":
+            corpo, titulo = _pg_visao(c, year, quarter, hoje), f"Visão Geral · Q{quarter} {year}"
+        elif view == "config":
+            corpo, titulo = _pg_config(c, year, quarter), "Configurações"
+        else:
+            nome, gestor = slugs[view]
+            corpo, titulo = _pg_area(c, view, nome, gestor, year, quarter, hoje), f"{nome} · Q{quarter} {year}"
 
-    # por área ou todas juntas (com cabeçalho por área)
-    if area == "todas":
-        corpo = ""
-        for slug, nome in _AREAS_OP:
-            arows = [r for r in rows if r["area"] == slug]
-            if arows:
-                corpo += f"<section><h2 style='color:var(--brand)'>{escape(nome)}</h2>{_render_grupos(arows, hoje)}</section>"
-        if not corpo:
-            corpo = _render_grupos([], hoje)
-    else:
-        corpo = _render_grupos(rows, hoje)
-
-    opts_a = "".join(f"<option value='{v}' {'selected' if area == v else ''}>{lbl}</option>"
-                     for v, lbl in [("todas", "todas as áreas")] + _AREAS_OP)
     opts_q = "".join(f"<option value='{q_}' {'selected' if quarter == q_ else ''}>Q{q_}</option>" for q_ in (1, 2, 3, 4))
     opts_y = "".join(f"<option value='{y}' {'selected' if year == y else ''}>{y}</option>" for y in (2025, 2026, 2027))
-    form = (f"<form method=get action=/operacoes><div class=filters>"
-            f"<div><label>área</label><select name=area>{opts_a}</select></div>"
+    form = (f"<form method=get action=/operacoes><input type=hidden name=view value='{view}'>"
+            f"<div class=filters><div><label>ano</label><select name=year>{opts_y}</select></div>"
             f"<div><label>trimestre</label><select name=quarter>{opts_q}</select></div>"
-            f"<div><label>ano</label><select name=year>{opts_y}</select></div>"
             f"<button type=submit>Aplicar</button>"
-            f"<button type=button onclick=\"syncNotion('{'' if area == 'todas' else area}')\" "
+            f"<button type=button onclick=\"syncNotion('{'' if view in ('visao', 'config') else view}')\" "
             f"style='background:var(--brand);color:#111'>Sincronizar Notion</button></div></form>")
-
-    cfg_rows = ""
-    for slug, nome in _AREAS_OP:
-        did, dname = cfg.get(slug, (None, None))
-        st = f"<span class=note>{escape(dname or '')}</span>" if did else "<span class=note style='color:var(--text-faint)'>não configurado</span>"
-        cfg_rows += (f"<div style='display:flex;gap:8px;align-items:center;padding:7px 0;border-top:1px solid var(--border);flex-wrap:wrap'>"
-                     f"<b style='width:230px;font-size:var(--fs-sm)'>{escape(nome)}</b>"
-                     f"<input id='cfg-{slug}' placeholder='cole a URL da página do trimestre no Notion…' value='{escape(did or '')}' "
-                     f"style='flex:1;min-width:260px;background:var(--bg-panel);border:1px solid var(--border-strong);"
-                     f"border-radius:var(--radius-sm);color:var(--text);font-size:var(--fs-xs);padding:7px 9px'>"
-                     f"<button class=abtn2 onclick=\"salvarCfg('{slug}')\">salvar</button>{st}</div>")
-
-    log_html = "".join(
-        f"<div class=note style='padding:3px 0'>{'✅' if ok else '⚠️'} {escape(a or '')} — "
-        f"{escape(msg or '')} <span style='color:var(--text-faint)'>({ts.strftime('%d/%m %H:%M')})</span></div>"
-        for a, ok, n, msg, ts in synclog) or "<div class=note>nenhuma sincronização registrada ainda</div>"
-
     js = ("<script>"
           f"var Y={year},Q={quarter};"
           "function syncNotion(a){var b=event.target;b.disabled=true;b.textContent='sincronizando…';"
@@ -232,26 +398,27 @@ def operacoes(request: Request):
           "body:JSON.stringify({area:slug,year:Y,quarter:Q,url:v||null})}).then(function(r){return r.json();})"
           ".then(function(j){if(!j.ok)alert(j.message||'erro');else location.reload();})"
           ".catch(function(){alert('falha de rede');});}"
+          "function salvarMeta(a,k){var v=document.getElementById('meta-'+a+'-'+k).value;"
+          "fetch('/api/operacoes/kpi-target',{method:'POST',headers:{'Content-Type':'application/json'},"
+          "body:JSON.stringify({area:a,kpi_key:k,year:Y,quarter:Q,meta:v===''?null:parseFloat(v)})})"
+          ".then(function(r){return r.json();}).then(function(j){if(j.error)alert(j.error);else location.reload();});}"
+          "function salvarReal(a,k,m){var v=document.getElementById('real-'+a+'-'+k+'-'+m).value;"
+          "fetch('/api/operacoes/kpi-monthly',{method:'POST',headers:{'Content-Type':'application/json'},"
+          "body:JSON.stringify({area:a,kpi_key:k,year:Y,month:m,realizado:v===''?null:parseFloat(v)})})"
+          ".then(function(r){return r.json();}).then(function(j){if(j.error)alert(j.error);});}"
           "</script><style>.abtn2{cursor:pointer;background:var(--surface-3);border:1px solid var(--border-strong);"
           "border-radius:var(--radius-sm);color:var(--text-2);font-family:var(--font-body);font-size:var(--fs-2xs);"
           "padding:6px 11px}.abtn2:hover{border-color:var(--brand);color:var(--brand)}</style>")
 
-    content = (f"<h1>Iniciativas — Q{quarter}/{year}</h1>"
-               "<div class=sub>controle das iniciativas de cada área da empresa · fonte: Notion (somente leitura, "
-               "sincronizado diariamente às 06:00 e sob demanda) · semáforo por prazo e dependência sequencial</div>"
-               + form + corpo +
-               "<section><h2>Configuração (URL do Notion por área)</h2>"
-               f"<p class=secsub>vale para Q{quarter}/{year} · cole a URL da página do trimestre (a busca encontra as "
-               "databases 'Iniciativas' até 3 níveis, inclusive subpáginas por gestor) · a página precisa estar "
-               "compartilhada com a integração no Notion</p>"
-               + f"<div class=card>{cfg_rows}</div></section>"
-               "<section><h2>Últimas sincronizações</h2>" + f"<div class=card>{log_html}</div></section>"
-               + js)
-
+    content = (f"<h1>{escape(titulo)}</h1>"
+               "<div class=sub>metas e iniciativas estratégicas por área · iniciativas do Notion (somente leitura) · "
+               "meta mensal adaptativa: o que faltou/sobrou num mês redistribui nos seguintes</div>"
+               + form + corpo + js)
+    views = [("visao", "Visão Geral")] + [(s_, n) for s_, n, _ in _AREAS_OP] + [("config", "Configurações")]
     from ..sales.ui import _shell
-    html = _shell(A, "operacoes", [("iniciativas", "Iniciativas")], "iniciativas", content, user)
-    return HTMLResponse(html.replace("Pré-vendas · Qualificação", "Operações · Iniciativas")
-                        .replace("Vendas · Fechamento", "Operações · Iniciativas"))
+    html = _shell(A, "operacoes", views, view, content, user)
+    return HTMLResponse(html.replace("Pré-vendas · Qualificação", "Operações · Metas & Iniciativas")
+                        .replace("Vendas · Fechamento", "Operações · Metas & Iniciativas"))
 
 
 @router.post("/api/operacoes/notion-config")
@@ -283,3 +450,39 @@ def api_initiatives_sync(request: Request, payload: dict = Body(...)):
                         (actor, "notion_sync", f"{payload.get('year')}Q{payload.get('quarter')} "
                                                f"{payload.get('area') or 'todas'}: {out['synced']} itens"))
     return JSONResponse(out)
+
+
+@router.post("/api/operacoes/kpi-target")
+def api_kpi_target(request: Request, payload: dict = Body(...)):
+    A = _deps()
+    actor, role = A._require_api(request)
+    if role != "admin":
+        return JSONResponse({"error": "só o administrador define metas"}, status_code=403)
+    with A._conn() as c, c.cursor() as cur:
+        cur.execute(MT.DDL)
+        cur.execute("""INSERT INTO op_kpi_targets (area, kpi_key, year, quarter, meta)
+                       VALUES (%s,%s,%s,%s,%s) ON CONFLICT (area, kpi_key, year, quarter)
+                       DO UPDATE SET meta=EXCLUDED.meta""",
+                    (payload.get("area"), payload.get("kpi_key"), int(payload.get("year")),
+                     int(payload.get("quarter")), payload.get("meta")))
+        cur.execute("INSERT INTO audit_log (actor, action, scope) VALUES (%s,%s,%s)",
+                    (actor, "kpi_target", f"{payload.get('area')}/{payload.get('kpi_key')}"))
+    return JSONResponse({"ok": True})
+
+
+@router.post("/api/operacoes/kpi-monthly")
+def api_kpi_monthly(request: Request, payload: dict = Body(...)):
+    A = _deps()
+    actor, role = A._require_api(request)
+    if role != "admin":
+        return JSONResponse({"error": "só o administrador lança realizado"}, status_code=403)
+    with A._conn() as c, c.cursor() as cur:
+        cur.execute(MT.DDL)
+        cur.execute("""INSERT INTO op_kpi_monthly (area, kpi_key, year, month, realizado)
+                       VALUES (%s,%s,%s,%s,%s) ON CONFLICT (area, kpi_key, year, month)
+                       DO UPDATE SET realizado=EXCLUDED.realizado""",
+                    (payload.get("area"), payload.get("kpi_key"), int(payload.get("year")),
+                     int(payload.get("month")), payload.get("realizado")))
+        cur.execute("INSERT INTO audit_log (actor, action, scope) VALUES (%s,%s,%s)",
+                    (actor, "kpi_monthly", f"{payload.get('area')}/{payload.get('kpi_key')}"))
+    return JSONResponse({"ok": True})
