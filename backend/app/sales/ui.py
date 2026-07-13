@@ -164,26 +164,31 @@ def _pv_funil(conn, request: Request) -> str:
             tx = r / l if l else 0
             orows += (f"<tr><td style='{_TD}'>{escape(o[:34])}</td><td style='{_TD};text-align:right'>{l}</td>"
                       f"<td style='{_TD};text-align:right'>{r}</td><td style='{_TD};text-align:right'>{_fmt(tx, 'pct')}</td></tr>")
-    # leads por BUNDLE: % de chegada e % de agendamento (pedido do time 13/07)
+    # BUNDLE por oportunidade (13/07): o campo Produto nasce na NEGOCIAÇÃO
+    # (100% lá, ~0% antes) — "bundle do lead na chegada" não existe no dado;
+    # o que dá p/ medir com verdade é o mix de bundle das oportunidades que os
+    # leads do período geraram (e quantas viraram booking).
     with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM mkt_deals_attribution WHERE add_time >= %s AND add_time < %s", (a, b))
+        tot_leads_b = cur.fetchone()[0] or 1
         cur.execute("""
-            SELECT COALESCE(substring(d.produto FROM 'B[1-5]'), '(sem plano)') AS b,
-                   count(DISTINCT d.deal_id) AS leads,
-                   count(DISTINCT e.deal_id) AS reunioes
+            SELECT COALESCE(substring(d.produto FROM 'B[1-5]'), '(outros)') AS bnd,
+                   count(DISTINCT d.deal_id) AS oport,
+                   count(DISTINCT d.deal_id) FILTER (WHERE d.status = 'won') AS wins
               FROM mkt_deals_attribution d
-              LEFT JOIN mkt_stage_events e ON e.deal_id = d.deal_id
-                   AND e.stage_id = 6 AND e.entered_at >= %s AND e.entered_at < %s
+              JOIN mkt_stage_events e ON e.deal_id = d.deal_id AND e.stage_id = 7
              WHERE d.add_time >= %s AND d.add_time < %s
-             GROUP BY 1 ORDER BY 2 DESC""", (a, b, a, b))
+             GROUP BY 1 ORDER BY 2 DESC""", (a, b))
         bdados = cur.fetchall()
-    tot_bl = sum(l for _b, l, _r in bdados) or 1
+    tot_op = sum(o for _b, o, _w in bdados) or 1
     brows = ""
-    for bn, l, r in bdados:
+    for bn, o, w in bdados:
         brows += (f"<tr><td style='{_TD}'><b>{escape(bn)}</b></td>"
-                  f"<td style='{_TD};text-align:right'>{l}</td>"
-                  f"<td style='{_TD};text-align:right'>{_fmt(l / tot_bl, 'pct')}</td>"
-                  f"<td style='{_TD};text-align:right'>{r}</td>"
-                  f"<td style='{_TD};text-align:right'>{_fmt(r / l if l else None, 'pct')}</td></tr>")
+                  f"<td style='{_TD};text-align:right'>{o}</td>"
+                  f"<td style='{_TD};text-align:right'>{_fmt(o / tot_op, 'pct')}</td>"
+                  f"<td style='{_TD};text-align:right'>{_fmt(o / tot_leads_b, 'pct')}</td>"
+                  f"<td style='{_TD};text-align:right'>{w}</td>"
+                  f"<td style='{_TD};text-align:right'>{_fmt(w / o if o else None, 'pct')}</td></tr>")
 
     # motivos de desqualificação (perdidos criados no período, etapa pré-handoff)
     with conn.cursor() as cur:
@@ -204,9 +209,9 @@ def _pv_funil(conn, request: Request) -> str:
     return (f"<h1>Funil de Qualificação</h1><div class=sub>do lead recebido à reunião agendada (handoff p/ Vendas) · régua por evento no período, horário de Brasília</div>"
             f"<form method=get action=/prevendas><input type=hidden name=view value=funil>{form}</form>"
             f"<section><h2>Funil</h2>" + _card(_tbl([("Etapa", "left"), ("Deals", "right"), ("TX", "right"), ("TX Lead", "right")], rows)) + "</section>"
-            f"<section><h2>Leads por bundle</h2><p class=secsub>de quais planos são os leads que chegam p/ agendar — % de chegada e % que vira reunião · (sem plano) = deal ainda sem Produto preenchido no Pipedrive</p>"
-            + _card(_tbl([("Bundle", "left"), ("Leads", "right"), ("% dos leads", "right"),
-                          ("Reuniões", "right"), ("% agendamento", "right")], brows)) + "</section>"
+            f"<section><h2>Oportunidades por bundle</h2><p class=secsub>o bundle nasce na Negociação (o campo Produto não existe na chegada do lead) — aqui: dos {tot_leads_b} leads do período, que mix de bundle as oportunidades geradas formaram e quantas fecharam</p>"
+            + _card(_tbl([("Bundle", "left"), ("Oportunidades", "right"), ("% do mix", "right"),
+                          ("% dos leads", "right"), ("Bookings", "right"), ("Oport→Booking", "right")], brows)) + "</section>"
             f"<section><h2>Qualidade do lead por origem</h2><p class=secsub>taxa lead→reunião por canal — realimenta a segmentação do Marketing</p>"
             + _card(_tbl([("Origem", "left"), ("Leads", "right"), ("Reuniões", "right"), ("Lead→Reunião", "right")], orows)) + "</section>"
             f"<section><h2>Motivos de desqualificação</h2><p class=secsub>perdidos antes do handoff</p>"
