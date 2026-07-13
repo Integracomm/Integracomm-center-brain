@@ -378,12 +378,15 @@ def sync_stage_events(conn: Any, *, full: bool = False, window_days: int = 60,
     with conn.cursor() as cur:
         cur.execute(_EVENTS_DDL)
         if full:
-            cur.execute("SELECT deal_id FROM mkt_deals_attribution ORDER BY add_time")
+            cur.execute("SELECT deal_id FROM mkt_deals_attribution ORDER BY add_time DESC")
         else:
+            # MAIS RECENTES PRIMEIRO (13/07): o funil corrente precisa estar exato
+            # hoje; o histórico antigo pode esperar as próximas rodadas
             cur.execute("""SELECT d.deal_id FROM mkt_deals_attribution d
                              LEFT JOIN mkt_flow_synced f ON f.deal_id = d.deal_id
                             WHERE (f.deal_id IS NULL AND d.add_time >= now() - %s * interval '1 day')
-                               OR d.updated_at > f.synced_at ORDER BY d.add_time""",
+                               OR d.updated_at > f.synced_at
+                            ORDER BY GREATEST(d.updated_at, d.add_time) DESC NULLS LAST""",
                         (window_days,))
         ids = [r[0] for r in cur.fetchall()]
     ids = ids[:max_deals]  # teto diário: o resto retoma amanhã (marcador)
