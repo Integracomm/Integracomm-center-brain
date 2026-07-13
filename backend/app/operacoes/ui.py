@@ -290,9 +290,9 @@ def _pg_area(conn, slug: str, nome: str, gestor: str, year: int, quarter: int, h
 def _pg_config(conn, year: int, quarter: int) -> str:
     with conn.cursor() as cur:
         cur.execute(MT.DDL)
-        cur.execute("SELECT area, database_id, database_name FROM notion_config WHERE year=%s AND quarter=%s",
-                    (year, quarter))
-        cfg = {a: (d, n) for a, d, n in cur.fetchall()}
+        cur.execute("""SELECT area, database_id, database_name, gestor_filter
+                         FROM notion_config WHERE year=%s AND quarter=%s""", (year, quarter))
+        cfg = {a: (d, n, g) for a, d, n, g in cur.fetchall()}
         cur.execute("SELECT area, kpi_key, meta FROM op_kpi_targets WHERE year=%s AND quarter=%s", (year, quarter))
         targets = {(a, k): float(v) if v is not None else None for a, k, v in cur.fetchall()}
         cur.execute("""SELECT area, ok, items_count, message, created_at FROM notion_sync_log
@@ -300,12 +300,16 @@ def _pg_config(conn, year: int, quarter: int) -> str:
         synclog = cur.fetchall()
     cfg_rows = ""
     for slug, nome, _g in _AREAS_OP:
-        did, dname = cfg.get(slug, (None, None))
+        did, dname, gfil = cfg.get(slug, (None, None, None))
         st = f"<span class=note>{escape(dname or '')}</span>" if did else "<span class=note style='color:var(--text-faint)'>não configurado</span>"
         cfg_rows += (f"<div style='display:flex;gap:8px;align-items:center;padding:7px 0;border-top:1px solid var(--border);flex-wrap:wrap'>"
                      f"<b style='width:200px;font-size:var(--fs-sm)'>{nome}</b>"
                      f"<input id='cfg-{slug}' placeholder='cole a URL da página do trimestre…' value='{escape(did or '')}' "
                      f"style='flex:1;min-width:260px;background:var(--bg-panel);border:1px solid var(--border-strong);"
+                     f"border-radius:var(--radius-sm);color:var(--text);font-size:var(--fs-xs);padding:7px 9px'>"
+                     f"<input id='ges-{slug}' placeholder='gestor (opcional)' value='{escape(gfil or '')}' "
+                     f"title='p/ árvore compartilhada entre áreas: importa só as iniciativas da subpágina deste gestor' "
+                     f"style='width:150px;background:var(--bg-panel);border:1px solid var(--border-strong);"
                      f"border-radius:var(--radius-sm);color:var(--text);font-size:var(--fs-xs);padding:7px 9px'>"
                      f"<button class=abtn2 onclick=\"salvarCfg('{slug}')\">salvar</button>{st}</div>")
     metas_rows = ""
@@ -394,8 +398,9 @@ def operacoes(request: Request):
           ".then(function(j){if(j.errors&&j.errors.length)alert(j.errors.join('\\n'));location.reload();})"
           ".catch(function(){alert('falha de rede');b.disabled=false;});}"
           "function salvarCfg(slug){var v=document.getElementById('cfg-'+slug).value;"
+          "var ge=document.getElementById('ges-'+slug);var g=ge?ge.value:null;"
           "fetch('/api/operacoes/notion-config',{method:'POST',headers:{'Content-Type':'application/json'},"
-          "body:JSON.stringify({area:slug,year:Y,quarter:Q,url:v||null})}).then(function(r){return r.json();})"
+          "body:JSON.stringify({area:slug,year:Y,quarter:Q,url:v||null,gestor:g||null})}).then(function(r){return r.json();})"
           ".then(function(j){if(!j.ok)alert(j.message||'erro');else location.reload();})"
           ".catch(function(){alert('falha de rede');});}"
           "function salvarMeta(a,k){var v=document.getElementById('meta-'+a+'-'+k).value;"
@@ -430,7 +435,8 @@ def api_notion_config(request: Request, payload: dict = Body(...)):
     from ..sources.notion_initiatives import set_config
     with A._conn() as c:
         out = set_config(c, str(payload.get("area")), int(payload.get("year")),
-                         int(payload.get("quarter")), payload.get("url"))
+                         int(payload.get("quarter")), payload.get("url"),
+                         gestor_filter=payload.get("gestor"))
         with c.cursor() as cur:
             cur.execute("INSERT INTO audit_log (actor, action, scope) VALUES (%s,%s,%s)",
                         (actor, "notion_config", f"{payload.get('area')} {payload.get('year')}Q{payload.get('quarter')}"))

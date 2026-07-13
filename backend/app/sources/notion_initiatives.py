@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS notion_config (
     area TEXT NOT NULL, year INT NOT NULL, quarter INT NOT NULL,
     database_id TEXT, database_name TEXT,
     PRIMARY KEY (area, year, quarter));
+ALTER TABLE notion_config ADD COLUMN IF NOT EXISTS gestor_filter TEXT;
 CREATE TABLE IF NOT EXISTS notion_initiatives_cache (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     notion_id TEXT NOT NULL, area TEXT NOT NULL, year INT NOT NULL, quarter INT NOT NULL,
@@ -213,8 +214,12 @@ def _subitems(page_id: str) -> list[dict]:
         return []
 
 
-def set_config(conn: Any, area: str, year: int, quarter: int, raw_url: str | None) -> dict:
-    """Salva a URL/ID da página do trimestre da área (resolve e valida)."""
+def set_config(conn: Any, area: str, year: int, quarter: int, raw_url: str | None,
+               gestor_filter: str | None = None) -> dict:
+    """Salva a URL/ID da página do trimestre da área (resolve e valida).
+    gestor_filter: p/ árvores compartilhadas entre áreas (ex. Assessoria e
+    Growth na mesma página Q2, separadas pelas subpáginas Samantha/Eduardo
+    Luiz) — a área importa só as iniciativas daquele gestor."""
     with conn.cursor() as cur:
         cur.execute(DDL)
     db_id = db_name = None
@@ -231,10 +236,12 @@ def set_config(conn: Any, area: str, year: int, quarter: int, raw_url: str | Non
         except Exception as e:  # noqa: BLE001
             db_id, db_name = nid, f"(não validado: {type(e).__name__})"
     with conn.cursor() as cur:
-        cur.execute("""INSERT INTO notion_config (area, year, quarter, database_id, database_name)
-                       VALUES (%s,%s,%s,%s,%s) ON CONFLICT (area, year, quarter)
-                       DO UPDATE SET database_id=EXCLUDED.database_id, database_name=EXCLUDED.database_name""",
-                    (area, year, quarter, db_id, db_name))
+        cur.execute("""INSERT INTO notion_config (area, year, quarter, database_id, database_name, gestor_filter)
+                       VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT (area, year, quarter)
+                       DO UPDATE SET database_id=EXCLUDED.database_id,
+                                     database_name=EXCLUDED.database_name,
+                                     gestor_filter=EXCLUDED.gestor_filter""",
+                    (area, year, quarter, db_id, db_name, (gestor_filter or "").strip() or None))
     return {"ok": True, "database_id": db_id, "name": db_name}
 
 
@@ -242,7 +249,7 @@ def sync_initiatives(conn: Any, year: int, quarter: int, area: str | None = None
     """Sincroniza Notion → cache (substituição total por área+trimestre)."""
     with conn.cursor() as cur:
         cur.execute(DDL)
-        q = "SELECT area, database_id FROM notion_config WHERE year=%s AND quarter=%s"
+        q = "SELECT area, database_id, gestor_filter FROM notion_config WHERE year=%s AND quarter=%s"
         args = [year, quarter]
         if area:
             q += " AND area=%s"
@@ -256,7 +263,7 @@ def sync_initiatives(conn: Any, year: int, quarter: int, area: str | None = None
             cur.execute("INSERT INTO notion_sync_log (area, year, quarter, ok, items_count, message) "
                         "VALUES (%s,%s,%s,%s,%s,%s)", (ar, year, quarter, ok, n, msg[:400]))
 
-    for ar, db_raw in cfgs:
+    for ar, db_raw, g_filter in cfgs:
         try:
             if not db_raw:
                 erros.append(f"{ar}: sem database configurado — cole a URL da página do trimestre.")
@@ -276,6 +283,13 @@ def sync_initiatives(conn: Any, year: int, quarter: int, area: str | None = None
                 erros.append(f"{ar}: {msg}")
                 log(ar, False, 0, msg)
                 continue
+            if g_filter:  # área importa só as databases do seu gestor (subpágina)
+                dbs = [d for d in dbs if g_filter.lower() in (d["gestor"] or "").lower()]
+                if not dbs:
+                    msg = f"nenhuma database do gestor '{g_filter}' na árvore compartilhada"
+                    erros.append(f"{ar}: {msg}")
+                    log(ar, False, 0, msg)
+                    continue
             rows, seen = [], set()
             for db in dbs:
                 for p in _query_db(db["id"]):
