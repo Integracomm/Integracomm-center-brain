@@ -172,7 +172,7 @@ def _pv_funil(conn, request: Request) -> str:
                    count(DISTINCT e.deal_id) AS reunioes
               FROM mkt_deals_attribution d
               LEFT JOIN mkt_stage_events e ON e.deal_id = d.deal_id
-                   AND e.stage_id IN (6, 15) AND e.entered_at >= %s AND e.entered_at < %s
+                   AND e.stage_id = 6 AND e.entered_at >= %s AND e.entered_at < %s
              WHERE d.add_time >= %s AND d.add_time < %s
              GROUP BY 1 ORDER BY 2 DESC""", (a, b, a, b))
         bdados = cur.fetchall()
@@ -317,7 +317,9 @@ def _pv_sdrs(conn, request: Request) -> str:
 
 # --- Melhor Horário (pedido do time de Pré-vendas, 10/07/26) ----------------
 _DOW_NOME = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"]
-_ST_AGENDA = (6, 15)  # entrada em Reunião Agendada (p1) / equivalente da Prospecção (p2)
+# SÓ a etapa 6 (Reunião Agendada do Comercial): a 15 é Qualificação da
+# Prospecção e inflava a contagem (mai: 461 vs 444 do Pipedrive — 13/07)
+_ST_AGENDA = (6,)
 
 
 def _horarios_periodo(request: Request) -> tuple[dt.date, dt.date, str]:
