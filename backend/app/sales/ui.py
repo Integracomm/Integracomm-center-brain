@@ -441,15 +441,16 @@ def _pv_horarios(conn, request: Request) -> str:
     opts_b = "".join(f"<option value='{v}' {'selected' if bundle == v else ''}>{lbl}</option>"
                      for v, lbl in [("todos", "todos os bundles"), ("B1", "B1"), ("B2", "B2"),
                                     ("B3", "B3"), ("B4", "B4"), ("B5", "B5")])
-    rel_url = f"/prevendas/horarios/relatorio?ini={ini}&fim={fim}&bundle={bundle}"
     form = (f"<form method=get action=/prevendas><input type=hidden name=view value=horarios>"
             f"<div class=filters><div><label>de</label><input type=date name=ini value='{ini}'></div>"
             f"<div><label>até</label><input type=date name=fim value='{fim}'></div>"
             f"<div><label>bundle</label><select name=bundle>{opts_b}</select></div>"
             f"<button type=submit>Aplicar</button>"
-            f"<a href='{rel_url}' target=_blank style='display:inline-flex;align-items:center;"
-            "margin-left:6px;padding:8px 14px;background:var(--brand);color:#111;border-radius:var(--radius-sm);"
-            "font-size:var(--fs-xs);font-weight:600;text-decoration:none'>Gerar relatório (validação)</a>"
+            # botão no MESMO form: leva sempre os filtros que estão na tela
+            # (antes era link estático — datas editadas sem 'Aplicar' saíam erradas)
+            f"<button type=submit formaction='/prevendas/horarios/relatorio' formtarget='_blank' "
+            "style='margin-left:6px;background:var(--brand);color:#111;font-weight:600'>"
+            "Gerar relatório (validação)</button>"
             "</div></form>")
     estilo = ("<style>.sug-item{padding:7px 0;border-top:1px solid var(--border);font-size:var(--fs-sm);"
               "line-height:1.55;color:var(--text-2)}.sug-item:first-child{border-top:none}</style>")
