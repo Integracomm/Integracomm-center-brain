@@ -1,126 +1,152 @@
-"""Explicações de campos por tela — painel "Como ler esta tela" (pedido do
-Otávio 13/07: gestores vão validar as áreas e precisam entender cada campo e
-que visão extraem dele). Chave = "area/view"; item = (campo, significado + visão).
-Injetado automaticamente pelas cascas — para editar textos, só mexer aqui.
+"""Explicações por tela e por campo — pedido do Otávio (13/07): gestores em
+validação precisam entender cada métrica e os insights que ela dá.
+
+Estrutura: HELP["area/view"] = [("_intro", texto geral da página)] +
+[(título-âncora da seção, explicação detalhada)]. O título-âncora casa com o
+<h2> real da tela (tokens, sem acento); o que não casa cai no painel do topo.
+Para editar/adicionar textos, só mexer aqui.
 """
 from __future__ import annotations
 
+import re
+import unicodedata
 from html import escape
 
 HELP: dict[str, list[tuple[str, str]]] = {
+    # ============================== GROWTH ==============================
     "growth/contas": [
-        ("Score (0-100)", "saúde da conta calculada das conversas de WhatsApp, execução e sinais de risco — quanto MENOR, maior o risco de churn. Use para priorizar quem o gestor atende primeiro."),
-        ("Estágio", "fase do risco (saudável → atenção → insatisfação ativa → intenção de saída). Intenção de saída só aparece com fala explícita de cancelamento do cliente."),
-        ("Serviço-Squad", "tag do contrato + squad responsável (ex. ADS-B3-S2) — permite comparar carteiras entre squads."),
-        ("Trajetória", "se a conta está melhorando ou piorando nas últimas semanas — uma conta 'média mas piorando' merece mais atenção que uma 'ruim estável'."),
+        ("_intro", "Carteira completa de clientes monitorados pela IA. Cada linha é uma conta com seu score de saúde (0-100, calculado das conversas de WhatsApp, execução no ClickUp e sinais de risco), estágio, trajetória e squad responsável. Use os filtros para focar em faixa de risco, squad ou serviço. O objetivo da página: decidir QUEM o gestor atende primeiro hoje."),
+        ("Contas por risco", "Lista ordenada pelo risco: score baixo = risco alto de churn. Estágio mostra a fase (saudável → atenção → insatisfação ativa → intenção de saída; este último SÓ com fala explícita de cancelamento). Trajetória indica direção: conta 'média piorando' merece mais atenção que 'ruim estável'. Serviço-Squad (ex. ADS-B3-S2) permite comparar carteiras. Insights: (1) priorize intenção de saída e críticos do dia; (2) trajetórias piorando em massa num squad = problema de processo, não de cliente; (3) botão Relatório abre o dossiê para a reunião."),
     ],
     "growth/alertas": [
-        ("Severidade", "crítico = fala de cancelamento ou faixa crítica; alto/atenção = insatisfação relevante. A fila é a agenda de retenção do dia."),
-        ("Estágio e última nota", "contexto do caso + última atualização registrada pelo gestor — o histórico alimenta o plano de ação do relatório."),
-        ("Reconhecer / Resolver", "reconhecer = alguém assumiu; resolver = caso encerrado (retido vira referência de playbook). Mantém a fila limpa e auditável."),
+        ("_intro", "Fila de trabalho da retenção: cada alerta é uma conta que cruzou um limiar de risco. O fluxo é reconhecer (alguém assumiu) → tratar → resolver (registrando o desfecho; retido vira playbook). A última nota de cada caso alimenta o plano de ação do relatório individual."),
+        ("Fila de retenção", "Alertas abertos por severidade: crítico = fala de cancelamento ou faixa crítica (agir HOJE — sem contato na semana a decisão se consolida); alto/atenção = insatisfação relevante. Insights: (1) a fila é a agenda de retenção do dia; (2) alertas antigos sem reconhecimento = furo de processo; (3) a última nota mostra o estado real da tratativa sem abrir o caso."),
+        ("Ações recentes", "Trilha de auditoria: quem reconheceu/resolveu o quê e quando. Insight: tempo entre alerta e 1ª ação é o 'speed-to-lead' da retenção — quanto menor, maior a taxa de reversão."),
     ],
     "growth/cancelamentos": [
-        ("Cancelamentos por mês", "contagem oficial validada com as planilhas do time (fev 26, mar 26, abr 26...). Vale conferir tendência, não só o número do mês."),
-        ("Taxa por bundle", "cancelamentos ÷ base ativa daquele bundle — mostra se o churn está concentrado em algum plano."),
-        ("Novos × antigos", "separa churn precoce (até 3 meses de casa = problema de onboarding/expectativa) de churn tardio (problema de valor contínuo)."),
-        ("MRR perdido", "receita recorrente que saiu com os cancelamentos — dimensiona o impacto financeiro."),
+        ("_intro", "Visão oficial dos cancelamentos (números validados com as planilhas do time — batem com a contagem da gestão). Combina volume mensal, taxa por bundle, MRR perdido, tempo de casa e motivos, com filtro temporal. Objetivo: separar ONDE o churn dói (plano, época, precocidade) para atacar a causa certa."),
+        ("Saídas por mês", "Contagem mensal oficial (fev 26, mar 26, abr 26, mai 22, jun 18...). Insight: a tendência importa mais que o mês isolado; queda sustentada = retenção funcionando."),
+        ("Evolução mensal", "Total dividido em clientes NOVOS (até 3 meses de casa) × ANTIGOS. Insights: churn precoce alto = problema de onboarding/expectativa de venda; churn tardio = problema de valor contínuo/relacionamento. Cada um tem dono e remédio diferentes."),
+        ("MRR perdido por mês", "Receita recorrente que saiu com os cancelamentos. Insight: mês com POUCOS cancelamentos mas MUITO MRR = perdemos contas grandes — investigue individualmente no relatório de cada uma."),
+        ("Taxa de cancelamento por bundle", "Cancelamentos ÷ base ativa daquele bundle (não o número absoluto — B1 cancela mais porque É maior). Insight: taxa alta num bundle específico = revisar preço/entrega/perfil de cliente daquele plano."),
+        ("Tempo de casa na saída", "Quanto tempo o cliente ficou antes de sair, por bundle. Insight: se a moda é ≤3 meses, o problema começa na venda (expectativa) ou no onboarding — antes do gestor de contas."),
+        ("Motivos informados", "O que o time registrou como causa. Insight: motivo dominante = playbook prioritário; muitos '(sem motivo)' = disciplina de registro a cobrar."),
+        ("Por plano e por equipe", "Cruzamento bundle × squad. Insight: churn concentrado num squad específico com bundles variados = questão de equipe; concentrado num bundle em vários squads = questão de produto/preço."),
     ],
     "growth/playbooks": [
-        ("Intervenções", "registro de cada ação de retenção feita e seu resultado — caso retido vira receita replicável para os próximos."),
+        ("_intro", "Biblioteca viva de retenção: cada intervenção registrada (o que foi feito, em quem, com que resultado). Casos retidos viram referência replicável."),
+        ("Práticas de referência", "Intervenções que REVERTERAM cancelamento, com o contexto e a ação. Insight: antes de improvisar numa tratativa nova, procure aqui um caso parecido (mesmo estágio/motivo) e replique o que funcionou."),
     ],
     "growth/relatorios": [
-        ("Resumo / análise por squad", "score composto por squad (retenção, execução, cobertura) com ranking — aponta qual squad precisa de apoio."),
-        ("Relatório individual", "dossiê da conta: faturamento por CNPJ, atividades, saúde, plano de ação (Claude) e histórico do caso — material da reunião com o cliente."),
+        ("_intro", "Relatórios consolidados da área: resumo executivo com envio ao Slack, análise comparativa por squad e o relatório multi-cliente de Assessoria. É a página de onde saem os materiais de reunião de gestão."),
+        ("Análise por squad", "Score composto (50% retenção, 25% execução, 25% cobertura) com ranking dos 8 squads e plano de ação. Insights: (1) squad no fim do ranking por 2+ semanas = apoio estruturado, não cobrança pontual; (2) execução baixa com retenção alta ainda = risco futuro, aja antes de virar churn."),
+        ("Relatório de Assessoria", "Multi-cliente: saúde e entregas de cada conta da assessoria num documento só. Insight: use na reunião semanal do time para revisar a carteira em 15 minutos."),
     ],
+    # ============================= MARKETING ============================
     "marketing/visao": [
-        ("KPIs vs mês anterior", "volume do mês corrente comparado ao anterior — direção geral da aquisição."),
-        ("Funil do mês vs meta", "cada etapa (Lead→Booking) contra a meta do mês, com marcador do ritmo esperado pelo dia — barra abaixo do traço = atrás da meta. Insight: a PRIMEIRA etapa fora do ritmo é onde agir; as seguintes são consequência."),
-        ("Progresso vs meta do mês", "% da meta já realizado vs % do mês decorrido — acima do ritmo (verde) = tendência de bater; abaixo (vermelho) = precisa de ação ainda este mês, não no fechamento."),
-        ("Gap para a meta (B3-B5)", "quanto falta nos planos prioritários da empresa — o gap daqui é a pauta do trimestre; cruze com o Planejador para traduzir em leads e verba."),
+        ("_intro", "Painel executivo da aquisição no mês: KPIs vs mês anterior, o funil completo contra as metas com marcador de ritmo, o progresso consolidado e o gap dos planos prioritários (B3-B5). Em 30 segundos: estamos no ritmo? Onde está o gargalo? O que falta nos planos que importam?"),
+        ("Funil do mês vs meta", "Cada etapa (Lead→MQL→SAL→SQL→Oportunidade→Booking) contra a meta do mês; o traço vertical é o ritmo esperado pelo dia corrente. Insights: (1) a PRIMEIRA etapa abaixo do traço é o gargalo real — as seguintes são consequência dela; (2) topo no ritmo + fundo atrás = problema de conversão (Pré-vendas/Vendas), não de volume; (3) tudo atrás = problema de geração (verba/campanha)."),
+        ("Progresso vs meta do mês", "% da meta realizada vs % do mês decorrido. Verde = tendência de bater; vermelho = ação AINDA ESTE MÊS (aumentar verba, destravar campanha), não no fechamento, quando já é tarde."),
+        ("Gap para a meta (B3-B5)", "Quanto falta nos planos prioritários da empresa (ticket maior). Insights: (1) este gap é a pauta do trimestre — B1 no ritmo não compensa B4 parado; (2) cruze com o Planejador para converter o gap em leads e verba necessários por canal."),
     ],
     "marketing/metas": [
-        ("Realizado × meta por etapa", "grade mês a mês da planilha de metas H2 — pacing = % da meta pelo % do mês decorrido."),
-        ("Custo por etapa", "quanto custou cada lead/oportunidade vs alvo planejado — eficiência do investimento."),
-        ("Oportunidades por canal", "META/Prospecção/Eventos/Shopee etc., planejado × realizado (por utm_source) — qual canal está entregando."),
+        ("_intro", "Metas detalhadas do semestre (planilha do time) contra o realizado: funil mês a mês, custo por etapa, investimento e oportunidades por canal. É a página de prestação de contas do plano H2."),
+        ("Funil mês a mês", "Grade mês × etapa com realizado/meta e pacing. Insight: meses passados mostram o padrão de erro do planejamento (sempre otimista numa etapa específica?) — recalibre a meta, não só a execução."),
+        ("Custo por etapa vs alvo", "Quanto custou gerar cada lead/oportunidade vs o alvo planejado. Insights: (1) CPL no alvo mas custo/oportunidade estourado = lead barato e ruim — problema de qualidade, não de preço; (2) compare canais antes de cortar verba."),
+        ("Investimento planejado × gasto", "Verba planejada vs executada por mês. Insight: subexecução de verba com meta batida = eficiência (replique); subexecução com meta perdida = travou operação de campanha — problema de execução, não de orçamento."),
+        ("Oportunidades por canal", "META/Prospecção/Eventos/Shopee/Low Ticket/Inst. Orgânico: planejado × realizado (por utm_source). Insight: canal sistematicamente abaixo = replanejar mix; acima = candidato a verba extra."),
     ],
     "marketing/funil": [
-        ("Lead→MQL→SAL→SQL→Oportunidade→Booking", "régua validada com o Pipedrive: contagem POR EVENTO no período (quem ENTROU na etapa), corte de Brasília. Indicações pulam etapas — Oportunidade pode superar SQL."),
-        ("TX / TX Lead", "conversão vs etapa anterior e vs o topo — a etapa com a maior queda é onde investir."),
-        ("Metas de taxa", "editáveis por mês (pré-semeadas da planilha) — sugestões apontam a etapa mais distante da meta."),
+        ("_intro", "O funil de prospecção completo com a régua VALIDADA contra o Pipedrive: contagem por EVENTO no período (quem entrou na etapa), corte de Brasília. Indicações pulam etapas — por isso Oportunidade pode superar SQL. Taxas sempre vs etapa anterior + vs Lead."),
+        ("Funil", "Volumes por etapa no período filtrado, visual espelhado no dashboard do time. Insights: (1) compare períodos para ver sazonalidade; (2) a taxa que mais cai vs histórico é o alarme da semana."),
+        ("Taxas por etapa", "Conversão de cada etapa vs a anterior (TX) e vs o topo (TX Lead). Insight: TX Lead→Booking é a eficiência global — se caiu, as taxas por etapa mostram exatamente onde."),
+        ("Metas de taxa do mês", "Metas de conversão editáveis por mês (pré-semeadas da planilha; edição manual prevalece). Insight: a etapa mais distante da meta é onde investir treinamento/processo."),
+        ("Como alcançar a meta", "Sugestões automáticas a partir da etapa mais distante da meta. Insight: é o ponto de partida da conversa, não a conclusão — valide com o contexto do time."),
     ],
     "marketing/canais": [
-        ("Ranking de canais", "leads e conversão por canal com variação vs período anterior — sobe/desce a verba com base aqui."),
+        ("_intro", "Ranking de canais por leads e conversão, com variação vs período anterior. Objetivo: decidir onde sobe e onde desce a verba com base em dado, não em impressão. Insight-chave: canal com MUITO volume e conversão fraca desperdiça verba de mídia E tempo de SDR — segmente ou corte."),
     ],
     "marketing/origens": [
-        ("Escalar? / Revisar", "chips automáticos por origem: volume bom + conversão boa = escalar; volume alto + conversão fraca = revisar segmentação."),
+        ("_intro", "Cada origem de lead (utm_source) com volume, conversão e um chip de decisão automático: ESCALAR (volume + conversão bons) ou REVISAR (volume alto, conversão fraca). Clique para o drill da origem. Insight-chave: os chips são a lista de decisões da semana de mídia; filtro de mídia paga/não paga separa o que é comprado do que é orgânico."),
     ],
     "marketing/midia": [
-        ("Leads/CPL", "leads = deals do Pipedrive (não o pixel da plataforma — evita dupla contagem); CPL = gasto ÷ leads reais."),
-        ("CTR/impressões", "estes sim da plataforma (Meta/Google) — saúde do anúncio antes do clique."),
-        ("Galeria de criativos", "desempenho por criativo com miniatura — qual peça está pagando a conta."),
+        ("_intro", "Desempenho diário da mídia paga. IMPORTANTE: leads e CPL usam os DEALS do Pipedrive (não o pixel da plataforma, que infla) — este é o número real; CTR e impressões vêm da plataforma. Inclui a galeria de criativos com miniaturas."),
+        ("Leads por dia", "Deals criados por dia atribuídos à mídia. Insight: quedas bruscas num dia específico = campanha pausada/reprovada ou verba esgotada — cheque o gestor de anúncios naquele dia."),
+        ("Gasto por dia", "Investimento diário somado das plataformas. Insight: gasto subindo com leads estáveis = CPL derretendo — fadiga de criativo ou leilão mais caro."),
+        ("CPL por dia", "Custo por lead REAL (gasto ÷ deals). Insight: compare com o CPL-alvo da aba Metas; 3+ dias acima do alvo = troca de criativo/público, não espere o mês fechar."),
+        ("Criativos do período", "Cada peça com gasto, leads e custo. Insight: os 20% melhores criativos costumam pagar a conta — identifique o padrão deles (formato, promessa, público) antes de brifar os próximos."),
     ],
     "marketing/lag": [
-        ("p25/mediana/p75", "tempo entre o lead entrar e virar booking — 50% dos leads convertem em até X dias. Dimensiona quando o investimento de hoje vira receita."),
-        ("Por campanha", "campanhas com lag muito acima da mediana geral indicam público frio ou qualificação lenta."),
+        ("_intro", "Quanto tempo o lead demora para virar booking (p25/mediana/p75), no agregado, por canal e por campanha. Responde: o investimento de hoje vira receita QUANDO? Essencial para não julgar campanha nova cedo demais."),
+        ("Curva de acúmulo de leads", "% dos leads que já converteram após X dias. Insight: se 50% convertem em ~30 dias, a campanha lançada há 2 semanas ainda não mostrou metade do resultado — segure o julgamento."),
+        ("Lag agregado por canal", "Mediana de conversão por canal. Insight: canal de lag curto (ex. indicação) financia o caixa; canal de lag longo precisa de esteira constante — não ligue/desligue."),
+        ("Por campanha", "Lag por campanha específica. Insight: lag muito acima da mediana do canal = público frio ou qualificação lenta — ajuste segmentação ou cadência de Pré-vendas."),
     ],
     "marketing/planejador": [
-        ("Quantidades por bundle", "informe quantos bookings de cada bundle quer e quando — a ferramenta devolve leads e verba necessários no ritmo histórico."),
-        ("Campanhas que já fecharam", "quais campanhas/criativos historicamente fecharam aquele bundle — por onde começar."),
+        ("_intro", "Planejamento reverso POR BUNDLE: informe quantos bookings de cada plano quer e até quando; a ferramenta devolve leads e verba necessários no ritmo histórico de conversão e lag, e mostra quais campanhas/criativos já fecharam aquele bundle antes."),
+        ("Estratégias e criativos recomendados", "Campanhas e criativos que historicamente FECHARAM o bundle pedido. Insight: começar por eles reduz o risco do plano — é o caminho já pavimentado; o resto é aposta."),
     ],
     "marketing/criativos": [
-        ("Ranking por público", "conversão de cada criativo por público testado (ad-insightify) — evita repetir teste que já perdeu."),
+        ("_intro", "Desempenho de criativos por público (base ad-insightify) + histórico de testes + ideias. Evita repetir teste que já perdeu e industrializa o que já ganhou."),
+        ("Histórico de testes", "Testes de criativo×público já rodados com resultado. Insight: antes de aprovar um teste novo, confira se já não foi feito — orçamento de teste é finito."),
+        ("Ideias", "Sugestões heurísticas a partir dos padrões vencedores. Insight: use como brief inicial para a produção, não como peça final."),
     ],
+    # ============================= PRÉ-VENDAS ===========================
     "prevendas/funil": [
-        ("Leads recebidos → Reunião agendada", "funil da qualificação (até o handoff p/ Vendas), por evento no período."),
-        ("Qualidade por origem", "taxa lead→reunião por canal — realimenta o Marketing sobre onde está o lead bom."),
-        ("Motivos de desqualificação", "por que os leads morrem antes da reunião — se um motivo domina, é filtro de campanha, não de SDR."),
+        ("_intro", "Funil da qualificação: do lead recebido até a reunião agendada (handoff para Vendas), por evento no período. Inclui qualidade por origem, motivos de desqualificação e o diagnóstico do especialista. Responde: os leads estão virando reunião? Onde morrem os que não viram?"),
+        ("Funil", "Leads recebidos → 1º contato → Conectado → Qualificação → Reunião agendada, com taxas vs etapa anterior e vs lead. Insights: (1) queda forte em 1º contato = problema de velocidade/fila (veja Speed-to-Lead); (2) queda em Conectado→Qualificação = lead ruim ou abordagem — cruze com a origem."),
+        ("Qualidade do lead por origem", "Taxa lead→reunião POR CANAL. Insights: (1) realimenta o Marketing: canal com conversão 3x maior merece verba; (2) SDR reclamando de 'lead ruim' — aqui está a prova (ou não) por origem."),
+        ("Motivos de desqualificação", "Por que os leads morrem antes da reunião. Insight: motivo dominante tipo 'sem faturamento mínimo' = filtro NA CAMPANHA (formulário/segmentação), não é falha de SDR."),
+        ("Diagnóstico do especialista", "Leitura automática de um head de pré-vendas: taxa de contato, agendamento e desqualificação vs referências. Insight: pauta pronta para a reunião semanal da coordenação."),
     ],
     "prevendas/speed": [
-        ("1º contato mediano", "tempo entre o lead entrar e o primeiro toque registrado — referência de mercado: < 15 min. Lead que espera esfria."),
-        ("Sem contato registrado", "fila de leads nunca tocados — zerar diariamente é a ação de maior retorno da área."),
-        ("Por responsável / origem", "onde o atraso se concentra: pessoa (carga/processo) ou canal (chega fora do horário?)."),
+        ("_intro", "Velocidade do 1º contato: tempo entre o lead entrar e o primeiro toque registrado no Pipedrive. Referência de mercado: contato em até 15 minutos multiplica conversão. Inclui a fila de leads nunca tocados — o dinheiro parado na mesa."),
+        ("Por responsável do 1º contato", "Mediana e % ≤15min por SDR. Insights: (1) speed lento generalizado = processo/ferramenta; lento em UMA pessoa = carga ou disciplina; (2) compare com a taxa de agendamento — velocidade sem conversão indica abordagem a treinar."),
+        ("Por origem", "Speed por canal de entrada. Insight: canal sistematicamente lento (ex. leads chegando de madrugada) = caso para automação de primeira resposta ou revisão de horário do time — cruze com a aba Melhor Horário."),
     ],
     "prevendas/horarios": [
-        ("Mapa de calor dia × hora", "QUANDO os agendamentos acontecem (momento em que o deal entrou em Reunião Agendada, Brasília) — as células escuras são as janelas de ouro para ligar."),
-        ("% após 18h / almoço / antes das 9h", "volume fora do expediente clássico — base objetiva para decidir estender (ou não) o horário do time."),
-        ("Por bundle", "a melhor janela pode variar por plano (B1 ≠ B5) — atenção ao aviso de amostra pequena."),
+        ("_intro", "Estudo de QUANDO as reuniões são agendadas (momento em que o deal entrou em Reunião Agendada, horário de Brasília). Mapa de calor dia×hora, top janelas, % fora do expediente e recorte por bundle. Base objetiva para decidir horário de ligação e eventual extensão de expediente. Botão 'Gerar relatório' cria a versão imprimível para validação da gestora."),
+        ("Mapa de calor", "Células escuras = mais agendamentos naquele dia/hora. Insights: (1) as janelas de ouro são onde concentrar as tentativas de ligação; (2) ressalva: o carimbo é a movimentação do card — SDR que atualiza em lote no fim do dia infla as últimas horas; a gestora sabe distinguir."),
+        ("Top 5 janelas", "As 5 combinações dia+hora com mais agendamentos e o % do total. Insight: se as top 5 concentram muito volume, vale blindar esses horários na agenda do time (sem reunião interna, foco em ligação)."),
+        ("Melhores janelas por bundle", "A melhor janela pode variar por plano (decisor de B5 atende em horário diferente do de B1). Insight: atenção ao aviso de amostra pequena — não mude escala de time por meia dúzia de casos."),
     ],
     "prevendas/sdrs": [
-        ("Leads / Reuniões / Lead→Reunião", "produtividade individual pela atribuição do 1º contato — compare com a mediana do time, não com o número absoluto."),
-        ("Speed mediano por SDR", "velocidade individual de primeiro toque — junto da taxa, separa problema de volume de problema de abordagem."),
-        ("Planos individuais", "fortes/fracos/ações derivados por regra vs mediana do time — pauta pronta para o 1:1 da coordenação."),
+        ("_intro", "Produtividade individual do time de Pré-vendas (atribuição pelo 1º contato) + planos de ação individuais gerados por regra contra a mediana do time. Material do 1:1 da coordenação — tom construtivo, comparação interna e não absoluta."),
+        ("Produtividade por SDR", "Leads tocados, reuniões gerada, taxa lead→reunião e speed mediano por pessoa. Insights: (1) compare com a MEDIANA do time, não entre extremos; (2) taxa alta com volume baixo = capacidade ociosa; volume alto com taxa baixa = qualidade de abordagem ou de lead — o speed ajuda a separar."),
+        ("Planos de ação individuais", "Fortes/fracos/ações por pessoa, derivados por regra. Insight: leve para o 1:1 como ponto de partida — a coordenação contextualiza o que o número não vê (férias, mix de leads, rampagem)."),
     ],
+    # ============================== VENDAS ==============================
     "vendas/funil": [
-        ("Reunião → Negociação → Booking", "funil do fechamento (da Reunião Agendada em diante) + receita do período."),
-        ("Tendência mensal", "conversão Oportunidade→Booking mês a mês — queda aqui com leads estáveis = problema de fechamento, não de topo."),
+        ("_intro", "Funil do fechamento: da Reunião Agendada (handoff de Pré-vendas) até o booking, com receita do período e tendência mensal de conversão. Responde: as reuniões estão virando contrato?"),
+        ("Funil", "Reuniões → Negociação → Booking + receita. Insights: (1) queda Reunião→Negociação = no-show ou reunião fraca — cruze com no-shows; (2) queda Negociação→Booking = proposta/preço/urgência — veja os motivos de perda."),
+        ("Tendência Oportunidade → Booking", "Conversão mês a mês. Insight: conversão caindo com volume estável = problema de FECHAMENTO (time/proposta/concorrência), não de topo de funil — o remédio é diferente de gerar mais lead."),
     ],
     "vendas/winloss": [
-        ("Motivos de perda", "por que negociações morrem (categorizado do Pipedrive) — o motivo nº 1 é o playbook a construir."),
-        ("Win rate", "ganhos ÷ (ganhos + perdidos) no período — a régua de eficiência do time."),
+        ("_intro", "Por que ganhamos e perdemos: motivos de perda categorizados do Pipedrive, win rate e o cruzamento motivo×plano. É a matéria-prima do playbook de objeções."),
+        ("Motivos de perda", "Ranking dos motivos registrados nos deals perdidos. Insights: (1) o motivo nº1 merece um playbook escrito de resposta; (2) 'preço' dominante em um bundle específico = discussão de pricing, não de vendedor."),
+        ("Motivo × plano", "Cruzamento: qual objeção mata qual plano. Insight: se B4-B5 morrem por 'timing' e B1 por 'preço', o discurso de valor precisa ser diferente por segmento — um pitch único não serve."),
     ],
     "vendas/ciclo": [
-        ("Ciclo de venda", "dias entre criação e fechamento — ciclos longos travam caixa e esfriam cliente."),
-        ("Empacados", "negociações paradas há mais tempo que o normal — fila de destrave da coordenação."),
+        ("_intro", "Tempo de ciclo (criação → fechamento) e a lista de deals EMPACADOS — negociações paradas além do normal. Ciclo longo esfria cliente e trava previsibilidade."),
+        ("Deals empacados", "Negociações abertas paradas há mais tempo que o padrão. Insights: (1) é a fila de destrave da coordenação — cada linha merece decisão: reativar com prazo ou perder oficialmente; (2) empacado antigo inflando o pipeline = forecast irreal."),
     ],
     "vendas/closers": [
-        ("Bookings / receita / conversão por closer", "produtividade individual (dono atual do deal) vs mediana do time."),
-        ("Planos individuais", "fortes/fracos/ações por regra — pauta do 1:1 da Valéria."),
+        ("_intro", "Produtividade individual dos closers (dono atual do deal): bookings, receita, conversão e ciclo, mais planos de ação por regra vs mediana do time. Material do 1:1 da Valéria."),
+        ("Performance por closer", "Números individuais do período. Insights: (1) receita alta com poucos bookings = perfil caçador de ticket grande — combine a distribuição de leads com isso; (2) conversão abaixo da mediana com ciclo longo = deals presos, veja os empacados dessa pessoa."),
+        ("Planos de ação individuais", "Fortes/fracos/ações por closer, derivados por regra. Insight: ponto de partida do 1:1 — contextualize com mix de leads e ausências antes de cobrar."),
     ],
     "vendas/forecast": [
-        ("Meta × realizado por plano", "metas da planilha financeira (qtde e R$) vs fechado no mês; barra = pacing (traço vertical = ritmo esperado)."),
-        ("Gap / Pipeline / Oport. necessárias", "o que falta, o que há aberto e quantas oportunidades são necessárias no ritmo de conversão dos últimos 90d."),
-        ("O que falta para bater as metas", "o gap traduzido em oportunidades e leads — o pedido concreto a Pré-vendas e Marketing."),
+        ("_intro", "Performance & Meta do mês: metas por plano (quantidade e R$, da planilha financeira) × fechado, com pacing, gap, pipeline aberto e a tradução do que falta em oportunidades e leads. É a página de gestão do resultado do mês — mês selecionável para revisar históricos."),
+        ("Meta realizado por plano", "B1-B5 + total: meta, fechado, receita, % com barra de pacing (traço = ritmo esperado pelo dia), gap, pipeline aberto e oportunidades necessárias no ritmo de conversão dos últimos 90d. Insights: (1) B3-B5 destacados são a prioridade — % total bonito com B4 zerado é meta mal batida; (2) pipeline MENOR que as oportunidades necessárias = matematicamente não fecha sem gerar mais topo AGORA."),
+        ("O que falta para bater as metas", "O gap traduzido em números acionáveis: quantos bookings faltam → quantas oportunidades no ritmo atual → quantos leads. Insight: é o pedido CONCRETO a Pré-vendas e Marketing — sai daqui com número, não com 'precisamos vender mais'."),
     ],
+    # ============================= OPERAÇÕES ============================
     "operacoes/iniciativas": [
-        ("Semáforo", "verde = concluída · vermelho = prazo vencido · amarelo = em andamento no prazo · cinza = sem prazo ou não iniciada."),
-        ("Aguardando ação anterior atrasada", "dentro do mesmo escopo, se a 1ª ação pendente está atrasada, as seguintes herdam o aviso — dependência sequencial visível."),
-        ("Agrupamento", "gestor → iniciativa (nº no nome) → detalhamento do escopo → ações por prazo. Fonte: Notion (somente leitura), sincronizado diariamente."),
+        ("_intro", "Controle das iniciativas de cada área da empresa por trimestre, sincronizado do Notion (somente leitura, diário às 06:00 e sob demanda). Agrupamento: gestor → iniciativa (nº no nome) → detalhamento do escopo → ações por prazo. Semáforo: verde = concluída · vermelho = prazo vencido · amarelo = em andamento no prazo · cinza = sem prazo/não iniciada. Ações que dependem de uma anterior atrasada recebem o aviso 'aguardando ação anterior atrasada'. Insights: (1) vermelhos concentrados num gestor = conversa de capacidade; (2) muitos 'sem prazo' = plano ainda não operacional; (3) o link ↗ abre a página no Notion para atualizar na fonte."),
+        ("Configuração", "Um campo por área para colar a URL da página do trimestre no Notion (a busca encontra as databases 'Iniciativas' até 3 níveis, inclusive subpáginas por gestor). A página precisa estar compartilhada com a integração no Notion — sem isso o sync retorna vazio."),
+        ("Últimas sincronizações", "Log de cada sync: quando, quantos itens, erros. Insight: sync com 0 itens numa área que deveria ter dados = página não compartilhada com a integração ou URL errada."),
     ],
 }
-
-
-import re
-import unicodedata
 
 
 def _norm(s: str) -> str:
@@ -137,14 +163,17 @@ def _hint(campo: str, txt: str) -> str:
 
 
 def inject_help(area: str, view: str, content: str) -> str:
-    """Ancora cada explicação SOB o campo correspondente (match do título do
-    <h2> por tokens, sem acento); o que não achar âncora vai p/ o painel
-    'Visão geral desta página' no topo."""
+    """_intro → painel 'O que você encontra nesta página' no topo; demais itens
+    ancorados SOB o <h2> correspondente (match por tokens, sem acento); itens
+    sem âncora caem no painel do topo junto do intro."""
     itens = HELP.get(f"{area}/{view}")
     if not itens:
         return content
+    intro = next((t for c, t in itens if c == "_intro"), None)
     sobras: list[tuple[str, str]] = []
     for campo, txt in itens:
+        if campo == "_intro":
+            continue
         toks = [t for t in _norm(campo).split() if len(t) > 3]
         achou = None
         for m in re.finditer(r"<h2[^>]*>(.*?)</h2>(\s*<p class=secsub>.*?</p>)?", content, re.S):
@@ -157,8 +186,11 @@ def inject_help(area: str, view: str, content: str) -> str:
             content = content[:fim] + _hint(campo, txt) + content[fim:]
         else:
             sobras.append((campo, txt))
-    if sobras:
-        linhas = "".join(
+    if intro or sobras:
+        corpo = ""
+        if intro:
+            corpo += (f"<div style='font-size:var(--fs-sm);line-height:1.6;color:var(--text-2)'>{escape(intro)}</div>")
+        corpo += "".join(
             f"<div style='padding:6px 0;border-top:1px solid var(--border);font-size:var(--fs-sm);line-height:1.55'>"
             f"<b>{escape(c)}</b> — <span style='color:var(--text-2)'>{escape(t)}</span></div>"
             for c, t in sobras)
@@ -166,12 +198,11 @@ def inject_help(area: str, view: str, content: str) -> str:
             "<details style='margin:14px 0;background:var(--surface-1);border:1px solid var(--border-mid);"
             "border-left:3px solid var(--brand);border-radius:var(--radius-md);padding:10px 16px'>"
             "<summary style='cursor:pointer;font-size:var(--fs-sm);font-weight:600;color:var(--text-2)'>"
-            "❓ Visão geral desta página</summary>"
-            f"<div style='margin-top:6px'>{linhas}</div></details>") + content
+            "❓ O que você encontra nesta página</summary>"
+            f"<div style='margin-top:8px'>{corpo}</div></details>") + content
     return content
 
 
 def help_panel(area: str, view: str) -> str:
-    """Compatibilidade: as cascas antigas chamavam help_panel e concatenavam.
-    Mantido vazio — a injeção agora é feita por inject_help (ancorada)."""
+    """Compatibilidade (cascas antigas) — a injeção real é inject_help."""
     return ""
