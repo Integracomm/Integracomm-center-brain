@@ -164,38 +164,6 @@ def _pv_funil(conn, request: Request) -> str:
             tx = r / l if l else 0
             orows += (f"<tr><td style='{_TD}'>{escape(o[:34])}</td><td style='{_TD};text-align:right'>{l}</td>"
                       f"<td style='{_TD};text-align:right'>{r}</td><td style='{_TD};text-align:right'>{_fmt(tx, 'pct')}</td></tr>")
-    # BUNDLE por oportunidade (13/07): o campo Produto nasce na NEGOCIAÇÃO
-    # (100% lá, ~0% antes) — "bundle do lead na chegada" não existe no dado;
-    # o que dá p/ medir com verdade é o mix de bundle das oportunidades que os
-    # leads do período geraram (e quantas viraram booking).
-    with conn.cursor() as cur:
-        cur.execute("""
-            WITH op AS (
-                SELECT COALESCE(substring(d.produto FROM 'B[1-5]'),
-                                left(COALESCE(d.produto, '(sem plano)'), 30)) AS bnd,
-                       count(DISTINCT d.deal_id) AS n
-                  FROM mkt_deals_attribution d
-                  JOIN mkt_stage_events e ON e.deal_id = d.deal_id
-                       AND e.stage_id = 7 AND e.entered_at >= %s AND e.entered_at < %s
-                 GROUP BY 1),
-                 wn AS (
-                SELECT COALESCE(substring(produto FROM 'B[1-5]'),
-                                left(COALESCE(produto, '(sem plano)'), 30)) AS bnd, count(*) AS n
-                  FROM mkt_deals_attribution
-                 WHERE status = 'won' AND won_time >= %s AND won_time < %s GROUP BY 1)
-            SELECT COALESCE(op.bnd, wn.bnd), COALESCE(op.n, 0), COALESCE(wn.n, 0)
-              FROM op FULL JOIN wn ON wn.bnd = op.bnd
-             ORDER BY 2 DESC, 3 DESC""", (a, b, a, b))
-        bdados = cur.fetchall()
-    tot_op = sum(o for _b, o, _w in bdados) or 1
-    brows = ""
-    for bn, o, w in bdados:
-        brows += (f"<tr><td style='{_TD}'><b>{escape(bn)}</b></td>"
-                  f"<td style='{_TD};text-align:right'>{o}</td>"
-                  f"<td style='{_TD};text-align:right'>{_fmt(o / tot_op, 'pct')}</td>"
-                  f"<td style='{_TD};text-align:right'>{w}</td>"
-                  f"<td style='{_TD};text-align:right'>{_fmt(w / o if o else None, 'pct')}</td></tr>")
-
     # motivos de desqualificação (perdidos criados no período, etapa pré-handoff)
     with conn.cursor() as cur:
         cur.execute("""SELECT COALESCE(lost_reason, '(sem motivo)'), count(*)
@@ -215,9 +183,6 @@ def _pv_funil(conn, request: Request) -> str:
     return (f"<h1>Funil de Qualificação</h1><div class=sub>do lead recebido à reunião agendada (handoff p/ Vendas) · régua por evento no período, horário de Brasília</div>"
             f"<form method=get action=/prevendas><input type=hidden name=view value=funil>{form}</form>"
             f"<section><h2>Funil</h2>" + _card(_tbl([("Etapa", "left"), ("Deals", "right"), ("TX", "right"), ("TX Lead", "right")], rows)) + "</section>"
-            f"<section><h2>Oportunidades por bundle</h2><p class=secsub>oportunidades novas e contratos fechados no período, por plano — planos antigos/exceções aparecem pelo nome</p>"
-            + _card(_tbl([("Bundle", "left"), ("Oportunidades", "right"), ("% do mix", "right"),
-                          ("Bookings", "right"), ("Oport→Booking", "right")], brows)) + "</section>"
             f"<section><h2>Qualidade do lead por origem</h2><p class=secsub>taxa lead→reunião por canal — realimenta a segmentação do Marketing</p>"
             + _card(_tbl([("Origem", "left"), ("Leads", "right"), ("Reuniões", "right"), ("Lead→Reunião", "right")], orows)) + "</section>"
             f"<section><h2>Motivos de desqualificação</h2><p class=secsub>perdidos antes do handoff</p>"
@@ -676,6 +641,38 @@ def _vd_funil(conn, request: Request) -> str:
                                "no_show": (reag / reunioes if reunioes else None)})
     ins_html = "".join(f"<div class=sug-item>→ {escape(i)}</div>" for i in ins)
 
+    # OPORTUNIDADES POR BUNDLE (movida de Pré-vendas 13/07: oportunidade e
+    # fechamento são território de Vendas): entradas em Negociação no período ×
+    # contratos FECHADOS no período; bookings validados com a gestão (jul: B1 6,
+    # B2 4, B3 2, B4 1, Assessoria Smart 1). Produto nasce na Negociação.
+    with conn.cursor() as cur:
+        cur.execute("""
+            WITH op AS (
+                SELECT COALESCE(substring(d.produto FROM 'B[1-5]'),
+                                left(COALESCE(d.produto, '(sem plano)'), 30)) AS bnd,
+                       count(DISTINCT d.deal_id) AS n
+                  FROM mkt_deals_attribution d
+                  JOIN mkt_stage_events e ON e.deal_id = d.deal_id
+                       AND e.stage_id = 7 AND e.entered_at >= %s AND e.entered_at < %s
+                 GROUP BY 1),
+                 wn AS (
+                SELECT COALESCE(substring(produto FROM 'B[1-5]'),
+                                left(COALESCE(produto, '(sem plano)'), 30)) AS bnd, count(*) AS n
+                  FROM mkt_deals_attribution
+                 WHERE status = 'won' AND won_time >= %s AND won_time < %s GROUP BY 1)
+            SELECT COALESCE(op.bnd, wn.bnd), COALESCE(op.n, 0), COALESCE(wn.n, 0)
+              FROM op FULL JOIN wn ON wn.bnd = op.bnd
+             ORDER BY 2 DESC, 3 DESC""", (a, b, a, b))
+        bdados = cur.fetchall()
+    tot_op = sum(o for _b, o, _w in bdados) or 1
+    brows = ""
+    for bn, o, w in bdados:
+        brows += (f"<tr><td style='{_TD}'><b>{escape(bn)}</b></td>"
+                  f"<td style='{_TD};text-align:right'>{o}</td>"
+                  f"<td style='{_TD};text-align:right'>{_fmt(o / tot_op, 'pct')}</td>"
+                  f"<td style='{_TD};text-align:right'>{w}</td>"
+                  f"<td style='{_TD};text-align:right'>{_fmt(w / o if o else None, 'pct')}</td></tr>")
+
     # conversões por ORIGEM × PLANO (pedido 13/07): quais origens fecham quais bundles
     with conn.cursor() as cur:
         cur.execute("""
@@ -707,6 +704,9 @@ def _vd_funil(conn, request: Request) -> str:
     return (f"<h1>Funil de Fechamento</h1><div class=sub>da reunião agendada ao contrato · régua por evento no período (BRT)</div>"
             f"<form method=get action=/vendas><input type=hidden name=view value=funil>{form}</form>"
             + kpis +
+            f"<section><h2>Oportunidades por bundle</h2><p class=secsub>oportunidades novas e contratos fechados no período, por plano — planos antigos/exceções aparecem pelo nome</p>"
+            + _card(_tbl([("Bundle", "left"), ("Oportunidades", "right"), ("% do mix", "right"),
+                          ("Bookings", "right"), ("Oport→Booking", "right")], brows)) + "</section>"
             f"<section><h2>Conversões por origem × plano</h2><p class=secsub>bookings do período por origem do lead e bundle fechado · TX = bookings ÷ leads da origem criados no período — mostra qual canal fecha qual plano</p>"
             + _card(_tbl([("Origem", "left")] + [(p_, "right") for p_ in planos_cols]
                          + [("Total", "right"), ("TX lead→booking", "right")], oxrows)) + "</section>"
