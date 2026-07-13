@@ -1128,13 +1128,15 @@ def _render_hub(role: str, st: dict, users: list[dict] | None = None,
         vd_card = ("<a class='area' href='/vendas'><div class=ahead>"
                    f"<div class=an>Vendas</div>{chip_area('vendas')}</div>"
                    "<div class=ad>Oportunidade→Booking, win/loss, ciclo, forecast e planos por closer</div></a>")
-    area_cards = growth_card + mkt_card + pv_card + vd_card + "".join(
+    op_card = ("<a class='area' href='/operacoes'><div class=ahead>"
+               f"<div class=an>Operações</div>{_chip('ativa', '--status-baixo')}</div>"
+               "<div class=ad>iniciativas por área da empresa (Notion) — semáforo de prazo e dependências por trimestre</div></a>")
+    area_cards = growth_card + mkt_card + pv_card + vd_card + op_card + "".join(
         "<div class='area soon'>"
         + f"<div class='an'>{escape(nm)}</div>"
         + f"<div class='ast'>{_chip('em breve', '--status-semdados')}</div>"
         + f"<div class='ad'>{escape(desc)}</div></div>"
-        for nm, desc in (("Financeiro", "inadimplência e margem"),
-                         ("Operações", "capacidade e SLA"))
+        for nm, desc in (("Financeiro", "inadimplência e margem"),)
     )
 
     # ---- KPIs do topo: retenção (Growth) + aquisição (Marketing)
@@ -1247,7 +1249,7 @@ h2{font-family:var(--font-display);font-weight:600;font-size:var(--fs-lg);margin
      <a class="nav-item" href="/prevendas">Pré-vendas</a>
      <a class="nav-item" href="/vendas">Vendas</a>
      <a class="nav-item soon">Financeiro <span class=tag>em breve</span></a>
-     <a class="nav-item soon">Operações <span class=tag>em breve</span></a>
+     <a class="nav-item" href="/operacoes">Operações</a>
    </nav>
    <div class=rail-foot><b>__USERMAIL__</b> · <a href="/logout" style="color:var(--text-muted);text-decoration:underline">sair</a><br>humano no loop — a IA só sinaliza</div>
  </aside>
@@ -2425,8 +2427,10 @@ def _relatorios_content(rep: dict, scores: list[dict]) -> str:
 # (FastAPI casa na ordem de registro). Import tardio evita ciclo.
 from .report_api import router as _report_router  # noqa: E402
 from .marketing.ui import router as _marketing_router  # noqa: E402
+from .operacoes.ui import router as _operacoes_router  # noqa: E402
 from .sales.ui import router as _sales_router  # noqa: E402
 
 app.include_router(_report_router)
 app.include_router(_marketing_router)
 app.include_router(_sales_router)
+app.include_router(_operacoes_router)

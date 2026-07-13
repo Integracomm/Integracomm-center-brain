@@ -47,7 +47,9 @@ ROLE_HOME: dict[str, str] = {"admin": "/", "gestor_growth": "/growth",
 AREAS: dict[str, str] = {"growth": "Growth / Assessoria", "marketing": "Marketing",
                          "vendas": "Vendas", "prevendas": "Pré-vendas",
                          "financeiro": "Financeiro", "operacoes": "Operações"}
-AREA_HOME: dict[str, str] = {"growth": "/growth", "marketing": "/marketing"}
+AREA_HOME: dict[str, str] = {"growth": "/growth", "marketing": "/marketing",
+                             "vendas": "/vendas", "prevendas": "/prevendas",
+                             "operacoes": "/operacoes"}
 _ROLE_AREAS: dict[str, set[str]] = {"admin": set(AREAS), "gestor_growth": {"growth"},
                                     "gestor_marketing": {"marketing"}}
 COOKIE = "iasession"
