@@ -249,6 +249,20 @@ def sync_deals_from_cache(conn: Any, since: dt.date = dt.date(2025, 1, 1)) -> in
     deals = json.loads(r.text)
     if isinstance(deals, str):  # a tabela guarda o JSON como string
         deals = json.loads(deals)
+    if isinstance(deals, dict) and deals.get("storage"):
+        # 13/07 à tarde: o app deles passou a guardar só um PONTEIRO na tabela;
+        # o payload vive no Storage público (gzip) — segue o ponteiro
+        import gzip
+        import time
+        sr = httpx.get(f"{_LOVABLE_SB}/storage/v1/object/public/pipedrive-cache/{deals['storage']}",
+                       params={"cb": int(time.time())}, timeout=180)
+        sr.raise_for_status()
+        raw = sr.content
+        if raw[:2] == b"\x1f\x8b":
+            raw = gzip.decompress(raw)
+        deals = json.loads(raw)
+        if isinstance(deals, str):
+            deals = json.loads(deals)
     if not isinstance(deals, list) or len(deals) < 15_000:
         raise RuntimeError(f"cache do Lovable suspeito ({len(deals) if isinstance(deals, list) else '?'} deals)")
     labels = _labels_from_cache()
