@@ -171,6 +171,10 @@ HELP: dict[str, list[tuple[str, str]]] = {
     ],
 }
 
+# a Ponte PV→Vendas é ESPELHADA nas duas áreas (14/07: as duas gestoras
+# querem a visão) — mesmo conteúdo, mesmo help
+HELP["prevendas/ponte"] = HELP["vendas/ponte"]
+
 
 def _norm(s: str) -> str:
     x = unicodedata.normalize("NFD", (s or "").lower())

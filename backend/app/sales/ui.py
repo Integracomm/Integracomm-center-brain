@@ -25,7 +25,8 @@ router = APIRouter()
 # "Time & Planos" virou "Desempenho Individual" (14/07 — feedback do Otávio:
 # o foco é o desempenho de cada membro, não os planos/bundles)
 _PV_VIEWS = [("funil", "Funil de Qualificação"), ("speed", "Speed-to-Lead"),
-             ("horarios", "Melhor Horário"), ("sdrs", "Desempenho Individual")]
+             ("ponte", "Ponte PV → Vendas"), ("horarios", "Melhor Horário"),
+             ("sdrs", "Desempenho Individual")]
 _VD_VIEWS = [("funil", "Funil de Fechamento"), ("ponte", "Ponte PV → Vendas"),
              ("winloss", "Win/Loss"), ("ciclo", "Ciclo & Empacados"),
              ("horarios", "Melhor Horário"), ("closers", "Desempenho Individual"),
@@ -1186,22 +1187,61 @@ def _vd_winloss(conn, request: Request) -> str:
             linhas += f"<tr><td style='{_nc}'>{escape(m[:36])}</td>{tds}</tr>"
         return _card(_tbl([(titulo, "left")] + [(c, "center") for c in cols], linhas)) if cols else ""
 
+    # gráfico de LINHAS (feedback 14/07: mais claro que a tabela) — uma linha
+    # por motivo top 5, pontos com tooltip; mês corrente é parcial (tracejado)
     meses_evo = list(dict.fromkeys(m for m, _r, _n in evo))
     evo_map: dict[str, dict[str, int]] = {}
     for mes, m, n in evo:
         if m in top_motivos:
             evo_map.setdefault(m, {})[mes] = n
-    evo_rows = ""
-    for m in top_motivos:
-        vals = [evo_map.get(m, {}).get(mes, 0) for mes in meses_evo]
-        tend = ""
-        if len(vals) >= 3 and sum(vals[:-1]):
-            ult, med = vals[-2], (sum(vals[:-1]) / len(vals[:-1]))
-            tend = " ↗" if ult > med * 1.3 else (" ↘" if ult < med * 0.7 else "")
-        evo_rows += (f"<tr><td style='{_nc}'>{escape(m[:36])}{tend}</td>"
-                     + "".join(f"<td style='{_nc};text-align:center'>{v or ''}</td>" for v in vals) + "</tr>")
-    sec_evo = (f"<section><h2>Evolução dos motivos (6 meses)</h2><p class=secsub>perdas por mês do fechamento · ↗/↘ = penúltimo mês bem acima/abaixo da média anterior (o mês corrente é parcial)</p>"
-               + _card(_tbl([("Motivo", "left")] + [(m, "center") for m in meses_evo], evo_rows)) + "</section>") if evo_rows else ""
+    sec_evo = ""
+    if meses_evo and top_motivos:
+        cores = ["#e06060", "#5b8def", "#d9b532", "#3fce8f", "#b57fdc"]
+        W, H, PADL, PADB, PADT = 620, 200, 34, 22, 12
+        vmax_e = max((n for d in evo_map.values() for n in d.values()), default=1) or 1
+        nx = max(1, len(meses_evo) - 1)
+
+        def xy(i, v):
+            x = PADL + (W - PADL - 10) * (i / nx if nx else 0)
+            y = PADT + (H - PADT - PADB) * (1 - v / vmax_e)
+            return x, y
+        svg = ""
+        legenda = ""
+        for ci, m in enumerate(top_motivos):
+            cor = cores[ci % len(cores)]
+            vals = [evo_map.get(m, {}).get(mes, 0) for mes in meses_evo]
+            pts_solid = " ".join(f"{xy(i, v)[0]:.0f},{xy(i, v)[1]:.0f}" for i, v in enumerate(vals[:-1])) if len(vals) > 1 else ""
+            if pts_solid:
+                svg += f"<polyline points='{pts_solid}' fill='none' stroke='{cor}' stroke-width='2'/>"
+            if len(vals) >= 2:  # trecho até o mês corrente (parcial) tracejado
+                x1, y1 = xy(len(vals) - 2, vals[-2])
+                x2, y2 = xy(len(vals) - 1, vals[-1])
+                svg += (f"<line x1='{x1:.0f}' y1='{y1:.0f}' x2='{x2:.0f}' y2='{y2:.0f}' "
+                        f"stroke='{cor}' stroke-width='2' stroke-dasharray='5 4'/>")
+            for i, v in enumerate(vals):
+                x, y = xy(i, v)
+                svg += (f"<circle cx='{x:.0f}' cy='{y:.0f}' r='3.5' fill='{cor}'>"
+                        f"<title>{escape(m[:40])} — {meses_evo[i]}: {v} perda(s)</title></circle>")
+            vals_ant = vals[:-1]
+            tend = ""
+            if len(vals) >= 3 and sum(vals_ant[:-1]):
+                ult, med = vals_ant[-1], sum(vals_ant[:-1]) / len(vals_ant[:-1])
+                tend = " ↗" if ult > med * 1.3 else (" ↘" if ult < med * 0.7 else "")
+            legenda += (f"<span style='display:inline-flex;align-items:center;gap:6px;margin-right:16px;"
+                        f"font-size:var(--fs-xs);color:var(--text-2)'><span style='width:14px;height:3px;"
+                        f"background:{cor};display:inline-block;border-radius:2px'></span>"
+                        f"{escape(m[:34])}{tend} <span style='color:var(--text-faint)'>({sum(vals)})</span></span>")
+        eixo_x = "".join(f"<text x='{xy(i, 0)[0]:.0f}' y='{H - 5}' text-anchor='middle' font-size='10' "
+                         f"fill='var(--text-muted)'>{mes}</text>" for i, mes in enumerate(meses_evo))
+        eixo_y = "".join(f"<text x='{PADL - 6}' y='{xy(0, v)[1] + 3:.0f}' text-anchor='end' font-size='10' "
+                         f"fill='var(--text-muted)'>{v}</text>"
+                         f"<line x1='{PADL}' y1='{xy(0, v)[1]:.0f}' x2='{W - 10}' y2='{xy(0, v)[1]:.0f}' "
+                         f"stroke='var(--border)' stroke-width='1'/>"
+                         for v in sorted({0, vmax_e // 2, vmax_e}))
+        sec_evo = (f"<section><h2>Evolução dos motivos (6 meses)</h2>"
+                   f"<p class=secsub>perdas por mês do fechamento, top 5 motivos · trecho tracejado = mês corrente (parcial) · passe o mouse nos pontos · ↗/↘ = último mês fechado bem acima/abaixo da média anterior</p>"
+                   f"<div class=card><svg viewBox='0 0 {W} {H}' style='width:100%;max-width:680px'>{eixo_y}{svg}{eixo_x}</svg>"
+                   f"<div style='margin-top:10px'>{legenda}</div></div></section>")
 
     # diagnóstico dominante explícito (heurística do próprio help)
     diag = ""
@@ -1599,7 +1639,7 @@ def _vd_forecast(conn, request: Request) -> str:
             + plano_gap)
 
 
-def _vd_ponte(conn, request: Request) -> str:
+def _vd_ponte(conn, request: Request, area: str = "vendas") -> str:
     """Ponte Pré-vendas → Vendas (pedido 14/07): a conversão Oport→Booking
     fraca é HERDADA de qualificação ruim ou é do FECHAMENTO? Cruza, por
     oportunidade do período, características da qualificação (SLA de 1º
@@ -1695,7 +1735,7 @@ def _vd_ponte(conn, request: Request) -> str:
     return ("<h1>Ponte Pré-vendas → Vendas</h1>"
             "<div class=sub>a pergunta estratégica: a conversão fraca é herdada da qualificação ou é do fechamento? · "
             "oportunidades do período (Dia Oportunidade) × desfecho · taxa sobre decididas</div>"
-            f"<form method=get action=/vendas><input type=hidden name=view value=ponte>{form}</form>"
+            f"<form method=get action=/{area}><input type=hidden name=view value=ponte>{form}</form>"
             + kpis +
             "<section><h2>Leitura do especialista</h2>"
             f"<div class=card><div class=sug-item>→ {escape(leitura)}</div>"
@@ -1834,7 +1874,8 @@ def prevendas(request: Request, view: str = Query("funil")):
             cur.execute("INSERT INTO audit_log (actor, action, scope) VALUES (%s,'view',%s)",
                         (user, f"prevendas/{view}"))
         fn = {"funil": _pv_funil, "speed": _pv_speed, "horarios": _pv_horarios,
-              "sdrs": _pv_sdrs}[view]
+              "sdrs": _pv_sdrs,
+              "ponte": lambda cc, rr: _vd_ponte(cc, rr, area="prevendas")}[view]
         content = fn(c, request) + "<p class=foot>Fonte: Pipedrive (cache local, coleta diária). A decisão é sempre do gestor — o especialista sinaliza.</p>"
     return HTMLResponse(_shell(A, "prevendas", _PV_VIEWS, view, content, user))
 

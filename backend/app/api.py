@@ -640,21 +640,22 @@ def _risco_evolucao_html(conn: Any) -> str:
         return ""
     if not pts:
         return ""
+    _tdr = "padding:6px 8px;border-bottom:1px solid var(--border);text-align:right;font-variant-numeric:tabular-nums"
     linhas = "".join(
         f"<tr><td style='padding:6px 8px;border-bottom:1px solid var(--border)'>{d.strftime('%d/%m')}</td>"
-        f"<td class=num style='padding:6px 8px;border-bottom:1px solid var(--border);color:var(--status-critico)'>{c}</td>"
-        f"<td class=num style='padding:6px 8px;border-bottom:1px solid var(--border)'>{al}</td>"
-        f"<td class=num style='padding:6px 8px;border-bottom:1px solid var(--border)'>{at}</td>"
-        f"<td class=num style='padding:6px 8px;border-bottom:1px solid var(--border)'>R$ {float(m or 0):,.0f}</td></tr>".replace(",", ".")
+        f"<td style='{_tdr};color:var(--status-critico)'>{c}</td>"
+        f"<td style='{_tdr}'>{al}</td>"
+        f"<td style='{_tdr}'>{at}</td>"
+        f"<td style='{_tdr}'>R$ {float(m or 0):,.0f}</td></tr>".replace(",", ".")
         for d, c, al, at, m in pts)
     nota = ("<p class=note>Série iniciada agora (1 snapshot/dia, gravado pela sentinela) — em poucas semanas "
             "este quadro responde se as intervenções estão reduzindo o risco da carteira.</p>" if len(pts) < 5 else "")
     return ("<section><div class=sec-head><h2>Evolução do risco da carteira</h2>"
             "<span class=sub>1 snapshot por dia — alertas abertos e MRR nas faixas alto/crítico</span></div>"
             "<div class=card style='padding:12px 14px'><table style='width:100%;border-collapse:collapse'>"
-            "<tr><th style='text-align:left;padding:6px 8px'>Dia</th><th class=num style='padding:6px 8px'>Críticos</th>"
-            "<th class=num style='padding:6px 8px'>Altos</th><th class=num style='padding:6px 8px'>Atenção</th>"
-            "<th class=num style='padding:6px 8px'>MRR em risco</th></tr>" + linhas + "</table>" + nota + "</div></section>")
+            "<tr><th style='text-align:left;padding:6px 8px'>Dia</th><th style='text-align:right;padding:6px 8px'>Críticos</th>"
+            "<th style='text-align:right;padding:6px 8px'>Altos</th><th style='text-align:right;padding:6px 8px'>Atenção</th>"
+            "<th style='text-align:right;padding:6px 8px'>MRR em risco</th></tr>" + linhas + "</table>" + nota + "</div></section>")
 
 
 def _modelo_precisao(conn: Any) -> dict | None:
