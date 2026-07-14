@@ -129,9 +129,9 @@ HELP: dict[str, list[tuple[str, str]]] = {
         ("Conversões por origem × plano", "Quais origens de lead FECHAM quais bundles: bookings do período cruzados origem × plano, com TX = bookings ÷ leads da origem. Insights: (1) a origem que fecha B3-B5 é onde escalar verba mesmo com CPL maior; (2) origem com volume alto e TX baixa consome agenda de closer sem retorno; (3) indicação costuma fechar plano maior — se não estiver fechando, o programa de indicações merece atenção."),
     ],
     "vendas/winloss": [
-        ("_intro", "Por que ganhamos e perdemos: motivos de perda categorizados do Pipedrive, win rate e o cruzamento motivo×plano. É a matéria-prima do playbook de objeções."),
+        ("_intro", "Por que ganhamos e perdemos: motivos de perda categorizados do Pipedrive e, bundle a bundle, o que mais mata cada plano. É a matéria-prima do playbook de objeções."),
         ("Motivos de perda", "Ranking dos motivos registrados nos deals perdidos. Insights: (1) o motivo nº1 merece um playbook escrito de resposta; (2) 'preço' dominante em um bundle específico = discussão de pricing, não de vendedor."),
-        ("Motivo × plano", "Cruzamento: qual objeção mata qual plano. Insight: se B4-B5 morrem por 'timing' e B1 por 'preço', o discurso de valor precisa ser diferente por segmento — um pitch único não serve."),
+        ("Principais motivos de perda por bundle", "Um card por plano com os motivos que mais derrubam AQUELE bundle, a participação de cada motivo nas perdas dele e o MRR perdido. Insights: (1) motivo dominante em um único bundle = problema de preço/proposta daquele plano; o mesmo motivo no topo de todos = problema de abordagem/qualificação do funil inteiro; (2) se B4-B5 morrem por 'timing' e B1 por 'preço', o discurso de valor precisa ser diferente por segmento — um pitch único não serve; (3) card '(sem plano)' são perdas antes do Produto ser preenchido — normal na fase de reunião; (4) barra grande de '(sem motivo)' = disciplina de registro a cobrar antes de qualquer conclusão."),
     ],
     "vendas/ciclo": [
         ("_intro", "Tempo de ciclo (criação → fechamento) e a lista de deals EMPACADOS — negociações paradas além do normal. Ciclo longo esfria cliente e trava previsibilidade."),

@@ -935,25 +935,58 @@ def _vd_winloss(conn, request: Request) -> str:
                           AND stage_id IN (6, 5, 7)
                         GROUP BY 1 ORDER BY 2 DESC LIMIT 14""", (a, b))
         perdas = cur.fetchall()
-        cur.execute("""SELECT COALESCE(lost_reason, '(sem motivo)'),
-                              COALESCE(substring(produto FROM 'B[1-5]'), 'outros'), count(*)
+        # perdas por BUNDLE × motivo (reformulado 14/07 — pedido do Otávio: a
+        # tabela achatada motivo×plano era pouco intuitiva; agora é um card
+        # por bundle com os principais motivos DELE)
+        cur.execute("""SELECT COALESCE(substring(produto FROM 'B[1-5]'),
+                              CASE WHEN produto IS NULL OR produto = '' THEN '(sem plano)' ELSE 'outros' END),
+                              COALESCE(lost_reason, '(sem motivo)'), count(*),
+                              COALESCE(sum(COALESCE(valor_custom, valor)), 0)
                          FROM mkt_deals_attribution
                         WHERE status='lost' AND lost_time >= %s AND lost_time < %s
-                          AND stage_id IN (6, 5, 7) AND lost_reason IS NOT NULL
-                        GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 20""", (a, b))
-        por_plano = cur.fetchall()
+                          AND stage_id IN (6, 5, 7)
+                        GROUP BY 1, 2""", (a, b))
+        por_bundle: dict[str, list[tuple[str, int, float]]] = {}
+        for bnd, m, n, v in cur.fetchall():
+            por_bundle.setdefault(bnd, []).append((m, n, float(v)))
     tem_motivo = any(m != "(sem motivo)" for m, _, _ in perdas)
     rows = "".join(f"<tr><td style='{_TD}'>{escape(str(m)[:56])}</td><td style='{_TD};text-align:right'>{n}</td>"
                    f"<td style='{_TD};text-align:right'>{_fmt(float(v), 'brl')}</td></tr>" for m, n, v in perdas)
-    prow = "".join(f"<tr><td style='{_TD}'>{escape(str(m)[:44])}</td><td style='{_TD}'>{escape(p)}</td>"
-                   f"<td style='{_TD};text-align:right'>{n}</td></tr>" for m, p, n in por_plano)
+
+    # um card por bundle: total de perdas + top 5 motivos c/ barra de participação
+    bcards = ""
+    ordem = ["B1", "B2", "B3", "B4", "B5", "outros", "(sem plano)"]
+    for bnd in [x for x in ordem if x in por_bundle] + sorted(set(por_bundle) - set(ordem)):
+        motivos = por_bundle[bnd]
+        tot_n = sum(n for _m, n, _v in motivos)
+        tot_v = sum(v for _m, _n, v in motivos)
+        linhas_m = ""
+        for m, n, _v in sorted(motivos, key=lambda x: -x[1])[:5]:
+            pct = n / tot_n if tot_n else 0
+            cor_txt = "var(--text-faint)" if m == "(sem motivo)" else "var(--text-2)"
+            linhas_m += (
+                f"<div style='margin-top:8px'>"
+                f"<div style='display:flex;justify-content:space-between;gap:10px;font-size:var(--fs-xs);color:{cor_txt}'>"
+                f"<span>{escape(str(m)[:42])}</span><span style='white-space:nowrap;font-variant-numeric:tabular-nums'><b>{n}</b> · {_fmt(pct, 'pct')}</span></div>"
+                f"<div style='height:5px;background:var(--surface-3);border-radius:3px;overflow:hidden;margin-top:3px'>"
+                f"<div style='height:100%;width:{pct * 100:.0f}%;background:var(--status-alto);border-radius:3px'></div></div></div>")
+        sobra = len(motivos) - 5
+        if sobra > 0:
+            linhas_m += f"<div class=note style='margin-top:7px'>+ {sobra} outro(s) motivo(s)</div>"
+        bcards += (f"<div class=card><div style='display:flex;justify-content:space-between;align-items:baseline'>"
+                   f"<b style='font-size:var(--fs-md)'>{escape(bnd)}</b>"
+                   f"<span style='color:var(--text-muted);font-size:var(--fs-xs)'>{tot_n} perda(s) · {_fmt(tot_v, 'brl')}</span></div>"
+                   + linhas_m + "</div>")
+    grade_b = (f"<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px;align-items:start'>{bcards}</div>"
+               if bcards else _card("<span class=note>sem perdas no período</span>"))
+
     return (f"<h1>Win/Loss — Análise de Perdas</h1><div class=sub>perdas na fase de Vendas (da reunião em diante), por motivo e valor</div>"
             f"<form method=get action=/vendas><input type=hidden name=view value=winloss>{form}</form>"
             f"<section><h2>Motivos de perda</h2>"
             + _card((_tbl([("Motivo", "left"), ("Deals", "right"), ("MRR perdido", "right")], rows) if rows else "<span class=note>sem perdas no período</span>")
                     + ("" if tem_motivo else _aviso_coleta("motivo de perda"))) + "</section>"
-            f"<section><h2>Motivo × plano</h2><p class=secsub>identifica se é preço/produto (concentrado num bundle) ou abordagem (espalhado)</p>"
-            + _card(_tbl([("Motivo", "left"), ("Plano", "left"), ("Deals", "right")], prow) if prow else _card("<span class=note>—</span>")) + "</section>")
+            f"<section><h2>Principais motivos de perda por bundle</h2><p class=secsub>um card por plano: os motivos que mais matam AQUELE bundle, com participação nas perdas dele — concentrado num bundle = preço/produto; espalhado por todos = abordagem</p>"
+            + grade_b + "</section>")
 
 
 def _vd_ciclo(conn, request: Request) -> str:
