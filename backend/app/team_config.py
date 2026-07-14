@@ -1,12 +1,14 @@
 """Times por área CONFIGURÁVEIS pelo admin (tabela area_team no RDS).
 
 Pedido do Otávio (14/07/26): as listas de colaboradores saem do código e viram
-configuração editável no Painel Administrativo. Dois papéis:
-- vendas (closers): a lista é a RÉGUA do SQL do funil oficial ("deal na mão de
-  closer" = agendou reunião). Ex-closers ficam na lista como INATIVOS — saem
-  dos rankings/planos, mas a régua continua idêntica à do dashboard do time
-  (o SQL_CLOSERS deles mantém quem saiu).
+configuração editável no Painel Administrativo.
+- vendas (closers): a lista COMPLETA é a RÉGUA do SQL do funil oficial ("deal
+  na mão de closer" = agendou reunião) — equivalente ao SQL_CLOSERS do
+  dashboard do time, incluindo quem já saiu (histórico dos meses passados).
 - prevendas (SDRs): destaque e planos de ação da aba Time & Planos.
+- DESLIGADOS: detecção AUTOMÁTICA pelo Pipedrive (usuário desativado =
+  active_flag False, coluna owner_active) — somem de todas as telas, números
+  permanecem nas réguas. O '-' na lista só força manualmente um caso raro.
 
 Casamento de nome = o MESMO do app do time: sem acento, minúsculo, igual OU
 contido no nome do Pipedrive. Cache por processo (60s) — é lido em todo funil.
@@ -28,17 +30,19 @@ ALTER TABLE area_team ADD COLUMN IF NOT EXISTS papel TEXT NOT NULL DEFAULT 'memb
 # Papéis (esclarecidos pelo Otávio 14/07): 'membro' = colaborador do time
 # (ranking + planos + régua); 'coordenacao'/'gerencia' = aparecem com chip,
 # contam na régua, FORA de planos/mediana (Valéria coord. Vendas, Eduarda
-# coord. PV, Marcos gerente das duas); 'regua' = NÃO é colaborador — some dos
-# rankings mas PERMANECE na régua do SQL (Vitória/Lucas, que estão no
-# SQL_CLOSERS do dashboard do time). ativo=False = desligado (chip, sem plano).
+# coord. PV, Marcos gerente das duas). DESLIGADO é AUTOMÁTICO: usuário com
+# active_flag=False no Pipedrive (coluna owner_active, vem no cache) — some de
+# TODAS as telas, mas fica na lista p/ a régua do SQL continuar batendo com o
+# SQL_CLOSERS do dashboard nos meses em que atuou (Johnatan, Vitória, Lucas).
+# ativo=False na tabela = desligamento FORÇADO manualmente (raro).
 _SEEDS: dict[str, list[tuple[str, bool, str]]] = {
     "vendas": [("Camila Fernandes", True, "membro"), ("Denise", True, "membro"),
                ("Giovana Fornazari", True, "membro"), ("Ana Beatriz", True, "membro"),
-               ("Johnatan", False, "membro"),
-               ("Valéria", True, "coordenacao"), ("Marcos Rafael", True, "gerencia"),
-               ("Vitória Lazzerini", True, "regua"), ("Lucas Pereira", True, "regua")],
+               ("Johnatan", True, "membro"), ("Vitória Lazzerini", True, "membro"),
+               ("Lucas Pereira", True, "membro"),
+               ("Valéria", True, "coordenacao"), ("Marcos Rafael", True, "gerencia")],
     "prevendas": [("Giovana Moura", True, "membro"), ("Fernanda Araújo", True, "membro"),
-                  ("Leticia Roman", False, "membro"),
+                  ("Leticia Roman", True, "membro"),
                   ("Eduarda Martins", True, "coordenacao"), ("Marcos Rafael", True, "gerencia")],
 }
 
@@ -80,13 +84,37 @@ def casador(conn: Any, area: str, so_ativos: bool = False):
     return casa
 
 
-def ativo(conn: Any, area: str, nome: str | None) -> bool:
-    """O nome casa com alguém ATIVO da lista? (chip 'desligado' nos rankings)"""
-    return casador(conn, area, so_ativos=True)(nome)
+def desligados_pipedrive(conn: Any) -> list[str]:
+    """Nomes de usuários DESATIVADOS no Pipedrive (active_flag=False, coluna
+    owner_active vinda do cache) — a fonte automática de 'desligado'."""
+    hit = _CACHE.get("_pd_inativos")
+    if hit and time.monotonic() - hit[0] < _TTL_S:
+        return hit[1]
+    with conn.cursor() as cur:
+        cur.execute("""SELECT DISTINCT owner_name FROM mkt_deals_attribution
+                        WHERE owner_active IS FALSE AND owner_name IS NOT NULL""")
+        nomes = [r[0] for r in cur.fetchall()]
+    _CACHE["_pd_inativos"] = (time.monotonic(), nomes)
+    return nomes
+
+
+def eh_desligado(conn: Any, area: str, nome: str | None) -> bool:
+    """Desligado = usuário desativado no Pipedrive (automático) OU linha
+    marcada com '-' na lista da área (força manual). Desligados somem de
+    todas as telas; os números deles continuam nas réguas."""
+    n = norm(nome)
+    if not n:
+        return False
+    for pd in desligados_pipedrive(conn):
+        c = norm(pd)
+        if n == c or c in n:
+            return True
+    return any((n == norm(cn) or norm(cn) in n) and not at
+               for cn, at, _p in listas(conn, area))
 
 
 def papel_de(conn: Any, area: str, nome: str | None) -> str | None:
-    """Papel do nome na área ('membro'/'coordenacao'/'gerencia'/'regua');
+    """Papel do nome na área ('membro'/'coordenacao'/'gerencia');
     None = não está na lista."""
     n = norm(nome)
     if not n:
@@ -98,23 +126,19 @@ def papel_de(conn: Any, area: str, nome: str | None) -> str | None:
     return None
 
 
-_PAPEIS = {"coordenacao": "coordenacao", "gerencia": "gerencia", "regua": "regua"}
-
-
 def _papel_do_sufixo(s: str) -> str:
     x = norm(s)
     if "coorden" in x:
         return "coordenacao"
     if "geren" in x:
         return "gerencia"
-    if "regua" in x or "fora" in x:
-        return "regua"
     return "membro"
 
 
 def salvar(conn: Any, area: str, linhas: list[str], actor: str) -> None:
     """Substitui a lista da área. Formato da linha: Nome [| papel];
-    '-' no começo = desligado. Papéis: coordenação · gerência · só régua."""
+    '-' no começo = força desligado (o normal é a detecção automática pelo
+    Pipedrive). Papéis: coordenação · gerência."""
     trios: list[tuple[str, bool, str]] = []
     for ln in linhas:
         ln = ln.strip()

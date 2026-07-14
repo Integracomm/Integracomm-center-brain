@@ -874,13 +874,13 @@ _TEAM_AREAS = [("prevendas", "Pré-vendas (SDRs)",
                 "destaque e planos de ação da aba Time & Planos"),
                ("vendas", "Vendas (closers)",
                 "⚠ a lista inteira (todos os papéis) é a RÉGUA do SQL do funil oficial (deal na mão de closer) — manter equivalente ao SQL_CLOSERS do dashboard do time")]
-_PAPEL_SUFIXO = {"coordenacao": " | coordenação", "gerencia": " | gerência", "regua": " | só régua"}
+_PAPEL_SUFIXO = {"coordenacao": " | coordenação", "gerencia": " | gerência"}
 
 
 def _teams_html(conn) -> str:
     """Times por área editáveis (tabela area_team): um nome por linha;
-    '-' no começo = desligado; '| papel' = coordenação/gerência/só régua."""
-    from .team_config import listas
+    '| papel' = coordenação/gerência. Desligados = automático via Pipedrive."""
+    from .team_config import desligados_pipedrive, listas
     blocos = ""
     for area, titulo, nota in _TEAM_AREAS:
         linhas = "\n".join(("-" if not ativo else "") + nome + _PAPEL_SUFIXO.get(papel, "")
@@ -890,13 +890,16 @@ def _teams_html(conn) -> str:
                    f"<textarea name='{area}' rows=10 style='width:100%;background:var(--bg-panel);"
                    f"border:1px solid var(--border-strong);border-radius:var(--radius-sm);color:var(--text);"
                    f"font-family:var(--font-body);font-size:var(--fs-sm);padding:9px 11px'>{escape(linhas)}</textarea></div>")
+    desligados = ", ".join(sorted(desligados_pipedrive(conn))) or "nenhum"
     return ("<section><h2>Times por área</h2>"
             "<p class=secsub>um nome por linha, como aparece no Pipedrive (o casamento ignora acentos e aceita nome contido) · "
-            "<b>-</b> no começo = desligado (aparece com chip, sem plano) · sufixos: <b>| coordenação</b> e <b>| gerência</b> "
-            "(chip próprio, fora de planos/mediana) · <b>| só régua</b> = não é colaborador, some dos rankings mas conta na régua do funil · salvar vale na hora</p>"
+            "sufixos: <b>| coordenação</b> e <b>| gerência</b> (chip próprio, fora de planos/mediana) · "
+            "DESLIGADOS são detectados automaticamente (usuário desativado no Pipedrive): somem de todas as telas, e quem já foi closer/SDR deve "
+            "PERMANECER na lista para o histórico do funil continuar batendo · <b>-</b> no começo só força um desligamento manual · salvar vale na hora</p>"
             "<div class=central><form method=post action='/admin/times'>"
             "<div style='display:flex;gap:18px;flex-wrap:wrap'>" + blocos + "</div>"
-            "<button type=submit style='margin-top:12px'>Salvar times</button></form></div></section>")
+            "<button type=submit style='margin-top:12px'>Salvar times</button></form>"
+            f"<p class='note' style='margin:10px 0 0'>Desligados detectados no Pipedrive agora: {escape(desligados)}.</p></div></section>")
 
 
 def _admin_html(users: list[dict]) -> str:

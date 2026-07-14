@@ -229,6 +229,7 @@ def _pv_speed(conn, request: Request) -> str:
     if not any(r[2] for r in rows):
         return (f"<h1>Speed-to-Lead</h1><div class=sub>tempo entre o lead entrar e o 1º contato registrado</div>"
                 f"<section>{_aviso_coleta('atividades (1º contato)')}</section>")
+    from .. import team_config as TC
     mins, por_quem, por_origem, sem_toque = [], {}, {}, 0
     for _did, add, first, quem, origem in rows:
         if not first:
@@ -236,7 +237,9 @@ def _pv_speed(conn, request: Request) -> str:
             continue
         m = max(0.0, (first - add).total_seconds() / 60)
         mins.append(m)
-        por_quem.setdefault((quem or "—").strip()[:30], []).append(m)
+        # desligados não aparecem no recorte por pessoa (os agregados os incluem)
+        if not TC.eh_desligado(conn, "prevendas", quem):
+            por_quem.setdefault((quem or "—").strip()[:30], []).append(m)
         por_origem.setdefault((origem or "(vazio)")[:30], []).append(m)
     med = st.median(mins) if mins else None
     p75 = st.quantiles(mins, n=4)[2] if len(mins) >= 4 else None
@@ -363,12 +366,17 @@ def _pv_sdrs(conn, request: Request) -> str:
 
     colaboradores = sorted(set(leads_por) | set(oport_por),
                            key=lambda n: (n == _SEM, -leads_por.get(n, 0), -oport_por.get(n, 0)))
-    orows, tl = "", [0, 0, 0]
+    orows, tl, ex = "", [0, 0, 0], [0, 0, 0]
     time_stats, planos = [], ""
     for nome in colaboradores[:15]:
         l, o = leads_por.get(nome, 0), oport_por.get(nome, 0)
         bq, _bv = book_por.get(nome, (0, 0.0))
         tl[0] += l; tl[1] += o; tl[2] += bq
+        # desligados (detecção automática no Pipedrive) NÃO aparecem — os
+        # números vão p/ a linha agregada '(ex-colaboradores)' p/ o Total fechar
+        if nome != _SEM and TC.eh_desligado(conn, "prevendas", nome):
+            ex[0] += l; ex[1] += o; ex[2] += bq
+            continue
         speed = speed_por.get(TC.norm(nome))
         papel = TC.papel_de(conn, "prevendas", nome)
         if nome == _SEM:
@@ -379,8 +387,7 @@ def _pv_sdrs(conn, request: Request) -> str:
         elif papel == "gerencia":
             chip = " <span class=chip style='--c:var(--brand)'>gerência</span>"
         elif papel == "membro":
-            chip = ("" if TC.ativo(conn, "prevendas", nome)
-                    else " <span class=chip style='--c:var(--status-semdados)'>desligada</span>")
+            chip = ""
         else:
             chip = " <span class=chip style='--c:var(--status-semdados)'>fora do time de PV</span>"
         orows += (f"<tr><td style='{_TD}'><b>{escape(nome[:30])}</b>{chip}</td>"
@@ -392,7 +399,14 @@ def _pv_sdrs(conn, request: Request) -> str:
         if papel == "membro":
             time_stats.append({"nome": nome, "leads": l, "agendadas": o,
                                "taxa_agend": (o / l if l else None), "speed_min": speed,
-                               "ativo": TC.ativo(conn, "prevendas", nome)})
+                               "ativo": True})
+    if any(ex):
+        orows += (f"<tr><td style='{_TD};color:var(--text-faint)'>(ex-colaboradores)</td>"
+                  f"<td style='{_TD};text-align:right;color:var(--text-faint)'>{ex[0] or ''}</td>"
+                  f"<td style='{_TD};text-align:right;color:var(--text-faint)'>{ex[1] or ''}</td>"
+                  f"<td style='{_TD}'></td>"
+                  f"<td style='{_TD};text-align:right;color:var(--text-faint)'>{ex[2] or ''}</td>"
+                  f"<td style='{_TD}'></td></tr>")
     orows += (f"<tr><td style='{_TD};border-top:2px solid var(--border-strong)'><b>Total</b></td>"
               f"<td style='{_TD};text-align:right;border-top:2px solid var(--border-strong)'><b>{tl[0]}</b></td>"
               f"<td style='{_TD};text-align:right;border-top:2px solid var(--border-strong)'><b>{tl[1]}</b></td>"
@@ -402,7 +416,7 @@ def _pv_sdrs(conn, request: Request) -> str:
     oficial = ("<section><h2>Leads e oportunidades por colaborador</h2>"
                "<p class=secsub>volumes na régua dos gráficos do Pipedrive (atribuição pelo campo SDR do deal; "
                "leads = criados no período · oportunidades = Dia Oportunidade no período) · Speed = mediana do 1º contato registrado (atividades) · "
-               "lead ainda sem SDR entra em '(sem SDR definido)'</p>"
+               "lead ainda sem SDR entra em '(sem SDR definido)' · desligados (detectados no Pipedrive) ficam agregados em '(ex-colaboradores)'</p>"
                + _card(_tbl([("Colaborador", "left"), ("Leads", "right"), ("Oportunidades", "right"),
                              ("Lead→Oport", "right"), ("Bookings", "right"), ("Speed 1º contato", "right")], orows)) + "</section>")
 
@@ -556,7 +570,9 @@ def _pv_horarios(conn, request: Request) -> str:
     # independente do volume); pico da pessoa = célula CONTORNADA. Compacto de
     # propósito (14/07): cabe numa página sem scroll lateral — layout fixo,
     # nome abreviado (tooltip tem o completo), células mínimas.
-    por_colab = dados.get("por_colab") or {}
+    from .. import team_config as TC
+    por_colab = {n: cel for n, cel in (dados.get("por_colab") or {}).items()
+                 if n == "(sem SDR)" or not TC.eh_desligado(conn, "prevendas", n)}
     # grade fixa 7h-20h (horário comercial); o que cai fora vira a coluna
     # "outros" — madrugadas raras não podem esticar a tabela
     horas_c = [h for h in range(7, 21)]
@@ -1054,15 +1070,14 @@ def _vd_closers(conn, request: Request) -> str:
     time_stats = []
     for nome, oports, wins, ticket in dados:
         papel = TC.papel_de(conn, "vendas", nome)
-        # None = não está na lista; 'regua' = não é colaborador (Vitória/Lucas:
-        # contam SÓ na régua do SQL do funil) — nenhum dos dois aparece aqui
-        if papel is None or papel == "regua":
+        # fora da lista OU desligado (detecção automática no Pipedrive) não
+        # aparece — os números seguem intactos nas réguas do funil
+        if papel is None or TC.eh_desligado(conn, "vendas", nome):
             continue
         time_stats.append({"nome": nome, "oports": oports or 0, "bookings": wins or 0,
                            "taxa_conv": (wins / oports if oports else None),
                            "ticket": float(ticket) if ticket else None,
-                           "ciclo_dias": None, "perdas_top": None, "papel": papel,
-                           "ativo": TC.ativo(conn, "vendas", nome)})
+                           "ciclo_dias": None, "perdas_top": None, "papel": papel})
     if not time_stats:
         return (f"<h1>Time de Vendas</h1><div class=sub>coordenação: {ESP.COORD_VENDAS}</div>"
                 f"<section>{_aviso_coleta('dono dos deals (atribuição por closer)')}</section>")
@@ -1084,15 +1099,15 @@ def _vd_closers(conn, request: Request) -> str:
             lbl, cor = _CHIP_PAPEL[p["papel"]]
             tag = f" <span class=chip style='--c:{cor}'>{lbl}</span>"
         else:
-            tag = "" if p["ativo"] else " <span class=chip style='--c:var(--status-semdados)'>desligado</span>"
+            tag = ""
         rows += (f"<tr><td style='{_TD}'><b>{escape(p['nome'][:26])}</b>{tag}</td>"
                  f"<td style='{_TD};text-align:right'>{p['oports']}</td>"
                  f"<td style='{_TD};text-align:right'>{p['bookings']}</td>"
                  f"<td style='{_TD};text-align:right'>{_fmt(p['taxa_conv'], 'pct')}</td>"
                  f"<td style='{_TD};text-align:right'>{_fmt(p['ticket'], 'brl')}</td>"
                  f"<td style='{_TD}'>{escape((p['perdas_top'] or '—')[:30])}</td></tr>")
-        # plano/mediana: SÓ colaboradores ativos (coordenação/gerência ficam fora)
-        if p["papel"] == "membro" and p["ativo"]:
+        # plano/mediana: SÓ colaboradores do time (coordenação/gerência ficam fora)
+        if p["papel"] == "membro":
             pl = ESP.plano_closer(p, membros)
             itens = ("".join(f"<li style='color:var(--status-baixo)'>{escape(f)}</li>" for f in pl["fortes"])
                      + "".join(f"<li style='color:var(--status-alto)'>{escape(f)}</li>" for f in pl["fracos"])
