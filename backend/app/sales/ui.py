@@ -29,9 +29,6 @@ _VD_VIEWS = [("funil", "Funil de Fechamento"), ("winloss", "Win/Loss"),
              ("forecast", "Performance & Meta")]
 
 # etapas (validadas na inspeção do Pipedrive 08/07)
-_ST_CONTATO = (2, 13)     # Primeiro contato (p1/p2)
-_ST_CONECT = (3, 12)
-_ST_QUALIF = (4, 15)
 _ST_REUNIAO = (6,)        # handoff Pré-vendas → Vendas
 _ST_NEGOC = (7,)
 _ST_VENDAS_ABERTO = (6, 5, 7)
@@ -132,22 +129,42 @@ def _entradas(conn, stages, a, b, coorte=True) -> int:
 def _pv_funil(conn, request: Request) -> str:
     ini, fim, form = _periodo(request)
     a, b = _brt(ini, fim)
-    with conn.cursor() as cur:
-        cur.execute("SELECT count(*) FROM mkt_deals_attribution WHERE add_time >= %s AND add_time < %s", (a, b))
-        leads = cur.fetchone()[0]
-    contato = _entradas(conn, _ST_CONTATO, a, b)
-    conect = _entradas(conn, _ST_CONECT, a, b)
-    qualif = _entradas(conn, _ST_QUALIF, a, b)
-    reuniao = _entradas(conn, _ST_REUNIAO, a, b)
-    seq = [("Leads recebidos", leads), ("1º contato", contato), ("Conectado", conect),
-           ("Qualificação", qualif), ("Reunião agendada (handoff)", reuniao)]
-    rows = ""
+    # Funil = MESMA taxonomia e régua do Funil de Prospecção do Marketing
+    # (_funil_eventos, validado nº a nº contra o Pipedrive/app do time):
+    # Lead = criados no período · MQL = Lead · SAL = coorte que entrou em
+    # 1º contato (2/13) · SQL = coorte que entrou em reunião agendada (6/15)
+    # = handoff p/ Vendas. Oportunidade/Booking ficam no Funil de Fechamento.
+    from ..marketing.ui import _FUNIL_CORES, _FUNIL_DEFS, _funil_eventos
+    passou, _booked, leads, _rec = _funil_eventos(conn, ini, fim)
+    seq = [("Lead", passou[0]), ("MQL", passou[1]), ("SAL", passou[2]), ("SQL", passou[3])]
+    sal, sql_n = passou[2], passou[3]
+    barras, resumo_rows = "", ""
     for i, (nome, n) in enumerate(seq):
         taxa = (n / seq[i - 1][1]) if i and seq[i - 1][1] else None
-        vs_lead = n / leads if leads and i else None
-        rows += (f"<tr><td style='{_TD}'><b>{nome}</b></td><td style='{_TD};text-align:right'>{n}</td>"
-                 f"<td style='{_TD};text-align:right'>{_fmt(taxa, 'pct') if taxa is not None else '—'}</td>"
-                 f"<td style='{_TD};text-align:right'>{_fmt(vs_lead, 'pct') if vs_lead is not None else '—'}</td></tr>")
+        tx_lead = n / leads if leads and i else None
+        if i:
+            barras += (f"<div style='text-align:center;margin:7px 0'><span style='background:var(--surface-3);"
+                       f"border:1px solid var(--border-strong);border-radius:999px;padding:2px 12px;"
+                       f"font-size:var(--fs-xs);color:var(--text-2)'>{_fmt(taxa, 'pct') if taxa is not None else '—'} conv.</span></div>")
+        w = min(100.0, max(30.0, (n / leads * 100) if leads else 30.0))
+        barras += (f"<div title='{escape(_FUNIL_DEFS.get(nome, ''))}' style='width:{w:.1f}%;margin:0 auto;"
+                   f"background:{_FUNIL_CORES[nome]};border-radius:10px;padding:11px 16px;display:flex;"
+                   f"justify-content:space-between;align-items:center;gap:10px;color:#16181d'>"
+                   f"<b style='font-size:var(--fs-md)'>{nome}</b>"
+                   f"<span style='font-family:var(--font-display);font-weight:700;font-size:21px'>{n}</span></div>")
+        td = "padding:9px 8px;border-bottom:1px solid var(--border);font-size:var(--fs-sm)"
+        resumo_rows += (f"<tr><td style='{td};white-space:nowrap'><span style='display:inline-block;width:9px;"
+                        f"height:9px;border-radius:50%;background:{_FUNIL_CORES[nome]};margin-right:7px'></span><b>{nome}</b></td>"
+                        f"<td style='{td};color:var(--text-muted);line-height:1.4'>{escape(_FUNIL_DEFS.get(nome, ''))}</td>"
+                        f"<td style='{td};text-align:right;font-variant-numeric:tabular-nums'><b>{n}</b></td>"
+                        f"<td style='{td};text-align:right'>{_fmt(taxa, 'pct') if taxa is not None else '—'}</td>"
+                        f"<td style='{td};text-align:right'>{_fmt(tx_lead, 'pct') if tx_lead is not None else '—'}</td></tr>")
+    funil_visual = (
+        "<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:14px;align-items:start'>"
+        f"<div class=card>{barras}</div>"
+        f"<div class=card>" + _tbl([("Etapa", "left"), ("Definição", "left"), ("Total", "right"),
+                                    ("TX", "right"), ("TX Lead", "right")], resumo_rows)
+        + "<p class='note' style='margin:10px 0 0'>TX = conversão sobre a etapa ANTERIOR · TX Lead = sobre o total de leads.</p></div></div>")
     # por origem: qualidade do lead (lead → reunião) por canal
     with conn.cursor() as cur:
         cur.execute("""
@@ -197,13 +214,13 @@ def _pv_funil(conn, request: Request) -> str:
                     f"<td style='{_TD};text-align:right'>{n}</td></tr>" for m, n in desq)
     tem_motivo = any(m != "(sem motivo)" for m, _ in desq)
     ins = ESP.insights_prevendas({
-        "taxa_contato": contato / leads if leads else None,
-        "taxa_agend": reuniao / leads if leads else None,
+        "taxa_contato": sal / leads if leads else None,
+        "taxa_agend": sql_n / leads if leads else None,
         "desq_top": (desq[0] if desq and desq[0][0] != "(sem motivo)" else None)})
     ins_html = "".join(f"<div class=sug-item>→ {escape(i)}</div>" for i in ins)
-    return (f"<h1>Funil de Qualificação</h1><div class=sub>do lead recebido à reunião agendada (handoff p/ Vendas) · régua por evento no período, horário de Brasília</div>"
+    return (f"<h1>Funil de Qualificação</h1><div class=sub>do Lead ao SQL (reunião agendada — handoff p/ Vendas) · mesma taxonomia e régua do Funil de Prospecção do Marketing: evento no período, corte de Brasília — os números batem com o Pipedrive</div>"
             f"<form method=get action=/prevendas><input type=hidden name=view value=funil>{form}</form>"
-            f"<section><h2>Funil</h2>" + _card(_tbl([("Etapa", "left"), ("Deals", "right"), ("TX", "right"), ("TX Lead", "right")], rows)) + "</section>"
+            f"<section><h2>Funil</h2><p class=secsub>largura proporcional ao volume · pílula = conversão sobre a etapa anterior · Oportunidade e Booking seguem no Funil de Fechamento (Vendas)</p>{funil_visual}</section>"
             f"<section><h2>Conversão por dia de chegada do lead</h2><p class=secsub>taxa de agendamento pelo dia da semana em que o lead entrou — a reunião conta a qualquer tempo (coorte)</p>"
             + _card(_tbl([("Dia de chegada", "left"), ("Leads", "right"), ("Agendaram", "right"),
                           ("Taxa", "right")], drows_sem)) + "</section>"
