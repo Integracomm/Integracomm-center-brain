@@ -371,8 +371,13 @@ def _pv_sdrs(conn, request: Request) -> str:
         bq, _bv = book_por.get(nome, (0, 0.0))
         tl[0] += l; tl[1] += o; tl[2] += bq
         speed = speed_por.get(TC.norm(nome))
-        chip = ("" if eh_sdr(nome) or nome == _SEM
-                else " <span class=chip style='--c:var(--status-semdados)'>fora do time de PV</span>")
+        if nome == _SEM or eh_sdr(nome):
+            chip = ""
+        elif TC.norm(ESP.COORD_PREVENDAS) in TC.norm(nome):
+            # coordenação trabalha leads mas não entra em planos/mediana do time
+            chip = " <span class=chip style='--c:var(--brand)'>coordenação</span>"
+        else:
+            chip = " <span class=chip style='--c:var(--status-semdados)'>fora do time de PV</span>"
         if eh_sdr(nome) and not TC.ativo(conn, "prevendas", nome):
             chip = " <span class=chip style='--c:var(--status-semdados)'>desligada</span>"
         orows += (f"<tr><td style='{_TD}'><b>{escape(nome[:30])}</b>{chip}</td>"
@@ -475,7 +480,26 @@ def _horarios_calc(conn, ini: dt.date, fim: dt.date, bundle: str) -> dict:
         por_bundle: dict[str, dict[tuple[int, int], int]] = {}
         for p, dow, h, n in cur.fetchall():
             por_bundle.setdefault(p, {})[(dow, h)] = n
-    return {"celulas": celulas, "por_bundle": por_bundle, "total": sum(celulas.values())}
+        # por COLABORADOR × hora (pedido 14/07: alguém rende mais/menos em
+        # determinado horário?) — atribuição oficial pelo campo SDR do deal;
+        # respeita o filtro de bundle da tela
+        cur.execute(f"""
+            WITH primeira AS (
+                SELECT e.deal_id, min(e.entered_at) AS entered_at
+                  FROM mkt_stage_events e
+                  JOIN mkt_deals_attribution d ON d.deal_id = e.deal_id
+                 WHERE e.stage_id = ANY(%s) AND e.entered_at >= %s AND e.entered_at < %s{filtro_b}
+                 GROUP BY e.deal_id)
+            SELECT COALESCE(d.sdr, '(sem SDR)'),
+                   extract(hour FROM p.entered_at AT TIME ZONE 'America/Sao_Paulo')::int,
+                   count(*)
+              FROM primeira p JOIN mkt_deals_attribution d ON d.deal_id = p.deal_id
+             GROUP BY 1, 2""", [list(_ST_AGENDA)] + args)
+        por_colab: dict[str, dict[int, int]] = {}
+        for nome, h, n in cur.fetchall():
+            por_colab.setdefault(nome, {})[h] = n
+    return {"celulas": celulas, "por_bundle": por_bundle, "por_colab": por_colab,
+            "total": sum(celulas.values())}
 
 
 def _pv_horarios(conn, request: Request) -> str:
@@ -525,6 +549,29 @@ def _pv_horarios(conn, request: Request) -> str:
             f"<div class=kpi><div class=n>{_fmt(depois18 / total, 'pct')}</div><div class=l>após as 18h</div></div>"
             f"<div class=kpi><div class=n>{_fmt(fds / total, 'pct')}</div><div class=l>fim de semana</div></div></div>")
 
+    # --- colaborador × hora: cada linha na PRÓPRIA escala (o forte de cada um,
+    # independente do volume); pico = hora com mais agendamentos da pessoa
+    por_colab = dados.get("por_colab") or {}
+    crows = ""
+    for nome in sorted(por_colab, key=lambda x: (x == "(sem SDR)", -sum(por_colab[x].values()))):
+        cel = por_colab[nome]
+        tot_c = sum(cel.values())
+        vmax_c = max(cel.values())
+        tds = ""
+        for h in horas:
+            n = cel.get(h, 0)
+            alpha = int(8 + 62 * (n / vmax_c)) if n else 0
+            bg = f"background:color-mix(in srgb,var(--brand) {alpha}%,transparent);" if n else ""
+            tds += (f"<td title='{escape(nome)} {h:02d}h — {n} agendamento(s) ({n / tot_c * 100:.0f}% do total dela)' "
+                    f"style='{_TD};text-align:center;{bg}'>{n or ''}</td>")
+        pico_h, pico_n = max(cel.items(), key=lambda x: x[1])
+        aviso = " <span class=note>amostra pequena</span>" if tot_c < 30 else ""
+        crows += (f"<tr><td style='{_TD};white-space:nowrap'><b>{escape(nome[:26])}</b>{aviso}</td>"
+                  f"<td style='{_TD};text-align:right'>{tot_c}</td>{tds}"
+                  f"<td style='{_TD};white-space:nowrap'><b>{pico_h:02d}h</b> ({pico_n})</td></tr>")
+    heat_colab = _tbl([("Colaborador", "left"), ("Total", "right")]
+                      + [(f"{h:02d}h", "left") for h in horas] + [("Pico", "left")], crows)
+
     # --- melhores janelas por bundle ---
     brows = ""
     for p in ("B1", "B2", "B3", "B4", "B5", "sem produto"):
@@ -563,6 +610,9 @@ def _pv_horarios(conn, request: Request) -> str:
             f"<p class=secsub>período {ini.strftime('%d-%m-%Y')} a {fim.strftime('%d-%m-%Y')}"
             f"{' · bundle ' + bundle if bundle != 'todos' else ''} · quanto mais escuro, mais agendamentos</p>"
             + _card(heat) + "</section>"
+            "<section><h2>Agendamentos por colaborador × hora</h2>"
+            "<p class=secsub>atribuição pelo campo SDR do deal · cada linha sombreada na PRÓPRIA escala — mostra o horário forte de cada pessoa, independente do volume · Pico = hora com mais agendamentos dela</p>"
+            + _card("<div style='overflow-x:auto'>" + heat_colab + "</div>") + "</section>"
             "<section><h2>Top 5 janelas</h2>" + _card(top_html + estilo) + "</section>"
             "<section><h2>Melhores janelas por bundle</h2>"
             "<p class=secsub>até 3 janelas com mais agendamentos por bundle no período — bundles com poucas "
