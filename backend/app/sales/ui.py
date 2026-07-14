@@ -164,44 +164,26 @@ def _pv_funil(conn, request: Request) -> str:
             tx = r / l if l else 0
             orows += (f"<tr><td style='{_TD}'>{escape(o[:34])}</td><td style='{_TD};text-align:right'>{l}</td>"
                       f"<td style='{_TD};text-align:right'>{r}</td><td style='{_TD};text-align:right'>{_fmt(tx, 'pct')}</td></tr>")
-    # VELOCIDADE do 1º contato × conversão em reunião (13/07, no lugar da seção
-    # de bundles movida p/ Vendas): prova com dado próprio quanto custa lead
-    # esperando — coorte dos leads do período; reunião conta a qualquer tempo.
+    # DIA DA SEMANA de chegada do lead × conversão (13/07): lead que chega
+    # perto do fim de semana esfria? Coorte; reunião conta a qualquer tempo.
     with conn.cursor() as cur:
         cur.execute("""
-            WITH base AS (
-                SELECT d.deal_id,
-                       EXTRACT(epoch FROM (t.first_at - d.add_time)) / 60 AS mins,
-                       EXISTS (SELECT 1 FROM mkt_stage_events e
-                                WHERE e.deal_id = d.deal_id AND e.stage_id = 6) AS agendou
-                  FROM mkt_deals_attribution d
-                  LEFT JOIN sales_first_touch t ON t.deal_id = d.deal_id
-                 WHERE d.add_time >= %s AND d.add_time < %s)
-            SELECT CASE WHEN mins IS NULL THEN '6. sem contato registrado'
-                        WHEN mins <= 15 THEN '1. até 15 min'
-                        WHEN mins <= 60 THEN '2. 15-60 min'
-                        WHEN mins <= 240 THEN '3. 1-4 horas'
-                        WHEN mins <= 1440 THEN '4. 4-24 horas'
-                        ELSE '5. mais de 24 horas' END AS faixa,
-                   count(*), count(*) FILTER (WHERE agendou)
-              FROM base GROUP BY 1 ORDER BY 1""", (a, b))
-        vdados = cur.fetchall()
-    vrows = ""
-    taxas_v = {}
-    for faixa, n, ag in vdados:
-        tx = ag / n if n else None
-        taxas_v[faixa[0]] = tx
-        vrows += (f"<tr><td style='{_TD}'><b>{escape(faixa[3:])}</b></td>"
-                  f"<td style='{_TD};text-align:right'>{n}</td>"
-                  f"<td style='{_TD};text-align:right'>{ag}</td>"
-                  f"<td style='{_TD};text-align:right'>{_fmt(tx, 'pct')}</td></tr>")
-    destaque_v = ""
-    if taxas_v.get("1") and taxas_v.get("5"):
-        razao = taxas_v["1"] / taxas_v["5"] if taxas_v["5"] else None
-        if razao and razao > 1.2:
-            destaque_v = (f"<div class=note style='margin-top:8px'>lead contatado em até 15 min agenda "
-                          f"<b>{razao:.1f}x mais</b> que lead que esperou 24h+ — a fila sem contato é a "
-                          "maior alavanca da área.</div>")
+            SELECT extract(dow FROM d.add_time AT TIME ZONE 'America/Sao_Paulo')::int,
+                   count(*),
+                   count(*) FILTER (WHERE EXISTS (SELECT 1 FROM mkt_stage_events e
+                                     WHERE e.deal_id = d.deal_id AND e.stage_id = 6))
+              FROM mkt_deals_attribution d
+             WHERE d.add_time >= %s AND d.add_time < %s GROUP BY 1 ORDER BY 1""", (a, b))
+        ddados = {dow: (n, ag) for dow, n, ag in cur.fetchall()}
+    drows_sem = ""
+    for dow in (1, 2, 3, 4, 5, 6, 0):
+        n, ag = ddados.get(dow, (0, 0))
+        if not n:
+            continue
+        drows_sem += (f"<tr><td style='{_TD}'><b>{_DOW_NOME[dow]}</b></td>"
+                      f"<td style='{_TD};text-align:right'>{n}</td>"
+                      f"<td style='{_TD};text-align:right'>{ag}</td>"
+                      f"<td style='{_TD};text-align:right'>{_fmt(ag / n, 'pct')}</td></tr>")
 
     # motivos de desqualificação (perdidos criados no período, etapa pré-handoff)
     with conn.cursor() as cur:
@@ -222,9 +204,9 @@ def _pv_funil(conn, request: Request) -> str:
     return (f"<h1>Funil de Qualificação</h1><div class=sub>do lead recebido à reunião agendada (handoff p/ Vendas) · régua por evento no período, horário de Brasília</div>"
             f"<form method=get action=/prevendas><input type=hidden name=view value=funil>{form}</form>"
             f"<section><h2>Funil</h2>" + _card(_tbl([("Etapa", "left"), ("Deals", "right"), ("TX", "right"), ("TX Lead", "right")], rows)) + "</section>"
-            f"<section><h2>Velocidade do 1º contato × conversão</h2><p class=secsub>leads do período por faixa de tempo até o 1º contato registrado — a reunião conta a qualquer tempo (coorte); períodos recentes ainda amadurecem</p>"
-            + _card(_tbl([("1º contato em", "left"), ("Leads", "right"), ("Agendaram", "right"),
-                          ("Taxa", "right")], vrows) + destaque_v) + "</section>"
+            f"<section><h2>Conversão por dia de chegada do lead</h2><p class=secsub>taxa de agendamento pelo dia da semana em que o lead entrou — a reunião conta a qualquer tempo (coorte)</p>"
+            + _card(_tbl([("Dia de chegada", "left"), ("Leads", "right"), ("Agendaram", "right"),
+                          ("Taxa", "right")], drows_sem)) + "</section>"
             f"<section><h2>Qualidade do lead por origem</h2><p class=secsub>taxa lead→reunião por canal — realimenta a segmentação do Marketing</p>"
             + _card(_tbl([("Origem", "left"), ("Leads", "right"), ("Reuniões", "right"), ("Lead→Reunião", "right")], orows)) + "</section>"
             f"<section><h2>Motivos de desqualificação</h2><p class=secsub>perdidos antes do handoff</p>"
@@ -280,9 +262,69 @@ def _pv_speed(conn, request: Request) -> str:
                     f"<td style='{_TD};text-align:right'>{_fmt(st.median(v), 'min')}</td>"
                     f"<td style='{_TD};text-align:right'>{_fmt(sum(1 for m in v if m <= 15) / len(v), 'pct')}</td></tr>")
         return _tbl([("", "left"), ("Leads", "right"), ("Mediana", "right"), ("≤15 min", "right")], out)
+
+    # VELOCIDADE × CONVERSÃO (movida do Funil 13/07 — é assunto desta aba):
+    # prova com dado próprio quanto custa lead esperando. Coorte do período.
+    with conn.cursor() as cur:
+        cur.execute("""
+            WITH base AS (
+                SELECT d.deal_id,
+                       EXTRACT(epoch FROM (t.first_at - d.add_time)) / 60 AS mins,
+                       COALESCE(t.tipo, '(sem registro)') AS tipo,
+                       EXISTS (SELECT 1 FROM mkt_stage_events e
+                                WHERE e.deal_id = d.deal_id AND e.stage_id = 6) AS agendou
+                  FROM mkt_deals_attribution d
+                  LEFT JOIN sales_first_touch t ON t.deal_id = d.deal_id
+                 WHERE d.add_time >= %s AND d.add_time < %s)
+            SELECT CASE WHEN mins IS NULL THEN '6. sem contato registrado'
+                        WHEN mins <= 15 THEN '1. até 15 min'
+                        WHEN mins <= 60 THEN '2. 15-60 min'
+                        WHEN mins <= 240 THEN '3. 1-4 horas'
+                        WHEN mins <= 1440 THEN '4. 4-24 horas'
+                        ELSE '5. mais de 24 horas' END AS faixa,
+                   count(*), count(*) FILTER (WHERE agendou)
+              FROM base GROUP BY 1 ORDER BY 1""", (a, b))
+        vdados = cur.fetchall()
+        cur.execute("""
+            SELECT COALESCE(t.tipo, '(sem registro)'), count(*),
+                   count(*) FILTER (WHERE EXISTS (SELECT 1 FROM mkt_stage_events e
+                                     WHERE e.deal_id = d.deal_id AND e.stage_id = 6))
+              FROM mkt_deals_attribution d
+              LEFT JOIN sales_first_touch t ON t.deal_id = d.deal_id
+             WHERE d.add_time >= %s AND d.add_time < %s
+             GROUP BY 1 HAVING count(*) >= 5 ORDER BY 2 DESC""", (a, b))
+        tdados = cur.fetchall()
+    vrows, taxas_v = "", {}
+    for faixa, n, ag in vdados:
+        tx = ag / n if n else None
+        taxas_v[faixa[0]] = tx
+        vrows += (f"<tr><td style='{_TD}'><b>{escape(faixa[3:])}</b></td>"
+                  f"<td style='{_TD};text-align:right'>{n}</td>"
+                  f"<td style='{_TD};text-align:right'>{ag}</td>"
+                  f"<td style='{_TD};text-align:right'>{_fmt(tx, 'pct')}</td></tr>")
+    destaque_v = ""
+    if taxas_v.get("1") and taxas_v.get("5"):
+        razao = taxas_v["1"] / taxas_v["5"] if taxas_v["5"] else None
+        if razao and razao > 1.2:
+            destaque_v = (f"<div class=note style='margin-top:8px'>lead contatado em até 15 min agenda "
+                          f"<b>{razao:.1f}x mais</b> que lead que esperou 24h+ — a fila sem contato é a "
+                          "maior alavanca da área.</div>")
+    trows_tipo = "".join(
+        f"<tr><td style='{_TD}'><b>{escape(str(tp)[:34])}</b></td>"
+        f"<td style='{_TD};text-align:right'>{n}</td>"
+        f"<td style='{_TD};text-align:right'>{ag}</td>"
+        f"<td style='{_TD};text-align:right'>{_fmt(ag / n if n else None, 'pct')}</td></tr>"
+        for tp, n, ag in tdados)
+
     return (f"<h1>Speed-to-Lead</h1><div class=sub>tempo entre o lead entrar e o 1º contato registrado no Pipedrive · SLA-alvo a confirmar com o Marcos</div>"
             f"<form method=get action=/prevendas><input type=hidden name=view value=speed>{form}</form>"
             + kpis +
+            f"<section><h2>Velocidade do 1º contato × conversão</h2><p class=secsub>leads do período por faixa de tempo até o 1º contato — a reunião conta a qualquer tempo (coorte); períodos recentes ainda amadurecem</p>"
+            + _card(_tbl([("1º contato em", "left"), ("Leads", "right"), ("Agendaram", "right"),
+                          ("Taxa", "right")], vrows) + destaque_v) + "</section>"
+            f"<section><h2>Taxa de agendamento por tipo de 1º contato</h2><p class=secsub>ligação, WhatsApp, cadência… — qual abordagem inicial converte mais (mín. 5 leads)</p>"
+            + _card(_tbl([("Tipo", "left"), ("Leads", "right"), ("Agendaram", "right"),
+                          ("Taxa", "right")], trows_tipo)) + "</section>"
             f"<section><h2>Por responsável do 1º contato</h2>{_card(bloco(por_quem))}</section>"
             f"<section><h2>Por origem</h2>{_card(bloco(por_origem))}</section>")
 
