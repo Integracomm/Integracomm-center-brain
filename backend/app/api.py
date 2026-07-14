@@ -508,8 +508,11 @@ def hub(request: Request):
         mkt = _hub_mkt_stats(c)
         sales = _hub_sales_stats(c)
         ops = _hub_op_stats(c)
+        grava_snapshot_risco(c)
+        mudancas = _hub_mudancas(c)
         users = list_users(c)
-    return HTMLResponse(_render_hub(user, stats, users, mkt, sales=sales, ops=ops))
+    return HTMLResponse(_render_hub(user, stats, users, mkt, sales=sales, ops=ops,
+                                    mudancas=mudancas))
 
 
 @app.get("/admin", response_class=HTMLResponse)
@@ -1211,10 +1214,79 @@ def _hub_op_stats(conn: Any) -> dict | None:
         return None
 
 
+def _hub_mudancas(conn: Any) -> str:
+    """'O que mudou desde ontem' (14/07): deltas das últimas 24h/última rodada,
+    derivados dos dados existentes — a rotina diária de 30 segundos do gestor."""
+    itens: list[tuple[str, str]] = []
+    try:
+        with conn.cursor() as cur:
+            # GROWTH: bandas vs run anterior (duas últimas rodadas de score)
+            cur.execute("""SELECT run_id FROM scores GROUP BY run_id
+                            ORDER BY max(computed_at) DESC LIMIT 2""")
+            runs = [r[0] for r in cur.fetchall()]
+            if len(runs) == 2:
+                cur.execute("""
+                    SELECT count(*) FILTER (WHERE n.risk_band='critico' AND o.risk_band <> 'critico'),
+                           count(*) FILTER (WHERE n.risk_band <> 'critico' AND o.risk_band='critico'),
+                           count(*) FILTER (WHERE n.risk_band <> o.risk_band)
+                      FROM scores n JOIN scores o ON o.account_id = n.account_id
+                     WHERE n.run_id = %s AND o.run_id = %s""", (runs[0], runs[1]))
+                ent, sai, mud = cur.fetchone()
+                if ent:
+                    itens.append((f"<b style='color:var(--status-critico)'>{ent}</b> conta(s) ENTRARAM em crítico na última rodada", "/growth?view=alertas"))
+                if sai:
+                    itens.append((f"<b style='color:var(--status-baixo)'>{sai}</b> conta(s) saíram de crítico", "/growth"))
+                if mud - ent - sai > 0:
+                    itens.append((f"{mud - ent - sai} conta(s) mudaram de faixa de risco", "/growth"))
+            # VENDAS: bookings e oportunidades nas últimas 24h
+            cur.execute("""SELECT count(*), COALESCE(sum(COALESCE(valor_custom, valor)), 0)
+                             FROM mkt_deals_attribution
+                            WHERE status='won' AND won_time >= now() - interval '24 hours'""")
+            bk, rec = cur.fetchone()
+            if bk:
+                itens.append((f"<b style='color:var(--status-baixo)'>{bk}</b> booking(s) nas últimas 24h — R$ {float(rec):,.0f}".replace(",", "."), "/vendas"))
+            cur.execute("""SELECT count(*) FROM mkt_deals_attribution
+                            WHERE oport_time >= now() - interval '24 hours'""")
+            op = cur.fetchone()[0]
+            if op:
+                itens.append((f"<b>{op}</b> nova(s) oportunidade(s) nas últimas 24h", "/vendas?view=funil"))
+            # MARKETING: CPL de ontem vs média 7d anterior, por canal pago
+            cur.execute("""
+                WITH d1 AS (SELECT canal, sum(spend) g, sum(leads) l FROM mkt_insights_daily
+                             WHERE date = CURRENT_DATE - 1 GROUP BY 1),
+                     d7 AS (SELECT canal, sum(spend) g, sum(leads) l FROM mkt_insights_daily
+                             WHERE date >= CURRENT_DATE - 8 AND date < CURRENT_DATE - 1 GROUP BY 1)
+                SELECT d1.canal, d1.g / NULLIF(d1.l, 0), d7.g / NULLIF(d7.l, 0)
+                  FROM d1 JOIN d7 ON d7.canal = d1.canal""")
+            for cn, cpl1, cpl7 in cur.fetchall():
+                if cpl1 and cpl7 and (cpl1 / cpl7 > 1.3 or cpl1 / cpl7 < 0.7):
+                    dirc = "subiu" if cpl1 > cpl7 else "caiu"
+                    cor = "--status-critico" if cpl1 > cpl7 else "--status-baixo"
+                    nome = "Meta Ads" if cn == "meta" else "Google Ads"
+                    itens.append((f"CPL do {nome} <b style='color:var({cor})'>{dirc}</b> p/ R$ {float(cpl1):,.0f} ontem (média 7d: R$ {float(cpl7):,.0f})".replace(",", "."), "/marketing?view=midia"))
+            # OPERAÇÕES: iniciativas que viraram atrasadas desde ontem
+            cur.execute("""SELECT count(*) FROM notion_initiatives_cache
+                            WHERE prazo = CURRENT_DATE - 1 AND status <> 'concluida'""")
+            atr = cur.fetchone()[0]
+            if atr:
+                itens.append((f"<b style='color:var(--status-critico)'>{atr}</b> iniciativa(s) viraram ATRASADAS desde ontem", "/operacoes"))
+    except Exception:  # noqa: BLE001 — resumo nunca derruba o hub
+        pass
+    if not itens:
+        return ""
+    lis = "".join(f"<a href='{href}' style='display:flex;gap:9px;align-items:center;padding:7px 0;"
+                  f"border-top:1px solid var(--border);color:var(--text-2);font-size:var(--fs-sm);"
+                  f"text-decoration:none'><span>→</span><span>{txt}</span></a>" for txt, href in itens)
+    return ("<section><h2>O que mudou desde ontem</h2>"
+            "<p class=secsub>deltas das últimas 24h / última rodada — clique para abrir a área</p>"
+            f"<div class=central>{lis}</div></section>")
+
+
 def _render_hub(role: str, st: dict, users: list[dict] | None = None,
                 mkt: dict | None = None, page: str = "home",
                 llm: dict | None = None, sales: dict | None = None,
-                teams_html: str = "", ops: dict | None = None) -> str:
+                teams_html: str = "", ops: dict | None = None,
+                mudancas: str = "") -> str:
     n_alerts = sum(st["sev"].values())
     crit = st["sev"].get("critico", 0)
 
@@ -1568,6 +1640,7 @@ __BODY__
             "<h1>Visão central</h1>"
             "<p class=sub>Painel de saúde da empresa: Growth, Marketing, Pré-vendas, Vendas e Operações ativas (Financeiro em breve). A pior área do momento aparece primeiro na faixa de saúde.</p>"
             f"<div class=kpis>{kpi_html}</div>"
+            + mudancas +
             "<section><h2>Saúde por área</h2>"
             "<p class=secsub>diagnóstico automático do mês corrente, ordenado da área que mais demanda atenção para a mais saudável — clique para abrir</p>"
             f"<div class=hbar>{hbar}</div></section>"
