@@ -591,6 +591,65 @@ def api_account_outcome(account_id: str, request: Request, payload: dict = Body(
     return {"ok": True}
 
 
+def grava_snapshot_risco(conn: Any) -> None:
+    """Snapshot DIÁRIO agregado do risco da carteira (série temporal do Growth,
+    14/07): 1 linha/dia, upsert idempotente — chamado pela sentinela (30/30min
+    no servidor) e no load do hub. A série começa a existir a partir de agora."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""CREATE TABLE IF NOT EXISTS grw_risk_snapshot (
+                dia DATE PRIMARY KEY, criticos INT, altos INT, atencao INT,
+                mrr_risco NUMERIC, avaliaveis INT, gravado_em TIMESTAMPTZ DEFAULT now())""")
+            cur.execute("""
+                WITH ult AS (
+                    SELECT DISTINCT ON (s.account_id) s.*, a.recurring_revenue AS mrr
+                      FROM scores s JOIN accounts a ON a.id = s.account_id
+                     ORDER BY s.account_id, s.computed_at DESC),
+                ab AS (SELECT account_id, severity FROM alerts WHERE status='aberto')
+                INSERT INTO grw_risk_snapshot (dia, criticos, altos, atencao, mrr_risco, avaliaveis)
+                SELECT CURRENT_DATE,
+                       count(*) FILTER (WHERE ab.severity='critico'),
+                       count(*) FILTER (WHERE ab.severity='alto'),
+                       count(*) FILTER (WHERE ab.severity='atencao'),
+                       COALESCE(sum(u.mrr) FILTER (WHERE u.risk_band IN ('alto','critico')), 0),
+                       count(*) FILTER (WHERE u.evaluable)
+                  FROM ult u LEFT JOIN ab ON ab.account_id = u.account_id
+                ON CONFLICT (dia) DO UPDATE SET criticos=EXCLUDED.criticos, altos=EXCLUDED.altos,
+                    atencao=EXCLUDED.atencao, mrr_risco=EXCLUDED.mrr_risco,
+                    avaliaveis=EXCLUDED.avaliaveis, gravado_em=now()""")
+    except Exception:  # noqa: BLE001 — snapshot nunca derruba quem chamou
+        pass
+
+
+def _risco_evolucao_html(conn: Any) -> str:
+    """Série do risco da carteira (grw_risk_snapshot) — 'as intervenções estão
+    reduzindo o risco?'. Enquanto só houver 1 ponto, mostra a nota de início."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT dia, criticos, altos, atencao, mrr_risco
+                             FROM grw_risk_snapshot ORDER BY dia DESC LIMIT 14""")
+            pts = cur.fetchall()[::-1]
+    except Exception:  # noqa: BLE001
+        return ""
+    if not pts:
+        return ""
+    linhas = "".join(
+        f"<tr><td style='padding:6px 8px;border-bottom:1px solid var(--border)'>{d.strftime('%d/%m')}</td>"
+        f"<td class=num style='padding:6px 8px;border-bottom:1px solid var(--border);color:var(--status-critico)'>{c}</td>"
+        f"<td class=num style='padding:6px 8px;border-bottom:1px solid var(--border)'>{al}</td>"
+        f"<td class=num style='padding:6px 8px;border-bottom:1px solid var(--border)'>{at}</td>"
+        f"<td class=num style='padding:6px 8px;border-bottom:1px solid var(--border)'>R$ {float(m or 0):,.0f}</td></tr>".replace(",", ".")
+        for d, c, al, at, m in pts)
+    nota = ("<p class=note>Série iniciada agora (1 snapshot/dia, gravado pela sentinela) — em poucas semanas "
+            "este quadro responde se as intervenções estão reduzindo o risco da carteira.</p>" if len(pts) < 5 else "")
+    return ("<section><div class=sec-head><h2>Evolução do risco da carteira</h2>"
+            "<span class=sub>1 snapshot por dia — alertas abertos e MRR nas faixas alto/crítico</span></div>"
+            "<div class=card style='padding:12px 14px'><table style='width:100%;border-collapse:collapse'>"
+            "<tr><th style='text-align:left;padding:6px 8px'>Dia</th><th class=num style='padding:6px 8px'>Críticos</th>"
+            "<th class=num style='padding:6px 8px'>Altos</th><th class=num style='padding:6px 8px'>Atenção</th>"
+            "<th class=num style='padding:6px 8px'>MRR em risco</th></tr>" + linhas + "</table>" + nota + "</div></section>")
+
+
 def _modelo_precisao(conn: Any) -> dict | None:
     """Previsões × desfechos registrados — a medição de ROI do modelo.
     Falso positivo provável = alertada, retida SEM intervenção registrada."""
@@ -708,6 +767,10 @@ def dashboard(request: Request, view: str = Query("contas")):
         interventions = _recent_interventions(c) if view == "playbooks" else None
         cancel = _cancel_rows(c) if view == "cancelamentos" else None
         modelo = _modelo_precisao(c) if view == "alertas" else None
+        evolucao = ""
+        if view == "alertas":
+            grava_snapshot_risco(c)
+            evolucao = _risco_evolucao_html(c)
         base_bundle = None
         if view == "cancelamentos":
             with c.cursor() as cur:
@@ -716,7 +779,8 @@ def dashboard(request: Request, view: str = Query("contas")):
                 base_bundle = dict(cur.fetchall())
     return HTMLResponse(_render(role, scores, alerts, practices, view=view,
                                 interventions=interventions, cancel=cancel, usermail=user,
-                                request=request, base_bundle=base_bundle, modelo=modelo))
+                                request=request, base_bundle=base_bundle, modelo=modelo,
+                                evolucao=evolucao))
 
 
 def _recent_interventions(conn: Any, limit: int = 20) -> list[dict]:
@@ -1646,7 +1710,8 @@ def _render(role: str, scores: list[dict], alerts: list[dict],
             practices: dict | None = None, view: str = "contas",
             interventions: list | None = None, cancel: list | None = None,
             usermail: str = "", request: Request | None = None,
-            base_bundle: dict | None = None, modelo: dict | None = None) -> str:
+            base_bundle: dict | None = None, modelo: dict | None = None,
+            evolucao: str = "") -> str:
     evaluable = [s for s in scores if s["evaluable"]]
     non_eval = [s for s in scores if not s["evaluable"]]
     evaluable.sort(key=lambda s: (float(s["score"]), -_mrr_val(s)))
@@ -1850,7 +1915,7 @@ __SCRIPT__
             f"<div class=kpi><div class=n style='color:var(--status-critico)'>{sev_counts.get('critico', 0)}</div><div class=l>Crítico</div><div class=s>sinal explícito de saída / faixa crítica</div></div>"
             f"<div class=kpi><div class=n style='color:var(--status-alto)'>{sev_counts.get('alto', 0)}</div><div class=l>Alto</div><div class=s>insatisfação ativa / risco alto</div></div>"
             f"<div class=kpi><div class=n style='color:var(--status-medio)'>{sev_counts.get('atencao', 0)}</div><div class=l>Atenção</div><div class=s>churner quieto — começando a cair</div></div>"
-            f"</div>" + _modelo_html(modelo) + f"<section>{alerts_tbl}"
+            f"</div>" + _modelo_html(modelo) + evolucao + f"<section>{alerts_tbl}"
             "<div class=pager><button id=pa-prev onclick='paGo(-1)'>‹ anterior</button>"
             f"<span class=pginfo id=painfo></span><span class=count>total: <b>{len(alerts)}</b></span>"
             "<button id=pa-next onclick='paGo(1)'>próxima ›</button></div>"

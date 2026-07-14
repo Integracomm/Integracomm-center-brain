@@ -236,6 +236,33 @@ def _pv_speed(conn, request: Request) -> str:
     if not any(r[2] for r in rows):
         return (f"<h1>Speed-to-Lead</h1><div class=sub>tempo entre o lead entrar e o 1º contato registrado</div>"
                 f"<section>{_aviso_coleta('atividades (1º contato)')}</section>")
+    # ---- evolução mensal (6m): taxa lead→SQL e speed mediano (14/07) -------
+    from ..marketing.ui import _funil_oficial
+    hoje_e = dt.date.today()
+    evo_rows, mes_e = "", (hoje_e.replace(day=1) - dt.timedelta(days=150)).replace(day=1)
+    while mes_e <= hoje_e.replace(day=1):
+        prox_e = (mes_e.replace(day=28) + dt.timedelta(days=4)).replace(day=1)
+        fim_e = min(hoje_e, prox_e - dt.timedelta(days=1))
+        pe, _bk, tot_e, _rc = _funil_oficial(conn, mes_e, fim_e)
+        ae, be = _brt(mes_e, fim_e)
+        with conn.cursor() as cur:
+            cur.execute("""SELECT percentile_cont(0.5) WITHIN GROUP
+                                  (ORDER BY EXTRACT(epoch FROM t.first_at - d.add_time) / 60)
+                             FROM sales_first_touch t JOIN mkt_deals_attribution d ON d.deal_id = t.deal_id
+                            WHERE d.add_time >= %s AND d.add_time < %s""", (ae, be))
+            sp = cur.fetchone()[0]
+        # mediana absurda (>7 dias) = mês sem coleta de atividades — não exibir
+        sp_v = float(sp) if sp is not None and float(sp) <= 7 * 24 * 60 else None
+        evo_rows += (f"<tr><td style='{_TD}'><b>{mes_e.strftime('%m/%y')}</b></td>"
+                     f"<td style='{_TD};text-align:right'>{tot_e}</td>"
+                     f"<td style='{_TD};text-align:right'>{pe[3]}</td>"
+                     f"<td style='{_TD};text-align:right'>{_fmt(pe[3] / tot_e if tot_e else None, 'pct')}</td>"
+                     f"<td style='{_TD};text-align:right'>{_fmt(sp_v, 'min')}</td></tr>")
+        mes_e = prox_e
+    evo_sec = ("<section><h2>Evolução mensal (6 meses)</h2>"
+               "<p class=secsub>taxa lead→SQL (régua oficial; retroativa — meses antigos são mais confiáveis) e mediana do 1º contato ('—' = mês anterior à coleta de atividades) · a trajetória, não a foto</p>"
+               + _card(_tbl([("Mês", "left"), ("Leads", "right"), ("SQL", "right"), ("Lead→SQL", "right"), ("Speed (med.)", "right")], evo_rows)) + "</section>")
+
     from .. import team_config as TC
     mins, por_quem, por_origem, sem_toque = [], {}, {}, 0
     for _did, add, first, quem, origem in rows:
@@ -330,7 +357,7 @@ def _pv_speed(conn, request: Request) -> str:
             + _card(_tbl([("Tipo", "left"), ("Leads", "right"), ("Agendaram", "right"),
                           ("Taxa", "right")], trows_tipo)) + "</section>"
             f"<section><h2>Por responsável do 1º contato</h2>{_card(bloco(por_quem))}</section>"
-            f"<section><h2>Por origem</h2>{_card(bloco(por_origem))}</section>")
+            f"<section><h2>Por origem</h2>{_card(bloco(por_origem))}</section>" + evo_sec)
 
 
 def _pv_sdrs(conn, request: Request) -> str:

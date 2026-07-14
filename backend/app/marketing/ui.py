@@ -233,13 +233,57 @@ def _canais(conn, request: Request) -> str:
                  f"<td class=num>{_fmt(r['conv_lead_oport'], 'pct')}</td><td class=num>{r['bookings']}</td>"
                  f"<td class=num>{_fmt(r['conv_lead_book'], 'pct')}</td><td class=num>{_fmt(r['receita'], 'brl')}</td>"
                  f"<td class=num>{_fmt(r['cac'], 'brl')}</td><td class=num>{roas}</td></tr>")
+    # ---- evolução mensal (6m) dos canais PAGOS: leads, CPL, CAC (14/07) ----
+    with conn.cursor() as cur:
+        cur.execute("""SELECT to_char(date_trunc('month', add_time - interval '3 hours'), 'MM/YY'),
+                              origem, count(*), count(*) FILTER (WHERE status='won')
+                         FROM mkt_deals_attribution
+                        WHERE add_time >= date_trunc('month', now()) - interval '5 months'
+                        GROUP BY date_trunc('month', add_time - interval '3 hours'), origem
+                        ORDER BY date_trunc('month', add_time - interval '3 hours')""")
+        ml: dict[str, dict[str, list[int]]] = {}
+        meses_seq: list[str] = []
+        for mes, og, n, w in cur.fetchall():
+            if mes not in meses_seq:
+                meses_seq.append(mes)
+            c = AN.canal_de(og)
+            t = ml.setdefault(c, {}).setdefault(mes, [0, 0])
+            t[0] += n; t[1] += w
+        cur.execute("""SELECT to_char(date_trunc('month', date), 'MM/YY'), canal, sum(spend)
+                         FROM mkt_insights_daily
+                        WHERE date >= date_trunc('month', now()) - interval '5 months'
+                        GROUP BY 1, 2""")
+        gasto_m = {(("Meta Ads" if cn == "meta" else "Google Ads"), mes): float(s)
+                   for mes, cn, s in cur.fetchall()}
+    _ne = "padding:6px 8px;border-bottom:1px solid var(--border);font-variant-numeric:tabular-nums;font-size:var(--fs-xs);text-align:center"
+    evo_rows = ""
+    for canal in ("Meta Ads", "Google Ads"):
+        for metrica in ("Leads", "CPL", "CAC"):
+            tds = ""
+            for mes in meses_seq:
+                n, w = (ml.get(canal, {}).get(mes) or [0, 0])
+                g = gasto_m.get((canal, mes))
+                if metrica == "Leads":
+                    v = str(n) if n else "—"
+                elif metrica == "CPL":
+                    v = f"R$ {g / n:,.0f}".replace(",", ".") if g and n else "—"
+                else:
+                    v = f"R$ {g / w:,.0f}".replace(",", ".") if g and w else "—"
+                tds += f"<td style='{_ne}'>{v}</td>"
+            evo_rows += (f"<tr><td style='{_ne};text-align:left'><b>{canal}</b> · {metrica}</td>{tds}</tr>")
+    evo_sec = ("<section><h2>Evolução mensal — mídia paga (6 meses)</h2>"
+               "<p class=secsub>leads = deals criados no mês (coorte) · CPL = gasto ÷ leads · CAC = gasto ÷ bookings da coorte (mês recente subestima bookings — o lead ainda converte)</p>"
+               f"<div class=card><table style='width:100%;border-collapse:collapse'><tr><th style='text-align:left;padding:6px 8px'></th>"
+               + "".join(f"<th style='{_ne}'>{m}</th>" for m in meses_seq) + f"</tr>{evo_rows}</table></div></section>")
+
     return (f"<h1>Ranking de Canais</h1><div class=sub>período selecionável · comparativo de leads vs período anterior equivalente</div>"
             f"<form method=get action=/marketing><input type=hidden name=view value=canais>{form}</form>"
             f"<section><div class=card><table><tr><th>Canal</th><th class=num>Gasto</th><th class=num>Leads</th>"
             f"<th class=num>CPL</th><th class=num>Lead→Oport</th><th class=num>Bookings</th><th class=num>Lead→Book</th>"
             f"<th class=num>Receita</th><th class=num>CAC</th><th class=num>ROAS</th></tr>{rows}</table>"
             f"<p class='note' style='margin:10px 0 0'>Canais sem custo de mídia aparecem com CPL/CAC “—” (custo zero) — a eficiência relativa está nas conversões. "
-            f"“Oportunidade” = lead do período que tem Dia Oportunidade preenchido (virou oportunidade a qualquer tempo — régua de COORTE, mede a qualidade do lead; a aba Funil conta as oportunidades ocorridas NO período).</p></div></section>")
+            f"“Oportunidade” = lead do período que tem Dia Oportunidade preenchido (virou oportunidade a qualquer tempo — régua de COORTE, mede a qualidade do lead; a aba Funil conta as oportunidades ocorridas NO período).</p></div></section>"
+            + evo_sec)
 
 
 def _origem_paga(origem) -> bool:

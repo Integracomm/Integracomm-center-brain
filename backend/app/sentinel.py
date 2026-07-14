@@ -180,6 +180,9 @@ def run_once(conn_factory, dry: bool = False) -> int:
     try:
         conn.autocommit = True
         _ensure(conn)
+        # série temporal do risco (1 linha/dia, upsert) — carona na sentinela
+        from .api import grava_snapshot_risco
+        grava_snapshot_risco(conn)
         contas = _contas(conn)
         total = 0
         for fn in (check_cs_funnel, check_whatsapp):
