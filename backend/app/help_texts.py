@@ -138,8 +138,8 @@ HELP: dict[str, list[tuple[str, str]]] = {
         ("Deals empacados", "Negociações abertas paradas há mais tempo que o padrão. Insights: (1) é a fila de destrave da coordenação — cada linha merece decisão: reativar com prazo ou perder oficialmente; (2) empacado antigo inflando o pipeline = forecast irreal."),
     ],
     "vendas/closers": [
-        ("_intro", "Produtividade individual dos closers (dono atual do deal): bookings, receita, conversão e ciclo, mais planos de ação por regra vs mediana do time. Material do 1:1 da Valéria."),
-        ("Performance por closer", "Números individuais do período. Insights: (1) receita alta com poucos bookings = perfil caçador de ticket grande — combine a distribuição de leads com isso; (2) conversão abaixo da mediana com ciclo longo = deals presos, veja os empacados dessa pessoa."),
+        ("_intro", "Produtividade individual dos closers (dono atual do deal): oportunidades, bookings, conversão e ticket, mais planos de ação por regra vs mediana do time. Material do 1:1 da Valéria. A lista do time é editável no Painel Administrativo — chips identificam coordenação (Valéria), gerência (Marcos) e desligados; quem está na régua do funil mas não é colaborador (ex. parceiros externos) não aparece aqui."),
+        ("Performance por closer", "Números individuais do período; linhas de coordenação/gerência aparecem com chip e ficam FORA dos planos e da mediana (não são closers coacháveis). Insights: (1) receita alta com poucos bookings = perfil caçador de ticket grande — combine a distribuição de leads com isso; (2) conversão abaixo da mediana com ciclo longo = deals presos, veja os empacados dessa pessoa."),
         ("Planos de ação individuais", "Fortes/fracos/ações por closer, derivados por regra. Insight: ponto de partida do 1:1 — contextualize com mix de leads e ausências antes de cobrar."),
     ],
     "vendas/forecast": [

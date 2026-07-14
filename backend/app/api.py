@@ -873,24 +873,27 @@ def _llm_budget_html(llm: dict | None) -> str:
 _TEAM_AREAS = [("prevendas", "Pré-vendas (SDRs)",
                 "destaque e planos de ação da aba Time & Planos"),
                ("vendas", "Vendas (closers)",
-                "⚠ é a RÉGUA do SQL do funil oficial (deal na mão de closer) — manter idêntica ao SQL_CLOSERS do dashboard do time; desligados ficam na lista como inativos")]
+                "⚠ a lista inteira (todos os papéis) é a RÉGUA do SQL do funil oficial (deal na mão de closer) — manter equivalente ao SQL_CLOSERS do dashboard do time")]
+_PAPEL_SUFIXO = {"coordenacao": " | coordenação", "gerencia": " | gerência", "regua": " | só régua"}
 
 
 def _teams_html(conn) -> str:
-    """Times por área editáveis (tabela area_team): um nome por linha, linha
-    começando com '-' = inativo (fora dos rankings; segue valendo na régua)."""
+    """Times por área editáveis (tabela area_team): um nome por linha;
+    '-' no começo = desligado; '| papel' = coordenação/gerência/só régua."""
     from .team_config import listas
     blocos = ""
     for area, titulo, nota in _TEAM_AREAS:
-        linhas = "\n".join(("-" if not ativo else "") + nome for nome, ativo in listas(conn, area))
+        linhas = "\n".join(("-" if not ativo else "") + nome + _PAPEL_SUFIXO.get(papel, "")
+                           for nome, ativo, papel in listas(conn, area))
         blocos += (f"<div style='flex:1;min-width:280px'><b>{titulo}</b>"
                    f"<p class=secsub style='margin:4px 0 6px'>{nota}</p>"
-                   f"<textarea name='{area}' rows=9 style='width:100%;background:var(--bg-panel);"
+                   f"<textarea name='{area}' rows=10 style='width:100%;background:var(--bg-panel);"
                    f"border:1px solid var(--border-strong);border-radius:var(--radius-sm);color:var(--text);"
                    f"font-family:var(--font-body);font-size:var(--fs-sm);padding:9px 11px'>{escape(linhas)}</textarea></div>")
     return ("<section><h2>Times por área</h2>"
             "<p class=secsub>um nome por linha, como aparece no Pipedrive (o casamento ignora acentos e aceita nome contido) · "
-            "linha começando com <b>-</b> = desligado (sai dos rankings, permanece nas réguas) · salvar vale na hora</p>"
+            "<b>-</b> no começo = desligado (aparece com chip, sem plano) · sufixos: <b>| coordenação</b> e <b>| gerência</b> "
+            "(chip próprio, fora de planos/mediana) · <b>| só régua</b> = não é colaborador, some dos rankings mas conta na régua do funil · salvar vale na hora</p>"
             "<div class=central><form method=post action='/admin/times'>"
             "<div style='display:flex;gap:18px;flex-wrap:wrap'>" + blocos + "</div>"
             "<button type=submit style='margin-top:12px'>Salvar times</button></form></div></section>")

@@ -328,7 +328,6 @@ def _pv_sdrs(conn, request: Request) -> str:
     ini, fim, form = _periodo(request)
     a, b = _brt(ini, fim)
     from .. import team_config as TC
-    eh_sdr = TC.casador(conn, "prevendas")
 
     # ---- números OFICIAIS por colaborador (régua dos gráficos do Pipedrive/
     # Insights que a gestão acompanha): atribuição = campo SDR do deal, SEM
@@ -371,22 +370,26 @@ def _pv_sdrs(conn, request: Request) -> str:
         bq, _bv = book_por.get(nome, (0, 0.0))
         tl[0] += l; tl[1] += o; tl[2] += bq
         speed = speed_por.get(TC.norm(nome))
-        if nome == _SEM or eh_sdr(nome):
+        papel = TC.papel_de(conn, "prevendas", nome)
+        if nome == _SEM:
             chip = ""
-        elif TC.norm(ESP.COORD_PREVENDAS) in TC.norm(nome):
+        elif papel == "coordenacao":
             # coordenação trabalha leads mas não entra em planos/mediana do time
             chip = " <span class=chip style='--c:var(--brand)'>coordenação</span>"
+        elif papel == "gerencia":
+            chip = " <span class=chip style='--c:var(--brand)'>gerência</span>"
+        elif papel == "membro":
+            chip = ("" if TC.ativo(conn, "prevendas", nome)
+                    else " <span class=chip style='--c:var(--status-semdados)'>desligada</span>")
         else:
             chip = " <span class=chip style='--c:var(--status-semdados)'>fora do time de PV</span>"
-        if eh_sdr(nome) and not TC.ativo(conn, "prevendas", nome):
-            chip = " <span class=chip style='--c:var(--status-semdados)'>desligada</span>"
         orows += (f"<tr><td style='{_TD}'><b>{escape(nome[:30])}</b>{chip}</td>"
                   f"<td style='{_TD};text-align:right'>{l}</td>"
                   f"<td style='{_TD};text-align:right'>{o}</td>"
                   f"<td style='{_TD};text-align:right'>{_fmt(o / l if l else None, 'pct')}</td>"
                   f"<td style='{_TD};text-align:right'>{bq or ''}</td>"
                   f"<td style='{_TD};text-align:right'>{_fmt(speed, 'min')}</td></tr>")
-        if eh_sdr(nome):
+        if papel == "membro":
             time_stats.append({"nome": nome, "leads": l, "agendadas": o,
                                "taxa_agend": (o / l if l else None), "speed_min": speed,
                                "ativo": TC.ativo(conn, "prevendas", nome)})
@@ -1048,15 +1051,17 @@ def _vd_closers(conn, request: Request) -> str:
              GROUP BY 1""", (a, b, a, b, a, b))
         dados = cur.fetchall()
     from .. import team_config as TC
-    eh_closer = TC.casador(conn, "vendas")
     time_stats = []
     for nome, oports, wins, ticket in dados:
-        if not eh_closer(nome):
+        papel = TC.papel_de(conn, "vendas", nome)
+        # None = não está na lista; 'regua' = não é colaborador (Vitória/Lucas:
+        # contam SÓ na régua do SQL do funil) — nenhum dos dois aparece aqui
+        if papel is None or papel == "regua":
             continue
         time_stats.append({"nome": nome, "oports": oports or 0, "bookings": wins or 0,
                            "taxa_conv": (wins / oports if oports else None),
                            "ticket": float(ticket) if ticket else None,
-                           "ciclo_dias": None, "perdas_top": None,
+                           "ciclo_dias": None, "perdas_top": None, "papel": papel,
                            "ativo": TC.ativo(conn, "vendas", nome)})
     if not time_stats:
         return (f"<h1>Time de Vendas</h1><div class=sub>coordenação: {ESP.COORD_VENDAS}</div>"
@@ -1072,22 +1077,29 @@ def _vd_closers(conn, request: Request) -> str:
                 if p["nome"] == own and p["perdas_top"] is None:
                     p["perdas_top"] = motivo
     rows, planos = "", ""
-    for p in sorted(time_stats, key=lambda x: -(x["taxa_conv"] or 0)):
-        tag = "" if p["ativo"] else " <span class=chip style='--c:var(--status-semdados)'>desligado</span>"
+    membros = [p for p in time_stats if p["papel"] == "membro"]
+    _CHIP_PAPEL = {"coordenacao": ("coordenação", "var(--brand)"), "gerencia": ("gerência", "var(--brand)")}
+    for p in sorted(time_stats, key=lambda x: (x["papel"] != "membro", -(x["taxa_conv"] or 0))):
+        if p["papel"] in _CHIP_PAPEL:
+            lbl, cor = _CHIP_PAPEL[p["papel"]]
+            tag = f" <span class=chip style='--c:{cor}'>{lbl}</span>"
+        else:
+            tag = "" if p["ativo"] else " <span class=chip style='--c:var(--status-semdados)'>desligado</span>"
         rows += (f"<tr><td style='{_TD}'><b>{escape(p['nome'][:26])}</b>{tag}</td>"
                  f"<td style='{_TD};text-align:right'>{p['oports']}</td>"
                  f"<td style='{_TD};text-align:right'>{p['bookings']}</td>"
                  f"<td style='{_TD};text-align:right'>{_fmt(p['taxa_conv'], 'pct')}</td>"
                  f"<td style='{_TD};text-align:right'>{_fmt(p['ticket'], 'brl')}</td>"
                  f"<td style='{_TD}'>{escape((p['perdas_top'] or '—')[:30])}</td></tr>")
-        if p["ativo"]:
-            pl = ESP.plano_closer(p, time_stats)
+        # plano/mediana: SÓ colaboradores ativos (coordenação/gerência ficam fora)
+        if p["papel"] == "membro" and p["ativo"]:
+            pl = ESP.plano_closer(p, membros)
             itens = ("".join(f"<li style='color:var(--status-baixo)'>{escape(f)}</li>" for f in pl["fortes"])
                      + "".join(f"<li style='color:var(--status-alto)'>{escape(f)}</li>" for f in pl["fracos"])
                      + "".join(f"<li>→ {escape(acao)}</li>" for acao in pl["acoes"]))
             planos += (f"<div style='margin-top:12px'><b>{escape(p['nome'])}</b>"
                        f"<ul class=note style='margin:4px 0 0;padding-left:18px'>{itens}</ul></div>")
-    return (f"<h1>Time de Vendas</h1><div class=sub>coordenação: {ESP.COORD_VENDAS} · dono do deal = atribuição · comparação com a mediana, tom construtivo</div>"
+    return (f"<h1>Time de Vendas</h1><div class=sub>coordenação: {ESP.COORD_VENDAS} · gerência: Marcos (Vendas + Pré-vendas) · dono do deal = atribuição · lista editável no Painel Administrativo</div>"
             f"<form method=get action=/vendas><input type=hidden name=view value=closers>{form}</form>"
             f"<section><h2>Performance por closer</h2>"
             + _card(_tbl([("Closer", "left"), ("Oports", "right"), ("Bookings", "right"), ("Conversão", "right"), ("Ticket", "right"), ("Perda nº1", "left")], rows)) + "</section>"
