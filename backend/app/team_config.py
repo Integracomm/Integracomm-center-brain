@@ -5,7 +5,7 @@ configuração editável no Painel Administrativo.
 - vendas (closers): a lista COMPLETA é a RÉGUA do SQL do funil oficial ("deal
   na mão de closer" = agendou reunião) — equivalente ao SQL_CLOSERS do
   dashboard do time, incluindo quem já saiu (histórico dos meses passados).
-- prevendas (SDRs): destaque e planos de ação da aba Time & Planos.
+- prevendas (SDRs): destaque e planos de ação da aba Desempenho Individual.
 - DESLIGADOS: detecção AUTOMÁTICA pelo Pipedrive (usuário desativado =
   active_flag False, coluna owner_active) — somem de todas as telas, números
   permanecem nas réguas. O '-' na lista só força manualmente um caso raro.

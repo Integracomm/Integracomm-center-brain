@@ -507,8 +507,9 @@ def hub(request: Request):
         stats = _hub_stats(c)
         mkt = _hub_mkt_stats(c)
         sales = _hub_sales_stats(c)
+        ops = _hub_op_stats(c)
         users = list_users(c)
-    return HTMLResponse(_render_hub(user, stats, users, mkt, sales=sales))
+    return HTMLResponse(_render_hub(user, stats, users, mkt, sales=sales, ops=ops))
 
 
 @app.get("/admin", response_class=HTMLResponse)
@@ -880,7 +881,7 @@ def _llm_budget_html(llm: dict | None) -> str:
 
 
 _TEAM_AREAS = [("prevendas", "Pré-vendas",
-                "destaque e planos de ação da aba Time & Planos"),
+                "destaque e planos de ação da aba Desempenho Individual"),
                ("vendas", "Vendas",
                 "⚠ a lista (todas as funções) é a RÉGUA do SQL do funil oficial — equivalente ao SQL_CLOSERS do dashboard do time")]
 _PAPEL_LBL = {"membro": "Membro do time", "coordenacao": "Coordenação", "gerencia": "Gerência"}
@@ -1033,10 +1034,31 @@ def _pacing_nivel(real, meta, frac) -> tuple[str, float]:
     return "critico", ratio
 
 
+def _hub_op_stats(conn: Any) -> dict | None:
+    """Resumo de OPERAÇÕES p/ o card do hub: iniciativas do trimestre corrente
+    (fallback: anterior, se o novo ainda não tem sync) — total, atrasadas,
+    concluídas e progresso, mesma régua da aba Visão Geral de /operacoes."""
+    try:
+        from .operacoes.ui import _contagem, _load_rows
+        hoje = dt.date.today()
+        year, quarter = hoje.year, (hoje.month - 1) // 3 + 1
+        rows = _load_rows(conn, year, quarter)
+        if not rows:  # virada de trimestre: Notion ainda sem iniciativas novas
+            year, quarter = (year - 1, 4) if quarter == 1 else (year, quarter - 1)
+            rows = _load_rows(conn, year, quarter)
+        if not rows:
+            return None
+        c = _contagem(rows, hoje)
+        return {"year": year, "quarter": quarter, "total": c["total"], "ok": c["ok"],
+                "atras": c["atras"], "prog": c["prog"], "progresso": c["progresso"]}
+    except Exception:  # noqa: BLE001 — tabela do Notion ausente não derruba o hub
+        return None
+
+
 def _render_hub(role: str, st: dict, users: list[dict] | None = None,
                 mkt: dict | None = None, page: str = "home",
                 llm: dict | None = None, sales: dict | None = None,
-                teams_html: str = "") -> str:
+                teams_html: str = "", ops: dict | None = None) -> str:
     n_alerts = sum(st["sev"].values())
     crit = st["sev"].get("critico", 0)
 
@@ -1234,9 +1256,21 @@ def _render_hub(role: str, st: dict, users: list[dict] | None = None,
         vd_card = ("<a class='area' href='/vendas'><div class=ahead>"
                    f"<div class=an>Vendas</div>{chip_area('vendas')}</div>"
                    "<div class=ad>Oportunidade→Booking, win/loss, ciclo, forecast e planos por closer</div></a>")
-    op_card = ("<a class='area' href='/operacoes'><div class=ahead>"
-               f"<div class=an>Operações</div>{_chip('ativa', '--status-baixo')}</div>"
-               "<div class=ad>iniciativas por área da empresa (Notion) — semáforo de prazo e dependências por trimestre</div></a>")
+    if ops:
+        c_atras = "var(--status-critico)" if ops["atras"] else None
+        op_card = (
+            "<a class='area big' href='/operacoes'><div class=ahead>"
+            f"<div class=an>Operações</div>{_chip('ativa', '--status-baixo')}</div>"
+            "<div class=agrid>"
+            + am(_num(ops["total"]), f"iniciativas no Q{ops['quarter']}")
+            + am(_num(ops["atras"]), "atrasadas", c_atras)
+            + am(_num(ops["ok"]), "concluídas")
+            + am(f"{ops['progresso']:.0f}%", "progresso")
+            + "</div><div class=ad>iniciativas por área da empresa (Notion) — semáforo de prazo e KPIs vs meta trimestral</div></a>")
+    else:
+        op_card = ("<a class='area' href='/operacoes'><div class=ahead>"
+                   f"<div class=an>Operações</div>{_chip('ativa', '--status-baixo')}</div>"
+                   "<div class=ad>iniciativas por área da empresa (Notion) — semáforo de prazo e dependências por trimestre</div></a>")
     area_cards = growth_card + mkt_card + pv_card + vd_card + op_card + "".join(
         "<div class='area soon'>"
         + f"<div class='an'>{escape(nm)}</div>"
@@ -1376,7 +1410,7 @@ __BODY__
     else:
         body = (
             "<h1>Visão central</h1>"
-            "<p class=sub>Painel de saúde da empresa: Growth, Marketing, Pré-vendas e Vendas ativas (Financeiro e Operações em breve). A pior área do momento aparece primeiro na faixa de saúde.</p>"
+            "<p class=sub>Painel de saúde da empresa: Growth, Marketing, Pré-vendas, Vendas e Operações ativas (Financeiro em breve). A pior área do momento aparece primeiro na faixa de saúde.</p>"
             f"<div class=kpis>{kpi_html}</div>"
             "<section><h2>Saúde por área</h2>"
             "<p class=secsub>diagnóstico automático do mês corrente, ordenado da área que mais demanda atenção para a mais saudável — clique para abrir</p>"

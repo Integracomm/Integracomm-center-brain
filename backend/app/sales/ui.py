@@ -22,11 +22,13 @@ from . import especialista as ESP
 
 router = APIRouter()
 
+# "Time & Planos" virou "Desempenho Individual" (14/07 — feedback do Otávio:
+# o foco é o desempenho de cada membro, não os planos/bundles)
 _PV_VIEWS = [("funil", "Funil de Qualificação"), ("speed", "Speed-to-Lead"),
-             ("horarios", "Melhor Horário"), ("sdrs", "Time & Planos")]
+             ("horarios", "Melhor Horário"), ("sdrs", "Desempenho Individual")]
 _VD_VIEWS = [("funil", "Funil de Fechamento"), ("winloss", "Win/Loss"),
-             ("ciclo", "Ciclo & Empacados"), ("closers", "Time & Planos"),
-             ("forecast", "Performance & Meta")]
+             ("ciclo", "Ciclo & Empacados"), ("horarios", "Melhor Horário"),
+             ("closers", "Desempenho Individual"), ("forecast", "Performance & Meta")]
 
 # etapas (validadas na inspeção do Pipedrive 08/07)
 _ST_REUNIAO = (6,)        # handoff Pré-vendas → Vendas
@@ -135,10 +137,14 @@ def _pv_funil(conn, request: Request) -> str:
     # motivo · SQL = dono atual é closer (agendou = handoff p/ Vendas).
     # Oportunidade/Booking ficam no Funil de Fechamento (/vendas).
     from ..marketing.ui import _funil_oficial, funil_visual_html
-    passou, _booked, leads, _rec = _funil_oficial(conn, ini, fim)
+    passou, booked, leads, receita = _funil_oficial(conn, ini, fim)
     sql_n = passou[3]
+    # funil COMPLETO Lead→Booking (14/07: "interessante todos terem a visão
+    # completa") — o trabalho de PV termina no SQL, o resto é contexto
     funil_visual = funil_visual_html(
-        [("Lead", passou[0]), ("MQL", passou[1]), ("SAL", passou[2]), ("SQL", passou[3])], leads)
+        [("Lead", passou[0]), ("MQL", passou[1]), ("SAL", passou[2]),
+         ("SQL", passou[3]), ("Oportunidade", passou[4]), ("Booking", booked)],
+        leads, receita)
     # por origem: qualidade do lead (lead → reunião) por canal
     with conn.cursor() as cur:
         cur.execute("""
@@ -195,9 +201,9 @@ def _pv_funil(conn, request: Request) -> str:
         "taxa_agend": sql_n / leads if leads else None,
         "desq_top": (desq[0] if desq and desq[0][0] != "(sem motivo)" else None)})
     ins_html = "".join(f"<div class=sug-item>→ {escape(i)}</div>" for i in ins)
-    return (f"<h1>Funil de Qualificação</h1><div class=sub>do Lead ao SQL (agendou = deal na mão de closer, handoff p/ Vendas) · régua OFICIAL do dashboard do time — os números batem com o Pipedrive/Lovable</div>"
+    return (f"<h1>Funil de Qualificação</h1><div class=sub>régua OFICIAL do dashboard do time — os números batem com o Pipedrive/Lovable · o trabalho de Pré-vendas vai do Lead ao SQL (agendou = deal na mão de closer); Oportunidade e Booking mostram o destino final</div>"
             f"<form method=get action=/prevendas><input type=hidden name=view value=funil>{form}</form>"
-            f"<section><h2>Funil</h2><p class=secsub>largura proporcional ao volume · pílula = conversão sobre a etapa anterior · Oportunidade e Booking seguem no Funil de Fechamento (Vendas)</p>{funil_visual}</section>"
+            f"<section><h2>Funil completo (Lead → Booking)</h2><p class=secsub>largura proporcional ao volume · pílula = conversão sobre a etapa anterior · os mesmos números das abas de Marketing e Vendas</p>{funil_visual}</section>"
             f"<section><h2>Conversão por dia de chegada do lead</h2><p class=secsub>taxa de agendamento pelo dia da semana em que o lead entrou — a reunião conta a qualquer tempo (coorte)</p>"
             + _card(_tbl([("Dia de chegada", "left"), ("Leads", "right"), ("Agendaram", "right"),
                           ("Taxa", "right")], drows_sem)) + "</section>"
@@ -367,7 +373,7 @@ def _pv_sdrs(conn, request: Request) -> str:
     colaboradores = sorted(set(leads_por) | set(oport_por),
                            key=lambda n: (n == _SEM, -leads_por.get(n, 0), -oport_por.get(n, 0)))
     orows, tl, ex = "", [0, 0, 0], [0, 0, 0]
-    time_stats, planos = [], ""
+    time_stats, planos, visiveis = [], "", []
     for nome in colaboradores[:15]:
         l, o = leads_por.get(nome, 0), oport_por.get(nome, 0)
         bq, _bv = book_por.get(nome, (0, 0.0))
@@ -377,6 +383,8 @@ def _pv_sdrs(conn, request: Request) -> str:
         if nome != _SEM and TC.eh_desligado(conn, "prevendas", nome):
             ex[0] += l; ex[1] += o; ex[2] += bq
             continue
+        if nome != _SEM:
+            visiveis.append(nome)
         speed = speed_por.get(TC.norm(nome))
         papel = TC.papel_de(conn, "prevendas", nome)
         if nome == _SEM:
@@ -420,6 +428,114 @@ def _pv_sdrs(conn, request: Request) -> str:
                + _card(_tbl([("Colaborador", "left"), ("Leads", "right"), ("Oportunidades", "right"),
                              ("Lead→Oport", "right"), ("Bookings", "right"), ("Speed 1º contato", "right")], orows)) + "</section>")
 
+    # ---- estudos por SDR (pedidos 14/07): desqualificação, origem e plano ---
+    cols = visiveis[:5]
+    _nc = "padding:6px 7px;border-bottom:1px solid var(--border);font-variant-numeric:tabular-nums;font-size:var(--fs-xs)"
+
+    def _abrev(n: str) -> str:
+        ps = n.split()
+        return n if len(ps) < 2 else f"{ps[0]} {ps[1][0]}."
+
+    # (a) motivos de DESQUALIFICAÇÃO por SDR (perdidos pré-handoff da coorte)
+    with conn.cursor() as cur:
+        cur.execute("""SELECT COALESCE(sdr, %s), COALESCE(lost_reason, '(sem motivo)'), count(*)
+                         FROM mkt_deals_attribution
+                        WHERE add_time >= %s AND add_time < %s AND status='lost'
+                          AND stage_id NOT IN (6, 5, 7)
+                        GROUP BY 1, 2""", (_SEM, a, b))
+        desq_por: dict[str, list[tuple[str, int]]] = {}
+        for nome, m, n in cur.fetchall():
+            desq_por.setdefault(nome, []).append((m, n))
+    dcards = ""
+    for nome in cols:
+        motivos = desq_por.get(nome) or []
+        tot_d = sum(n for _m, n in motivos)
+        l_tot = leads_por.get(nome, 0)
+        linhas_m = ""
+        for m, n in sorted(motivos, key=lambda x: -x[1])[:4]:
+            pct = n / tot_d if tot_d else 0
+            cor_txt = "var(--text-faint)" if m == "(sem motivo)" else "var(--text-2)"
+            linhas_m += (
+                f"<div style='margin-top:7px'><div style='display:flex;justify-content:space-between;gap:8px;"
+                f"font-size:var(--fs-xs);color:{cor_txt}'><span>{escape(str(m)[:38])}</span>"
+                f"<span style='white-space:nowrap;font-variant-numeric:tabular-nums'><b>{n}</b> · {_fmt(pct, 'pct')}</span></div>"
+                f"<div style='height:4px;background:var(--surface-3);border-radius:2px;overflow:hidden;margin-top:2px'>"
+                f"<div style='height:100%;width:{pct * 100:.0f}%;background:var(--status-alto);border-radius:2px'></div></div></div>")
+        dcards += (f"<div class=card><div style='display:flex;justify-content:space-between;align-items:baseline'>"
+                   f"<b>{escape(_abrev(nome))}</b><span style='color:var(--text-muted);font-size:var(--fs-xs)'>"
+                   f"{tot_d} desq. · {_fmt(tot_d / l_tot if l_tot else None, 'pct')} dos leads</span></div>"
+                   + (linhas_m or "<div class=note style='margin-top:7px'>sem desqualificações no período</div>") + "</div>")
+    sec_desq = ("<section><h2>Motivos de desqualificação por SDR</h2>"
+                "<p class=secsub>perdidos antes do handoff, dentre os leads do período de cada uma — motivo dominante em UMA pessoa = dificuldade específica (roteiro/abordagem); igual em todas = qualidade do lead</p>"
+                f"<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;align-items:start'>{dcards}</div></section>") if dcards else ""
+
+    # (b) conversão por ORIGEM × SDR (coorte: lead do período que virou oportunidade)
+    with conn.cursor() as cur:
+        cur.execute("""SELECT COALESCE(sdr, %s), COALESCE(origem, '(vazio)'), count(*),
+                              count(*) FILTER (WHERE oport_time IS NOT NULL)
+                         FROM mkt_deals_attribution
+                        WHERE add_time >= %s AND add_time < %s GROUP BY 1, 2""", (_SEM, a, b))
+        ori: dict[str, dict[str, tuple[int, int]]] = {}
+        ori_tot: dict[str, list[int]] = {}
+        for nome, og, n, op in cur.fetchall():
+            ori.setdefault(og, {})[nome] = (n, op)
+            t = ori_tot.setdefault(og, [0, 0])
+            t[0] += n; t[1] += op
+    origens_top = sorted((og for og, t in ori_tot.items() if t[0] >= 10),
+                         key=lambda og: -ori_tot[og][0])[:8]
+    xrows = ""
+    for og in origens_top:
+        tl_o, to_o = ori_tot[og]
+        tx_time = to_o / tl_o if tl_o else 0
+        tds = ""
+        for nome in cols:
+            n, op = ori.get(og, {}).get(nome, (0, 0))
+            if not n:
+                tds += f"<td style='{_nc};text-align:center;color:var(--text-faint)'>—</td>"
+                continue
+            tx = op / n
+            cls = ""
+            if n >= 8 and tx_time:
+                cls = (" class=pos" if tx >= tx_time * 1.15 else (" class=neg" if tx <= tx_time * 0.7 else ""))
+            tds += (f"<td style='{_nc};text-align:center'{cls} title='{op} oportunidade(s) de {n} leads'>"
+                    f"{_fmt(tx, 'pct')}<span style='color:var(--text-faint);font-size:var(--fs-2xs)'> ({n})</span></td>")
+        xrows += (f"<tr><td style='{_nc}'>{escape(og[:26])}</td>"
+                  f"<td style='{_nc};text-align:center'><b>{_fmt(tx_time, 'pct')}</b>"
+                  f"<span style='color:var(--text-faint);font-size:var(--fs-2xs)'> ({tl_o})</span></td>{tds}</tr>")
+    sec_ori = ("<section><h2>Conversão por origem × SDR</h2>"
+               "<p class=secsub>taxa lead→oportunidade (coorte do período; a oportunidade conta a qualquer tempo) · verde = bem acima do time naquela origem, vermelho = bem abaixo (mín. 8 leads) — mostra quem trata melhor cada tipo de lead</p>"
+               + _card(_tbl([("Origem", "left"), ("Time", "left")] + [(_abrev(n), "left") for n in cols], xrows))
+               + "</section>") if xrows else ""
+
+    # (c) AGENDAMENTOS (oportunidades) por PLANO × SDR
+    with conn.cursor() as cur:
+        cur.execute("""SELECT COALESCE(sdr, %s),
+                              COALESCE(substring(produto FROM 'B[1-5]'),
+                                       CASE WHEN produto IS NULL OR produto = '' THEN '(sem plano)' ELSE 'outros' END),
+                              count(*)
+                         FROM mkt_deals_attribution
+                        WHERE oport_time >= %s AND oport_time < %s GROUP BY 1, 2""", (_SEM, a, b))
+        bnd: dict[str, dict[str, int]] = {}
+        for nome, bd, n in cur.fetchall():
+            bnd.setdefault(bd, {})[nome] = n
+    ordem_b = [x for x in ("B1", "B2", "B3", "B4", "B5", "outros", "(sem plano)") if x in bnd] \
+        + sorted(set(bnd) - {"B1", "B2", "B3", "B4", "B5", "outros", "(sem plano)"})
+    tot_sdr_b = {nome: sum(bnd[bd].get(nome, 0) for bd in bnd) for nome in cols}
+    brws = ""
+    for bd in ordem_b:
+        tds = ""
+        for nome in cols:
+            n = bnd[bd].get(nome, 0)
+            pct = n / tot_sdr_b[nome] if tot_sdr_b.get(nome) else 0
+            tds += (f"<td style='{_nc};text-align:center'>{n or '—'}"
+                    + (f"<span style='color:var(--text-faint);font-size:var(--fs-2xs)'> ({pct * 100:.0f}%)</span>" if n else "")
+                    + "</td>")
+        brws += f"<tr><td style='{_nc}'><b>{escape(bd)}</b></td>{tds}</tr>"
+    sec_bnd = ("<section><h2>Oportunidades por plano × SDR</h2>"
+               "<p class=secsub>oportunidades geradas no período por bundle (% = participação no total da própria SDR) · mix concentrado em B1 numa pessoa com o time mirando B3-B5 = qualificação a puxar para cima</p>"
+               + _card(_tbl([("Plano", "left")] + [(_abrev(n), "left") for n in cols], brws))
+               + "</section>") if brws else ""
+
     # planos de ação individuais sobre os MESMOS números da tabela (só time ativo)
     for p in sorted(time_stats, key=lambda x: -(x["taxa_agend"] or 0)):
         if not p["ativo"]:
@@ -430,10 +546,10 @@ def _pv_sdrs(conn, request: Request) -> str:
                  + "".join(f"<li>→ {escape(acao)}</li>" for acao in pl["acoes"]))
         planos += (f"<div style='margin-top:12px'><b>{escape(p['nome'])}</b>"
                    f"<ul class=note style='margin:4px 0 0;padding-left:18px'>{itens}</ul></div>")
-    return (f"<h1>Time de Pré-vendas</h1><div class=sub>coordenação: {ESP.COORD_PREVENDAS} · lista do time editável no Painel Administrativo · comparação com a mediana, tom construtivo</div>"
+    return (f"<h1>Desempenho Individual — Pré-vendas</h1><div class=sub>coordenação: {ESP.COORD_PREVENDAS} · lista do time editável no Painel Administrativo · comparação com a mediana, tom construtivo</div>"
             f"<form method=get action=/prevendas><input type=hidden name=view value=sdrs>{form}</form>"
-            + oficial +
-            f"<section><h2>Planos de ação individuais</h2><p class=secsub>{ESP.PERSONA_PREVENDAS} · derivados dos números da tabela acima</p>{_card(planos or '<span class=note>—</span>')}</section>")
+            + oficial + sec_desq + sec_ori + sec_bnd +
+            f"<section><h2>Planos de ação individuais</h2><p class=secsub>{ESP.PERSONA_PREVENDAS} · derivados dos números da primeira tabela</p>{_card(planos or '<span class=note>—</span>')}</section>")
 
 
 # --- Melhor Horário (pedido do time de Pré-vendas, 10/07/26) ----------------
@@ -1114,10 +1230,101 @@ def _vd_closers(conn, request: Request) -> str:
                      + "".join(f"<li>→ {escape(acao)}</li>" for acao in pl["acoes"]))
             planos += (f"<div style='margin-top:12px'><b>{escape(p['nome'])}</b>"
                        f"<ul class=note style='margin:4px 0 0;padding-left:18px'>{itens}</ul></div>")
-    return (f"<h1>Time de Vendas</h1><div class=sub>coordenação: {ESP.COORD_VENDAS} · gerência: Marcos (Vendas + Pré-vendas) · dono do deal = atribuição · lista editável no Painel Administrativo</div>"
+    # ---- estudos por closer (pedidos 14/07, espelho dos de PV) -------------
+    cols = [p["nome"] for p in sorted(time_stats, key=lambda x: (x["papel"] != "membro",
+                                                                 -(x["bookings"] or 0)))][:6]
+    _nc = "padding:6px 7px;border-bottom:1px solid var(--border);font-variant-numeric:tabular-nums;font-size:var(--fs-xs)"
+
+    def _abrev(n: str) -> str:
+        ps = n.split()
+        return n if len(ps) < 2 else f"{ps[0]} {ps[1][0]}."
+
+    # (a) FECHAMENTOS por bundle × closer (won no período, por dono atual)
+    with conn.cursor() as cur:
+        cur.execute("""SELECT COALESCE(owner_name, '—'),
+                              COALESCE(substring(produto FROM 'B[1-5]'),
+                                       CASE WHEN produto IS NULL OR produto = '' THEN '(sem plano)' ELSE 'outros' END),
+                              count(*)
+                         FROM mkt_deals_attribution
+                        WHERE status='won' AND won_time >= %s AND won_time < %s GROUP BY 1, 2""", (a, b))
+        wb: dict[str, dict[str, int]] = {}
+        for nome, bd, n in cur.fetchall():
+            wb.setdefault(bd, {})[nome] = n
+
+    def _casa_col(nome_pd: str, col: str) -> bool:
+        return TC.norm(col) in TC.norm(nome_pd) or TC.norm(nome_pd) in TC.norm(col)
+    ordem_b = [x for x in ("B1", "B2", "B3", "B4", "B5", "outros", "(sem plano)") if x in wb] \
+        + sorted(set(wb) - {"B1", "B2", "B3", "B4", "B5", "outros", "(sem plano)"})
+    brws = ""
+    for bd in ordem_b:
+        tds = ""
+        for col in cols:
+            n = sum(v for nm, v in wb[bd].items() if _casa_col(nm, col))
+            tds += f"<td style='{_nc};text-align:center'>{n or '—'}</td>"
+        brws += f"<tr><td style='{_nc}'><b>{escape(bd)}</b></td>{tds}</tr>"
+    sec_bnd = ("<section><h2>Fechamentos por plano × closer</h2>"
+               "<p class=secsub>contratos ganhos no período por bundle — quem fecha o quê; forte em B1 e zerado em B3-B5 = treinar oferta para cima (prioridade da empresa)</p>"
+               + _card(_tbl([("Plano", "left")] + [(_abrev(c), "left") for c in cols], brws))
+               + "</section>") if brws else ""
+
+    # (b) REUNIÕES por closer × hora (1ª entrada em Negociação, proxy da
+    # reunião realizada) — compacta como a de PV: linha na própria escala
+    with conn.cursor() as cur:
+        cur.execute("""
+            WITH primeira AS (
+                SELECT e.deal_id, min(e.entered_at) AS entered_at
+                  FROM mkt_stage_events e
+                 WHERE e.stage_id = 7 AND e.entered_at >= %s AND e.entered_at < %s
+                 GROUP BY e.deal_id)
+            SELECT COALESCE(d.owner_name, '—'),
+                   extract(hour FROM p.entered_at AT TIME ZONE 'America/Sao_Paulo')::int, count(*)
+              FROM primeira p JOIN mkt_deals_attribution d ON d.deal_id = p.deal_id
+             GROUP BY 1, 2""", (a, b))
+        rh: dict[str, dict[int, int]] = {}
+        for nome, h, n in cur.fetchall():
+            rh.setdefault(nome, {})[h] = n
+    horas_c = list(range(7, 21))
+    hrws = ""
+    for col in cols:
+        cel: dict[int, int] = {}
+        for nm, hs in rh.items():
+            if _casa_col(nm, col):
+                for h, n in hs.items():
+                    cel[h] = cel.get(h, 0) + n
+        if not cel:
+            continue
+        tot_c, vmax_c = sum(cel.values()), max(cel.values())
+        pico_h = max(cel.items(), key=lambda x: x[1])[0]
+        tds = ""
+        for h in horas_c:
+            n = cel.get(h, 0)
+            alpha = int(8 + 62 * (n / vmax_c)) if n else 0
+            bg = f"background:color-mix(in srgb,var(--brand) {alpha}%,transparent);" if n else ""
+            pico = "box-shadow:inset 0 0 0 1.5px var(--brand);border-radius:3px;" if n and h == pico_h else ""
+            tds += (f"<td title='{escape(col)} {h:02d}h — {n} reunião(ões)' "
+                    f"style='{_nc};text-align:center;{bg}{pico}'>{n or ''}</td>")
+        fora = sum(n for h, n in cel.items() if h < 7 or h > 20)
+        tds += f"<td style='{_nc};text-align:center;color:var(--text-muted)'>{fora or ''}</td>"
+        aviso = "*" if tot_c < 30 else ""
+        hrws += (f"<tr><td style='{_nc};white-space:nowrap'><b>{escape(_abrev(col))}</b>{aviso}</td>"
+                 f"<td style='{_nc};text-align:right'>{tot_c}</td>{tds}</tr>")
+    _thc = ("<th style='padding:3px 2px;border-bottom:1px solid var(--border-strong);color:var(--text-muted);"
+            "font-size:var(--fs-2xs);text-align:{al};font-weight:600'>{h}</th>")
+    ths_h = (_thc.format(al="left", h="Closer") + _thc.format(al="right", h="Tot.")
+             + "".join(_thc.format(al="center", h=str(h)) for h in horas_c) + _thc.format(al="center", h="outros"))
+    sec_hora = ("<section><h2>Reuniões por closer × hora</h2>"
+                "<p class=secsub>1ª entrada do deal em Negociação (proxy da reunião realizada; o carimbo é a movimentação do card) · "
+                "cada linha na PRÓPRIA escala · célula contornada = pico da pessoa · * = amostra pequena (&lt;30)</p>"
+                + _card(f"<table style='width:100%;border-collapse:collapse;table-layout:fixed'>"
+                        f"<colgroup><col style='width:96px'><col style='width:38px'>"
+                        f"<col span={len(horas_c) + 1}></colgroup><tr>{ths_h}</tr>{hrws}</table>")
+                + "</section>") if hrws else ""
+
+    return (f"<h1>Desempenho Individual — Vendas</h1><div class=sub>coordenação: {ESP.COORD_VENDAS} · gerência: Marcos (Vendas + Pré-vendas) · dono do deal = atribuição · lista editável no Painel Administrativo</div>"
             f"<form method=get action=/vendas><input type=hidden name=view value=closers>{form}</form>"
             f"<section><h2>Performance por closer</h2>"
             + _card(_tbl([("Closer", "left"), ("Oports", "right"), ("Bookings", "right"), ("Conversão", "right"), ("Ticket", "right"), ("Perda nº1", "left")], rows)) + "</section>"
+            + sec_bnd + sec_hora +
             f"<section><h2>Planos de ação individuais</h2><p class=secsub>{ESP.PERSONA_VENDAS}</p>{_card(planos or '<span class=note>—</span>')}</section>")
 
 
@@ -1255,6 +1462,100 @@ def _vd_forecast(conn, request: Request) -> str:
             + plano_gap)
 
 
+def _vd_horarios(conn, request: Request) -> str:
+    """Melhor Horário de VENDAS (pedido 14/07): existe hora melhor p/ a
+    REUNIÃO acontecer? Base: 1ª entrada do deal em Negociação (7) — o card é
+    movido após a reunião, então o carimbo é o proxy da reunião realizada;
+    'fechou' = deal won a qualquer tempo (taxa por janela)."""
+    ini, fim, bundle = _horarios_periodo(request)
+    a, b = _brt(ini, fim)
+    filtro_b, args = "", [a, b]
+    if bundle in ("B1", "B2", "B3", "B4", "B5"):
+        filtro_b = " AND substring(d.produto FROM 'B[1-5]') = %s"
+        args.append(bundle)
+    with conn.cursor() as cur:
+        cur.execute(f"""
+            WITH primeira AS (
+                SELECT e.deal_id, min(e.entered_at) AS entered_at
+                  FROM mkt_stage_events e
+                  JOIN mkt_deals_attribution d ON d.deal_id = e.deal_id
+                 WHERE e.stage_id = 7 AND e.entered_at >= %s AND e.entered_at < %s{filtro_b}
+                 GROUP BY e.deal_id)
+            SELECT extract(dow  FROM p.entered_at AT TIME ZONE 'America/Sao_Paulo')::int,
+                   extract(hour FROM p.entered_at AT TIME ZONE 'America/Sao_Paulo')::int,
+                   count(*), count(*) FILTER (WHERE d.status = 'won')
+              FROM primeira p JOIN mkt_deals_attribution d ON d.deal_id = p.deal_id
+             GROUP BY 1, 2""", args)
+        celulas = {(dow, h): (n, w) for dow, h, n, w in cur.fetchall()}
+    total = sum(n for n, _w in celulas.values())
+    if not total:
+        return ("<h1>Melhor Horário — reuniões de Vendas</h1><div class=sub>quando as reuniões acontecem e quanto convertem</div>"
+                "<section><div class=warn>sem reuniões no período/filtro selecionado</div></section>")
+    total_w = sum(w for _n, w in celulas.values())
+
+    # --- heatmap dia × hora (reuniões; tooltip traz a conversão da célula) ---
+    dows = [1, 2, 3, 4, 5] + ([6] if any(d == 6 for d, _ in celulas) else []) \
+        + ([0] if any(d == 0 for d, _ in celulas) else [])
+    horas = sorted({h for _, h in celulas})
+    horas = list(range(min(horas), max(horas) + 1))
+    vmax = max(n for n, _w in celulas.values())
+    linhas = ""
+    for h in horas:
+        tds = ""
+        for d in dows:
+            n, w = celulas.get((d, h), (0, 0))
+            alpha = int(8 + 62 * (n / vmax)) if n else 0
+            bg = f"background:color-mix(in srgb,var(--brand) {alpha}%,transparent);" if n else ""
+            tds += (f"<td title='{_DOW_NOME[d]} {h:02d}h — {n} reunião(ões), {w} fechada(s) ({w / n * 100:.0f}%)' "
+                    if n else "<td ") + f"style='{_TD};text-align:center;{bg}'>{n or ''}</td>"
+        linhas += f"<tr><td style='{_TD};color:var(--text-muted)'>{h:02d}h</td>{tds}</tr>"
+    heat = _tbl([("", "left")] + [(_DOW_NOME[d], "left") for d in dows], linhas)
+
+    # --- por HORA: reuniões × fechadas × taxa (a pergunta central da aba) ---
+    por_hora: dict[int, list[int]] = {}
+    for (_d, h), (n, w) in celulas.items():
+        t = por_hora.setdefault(h, [0, 0])
+        t[0] += n; t[1] += w
+    hrows, melhores = "", []
+    for h in sorted(por_hora):
+        n, w = por_hora[h]
+        tx = w / n if n else None
+        if n >= 15:
+            melhores.append((tx or 0, h, n))
+        hrows += (f"<tr><td style='{_TD}'><b>{h:02d}h</b></td>"
+                  f"<td style='{_TD};text-align:right'>{n}</td>"
+                  f"<td style='{_TD};text-align:right'>{w}</td>"
+                  f"<td style='{_TD};text-align:right'>{_fmt(tx, 'pct')}</td>"
+                  f"<td style='{_TD};text-align:right'>{'<span class=note>amostra pequena</span>' if n < 15 else ''}</td></tr>")
+    melhores.sort(key=lambda x: -x[0])
+    melhor_txt = (f"{melhores[0][1]:02d}h ({_fmt(melhores[0][0], 'pct')} em {melhores[0][2]} reuniões)"
+                  if melhores else "—")
+    kpis = ("<div class=kpis>"
+            f"<div class=kpi><div class=n>{total}</div><div class=l>reuniões no período</div><div class=s>1ª entrada em Negociação</div></div>"
+            f"<div class=kpi><div class=n>{_fmt(total_w / total, 'pct')}</div><div class=l>viraram contrato</div></div>"
+            f"<div class=kpi><div class=n>{escape(melhor_txt)}</div><div class=l>melhor hora (conversão)</div><div class=s>mín. 15 reuniões na hora</div></div></div>")
+
+    opts_b = "".join(f"<option value='{v}' {'selected' if bundle == v else ''}>{lbl}</option>"
+                     for v, lbl in [("todos", "todos os bundles"), ("B1", "B1"), ("B2", "B2"),
+                                    ("B3", "B3"), ("B4", "B4"), ("B5", "B5")])
+    form = (f"<form method=get action=/vendas><input type=hidden name=view value=horarios>"
+            f"<div class=filters><div><label>de</label><input type=date name=ini value='{ini}'></div>"
+            f"<div><label>até</label><input type=date name=fim value='{fim}'></div>"
+            f"<div><label>bundle</label><select name=bundle>{opts_b}</select></div>"
+            f"<button type=submit>Aplicar</button></div></form>")
+    return ("<h1>Melhor Horário — reuniões de Vendas</h1>"
+            "<div class=sub>momento em que o deal ENTROU em Negociação (horário de Brasília) — o card é movido após a reunião, "
+            "então é o proxy de quando ela aconteceu · 'fechou' = deal ganho a qualquer tempo</div>"
+            + form + kpis +
+            "<section><h2>Mapa de calor — dia da semana × hora</h2>"
+            f"<p class=secsub>período {ini.strftime('%d-%m-%Y')} a {fim.strftime('%d-%m-%Y')}"
+            f"{' · bundle ' + bundle if bundle != 'todos' else ''} · quanto mais escuro, mais reuniões · passe o mouse para ver a conversão da célula</p>"
+            + _card(heat) + "</section>"
+            "<section><h2>Conversão por hora da reunião</h2>"
+            "<p class=secsub>a pergunta central: reunião em qual horário FECHA mais? · use janelas com amostra razoável antes de mudar a agenda do time</p>"
+            + _card(_tbl([("Hora", "left"), ("Reuniões", "right"), ("Fechadas", "right"), ("Taxa", "right"), ("", "right")], hrows)) + "</section>")
+
+
 # ---------------------------------------------------------------------------
 @router.get("/prevendas", response_class=HTMLResponse)
 def prevendas(request: Request, view: str = Query("funil")):
@@ -1289,6 +1590,7 @@ def vendas(request: Request, view: str = Query("funil")):
             cur.execute("INSERT INTO audit_log (actor, action, scope) VALUES (%s,'view',%s)",
                         (user, f"vendas/{view}"))
         fn = {"funil": _vd_funil, "winloss": _vd_winloss, "ciclo": _vd_ciclo,
-              "closers": _vd_closers, "forecast": _vd_forecast}[view]
+              "horarios": _vd_horarios, "closers": _vd_closers,
+              "forecast": _vd_forecast}[view]
         content = fn(c, request) + "<p class=foot>Fonte: Pipedrive (cache local, coleta diária). A decisão é sempre do gestor — o especialista sinaliza.</p>"
     return HTMLResponse(_shell(A, "vendas", _VD_VIEWS, view, content, user))
