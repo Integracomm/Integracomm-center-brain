@@ -4,8 +4,8 @@ Corte validado pelo Otávio (08/07/26): Pré-vendas atua ATÉ O AGENDAMENTO da
 reunião (stages 1-4 do Comercial + pipeline 2 de Prospecção); Vendas assume da
 Reunião Agendada (6) em diante (5 Reagendamento, 7 Negociação, won/lost).
 Fontes: mkt_deals_attribution (deal+dono+motivo), mkt_stage_events (/flow) e
-sales_first_touch (1º contato). Réguas de contagem = as validadas no funil de
-Marketing (evento no período, corte em horário de Brasília).
+sales_first_touch (1º contato). Funil = régua OFICIAL do dashboard do time
+(ver _funil_oficial no marketing/ui.py; corte em horário de Brasília).
 Atribuição: SDR = quem fez o 1º contato (first_touch.quem — o dono do deal
 muda no handoff); closer = dono atual do deal da Reunião em diante.
 """
@@ -129,15 +129,15 @@ def _entradas(conn, stages, a, b, coorte=True) -> int:
 def _pv_funil(conn, request: Request) -> str:
     ini, fim, form = _periodo(request)
     a, b = _brt(ini, fim)
-    # Funil = MESMA taxonomia e régua do Funil de Prospecção do Marketing
-    # (_funil_eventos, validado nº a nº contra o Pipedrive/app do time):
-    # Lead = criados no período · MQL = Lead · SAL = coorte que entrou em
-    # 1º contato (2/13) · SQL = coorte que entrou em reunião agendada (6/15)
-    # = handoff p/ Vendas. Oportunidade/Booking ficam no Funil de Fechamento.
-    from ..marketing.ui import _FUNIL_CORES, _FUNIL_DEFS, _funil_eventos
-    passou, _booked, leads, _rec = _funil_eventos(conn, ini, fim)
+    # Funil = MESMA taxonomia e régua OFICIAL do Funil de Prospecção do
+    # Marketing (_funil_oficial = a régua do dashboard do time no Pipedrive):
+    # Lead = criados no período · MQL/SAL = descontam desqualificados por
+    # motivo · SQL = dono atual é closer (agendou = handoff p/ Vendas).
+    # Oportunidade/Booking ficam no Funil de Fechamento (/vendas).
+    from ..marketing.ui import _FUNIL_CORES, _FUNIL_DEFS, _funil_oficial
+    passou, _booked, leads, _rec = _funil_oficial(conn, ini, fim)
     seq = [("Lead", passou[0]), ("MQL", passou[1]), ("SAL", passou[2]), ("SQL", passou[3])]
-    sal, sql_n = passou[2], passou[3]
+    sql_n = passou[3]
     barras, resumo_rows = "", ""
     for i, (nome, n) in enumerate(seq):
         taxa = (n / seq[i - 1][1]) if i and seq[i - 1][1] else None
@@ -213,12 +213,15 @@ def _pv_funil(conn, request: Request) -> str:
     drows = "".join(f"<tr><td style='{_TD}'>{escape(str(m)[:60])}</td>"
                     f"<td style='{_TD};text-align:right'>{n}</td></tr>" for m, n in desq)
     tem_motivo = any(m != "(sem motivo)" for m, _ in desq)
+    # p/ o especialista, "recebeu 1º contato" continua sendo o EVENTO de etapa
+    # (2/13, coorte) — o SAL oficial desconta desqualificados, é outra medida
+    contato = _entradas(conn, (2, 13), a, b)
     ins = ESP.insights_prevendas({
-        "taxa_contato": sal / leads if leads else None,
+        "taxa_contato": contato / leads if leads else None,
         "taxa_agend": sql_n / leads if leads else None,
         "desq_top": (desq[0] if desq and desq[0][0] != "(sem motivo)" else None)})
     ins_html = "".join(f"<div class=sug-item>→ {escape(i)}</div>" for i in ins)
-    return (f"<h1>Funil de Qualificação</h1><div class=sub>do Lead ao SQL (reunião agendada — handoff p/ Vendas) · mesma taxonomia e régua do Funil de Prospecção do Marketing: evento no período, corte de Brasília — os números batem com o Pipedrive</div>"
+    return (f"<h1>Funil de Qualificação</h1><div class=sub>do Lead ao SQL (agendou = deal na mão de closer, handoff p/ Vendas) · régua OFICIAL do dashboard do time — os números batem com o Pipedrive/Lovable</div>"
             f"<form method=get action=/prevendas><input type=hidden name=view value=funil>{form}</form>"
             f"<section><h2>Funil</h2><p class=secsub>largura proporcional ao volume · pílula = conversão sobre a etapa anterior · Oportunidade e Booking seguem no Funil de Fechamento (Vendas)</p>{funil_visual}</section>"
             f"<section><h2>Conversão por dia de chegada do lead</h2><p class=secsub>taxa de agendamento pelo dia da semana em que o lead entrou — a reunião conta a qualquer tempo (coorte)</p>"

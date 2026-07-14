@@ -676,11 +676,11 @@ def _hub_mkt_stats(conn: Any) -> dict | None:
     """Resumo do mês corrente da área de Marketing p/ o hub — realizado (coorte
     Pipedrive + gasto de mídia) × plano da planilha de metas (mkt_plan_*)."""
     try:
-        from .marketing.ui import _coorte, _dias_mes, _plan_funil
+        from .marketing.ui import _dias_mes, _funil_oficial, _plan_funil
         hoje = dt.date.today()
         mes = hoje.replace(day=1)
         plan = _plan_funil(conn, [mes]).get(mes) or {}
-        passou, booked, total = _coorte(conn, mes, hoje)
+        passou, booked, total, _rec = _funil_oficial(conn, mes, hoje)
         with conn.cursor() as cur:
             cur.execute("SELECT COALESCE(sum(spend),0) FROM mkt_insights_daily WHERE date >= %s", (mes,))
             gasto = float(cur.fetchone()[0] or 0)

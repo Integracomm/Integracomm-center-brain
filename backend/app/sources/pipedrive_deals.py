@@ -5,10 +5,10 @@ term(público)/content(criativo)/campaign são varchar; `Produto` é enum (o
 valor vem como id numérico — resolvemos p/ label via options do /dealFields,
 ex. "B1 - NOVO START"). Atribuição: 100% dos deals pagos têm utm_campaign.
 
-Limitação v1 (documentada): `oport_time` fica NULL — o histórico de mudança de
-etapa exige 1 chamada /deals/{id}/flow por deal (caro no backfill). O lag usa
-lead (add_time) e booking (won_time); o marco "oportunidade" entra depois, via
-enriquecimento incremental diário (só deals novos/alterados).
+`oport_time` (14/07/26) = campo custom "Dia Oportunidade" (F_DIA_OPP), o MESMO
+que o dashboard do time usa para contar Oportunidades — dia puro interpretado
+como meia-noite BRT. Vem no payload do cache/API, sem custo extra; o diff de
+meta (update quieto) backfilla os antigos na primeira rodada após o deploy.
 """
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ F_CONTENT = "a4e181536d5f826605a31601bf992f4b50457b98"
 F_CAMPAIGN = "9a853495a426a500ce75a58fa52d59a080c7e1ef"
 F_PRODUTO = "9ad49f0040b563e8dfef6f58172830f0a115de12"
 F_VALOR = "c84d155bc50db5f4ce79ee4b71a56081671524ce"  # VALOR (contrato) — o dashboard de metas usa este, não o value padrão
+F_DIA_OPP = "167c46e9d6724bcd118c5f312589a695efe727c0"  # Dia Oportunidade — régua oficial de "Oportunidade" no funil do time
 
 
 def _token() -> str:
@@ -76,6 +77,17 @@ _DEALS_DDL_EXTRA = """ALTER TABLE mkt_deals_attribution
     ADD COLUMN IF NOT EXISTS valor_custom NUMERIC"""
 
 
+def _opp_ts(v) -> str | None:
+    """'Dia Oportunidade' -> timestamp UTC. Dia puro = meia-noite BRT (03:00Z),
+    a MESMA interpretação do dashboard do time; datetime vem UTC do Pipedrive."""
+    if v is None:
+        return None
+    s = str(v).strip()
+    if not s:
+        return None
+    return f"{s} 03:00:00" if len(s) == 10 else s[:19]
+
+
 def _num_br(v) -> float | None:
     """Campo VALOR pode vir numérico ou como texto BR ('1.500,00')."""
     if v is None:
@@ -104,8 +116,8 @@ def _upsert_deal(cur, d: dict, labels: dict[str, str]) -> None:
         """INSERT INTO mkt_deals_attribution
                (deal_id, add_time, won_time, lost_time, status, valor, origem,
                 utm_medium, utm_campaign, utm_term, utm_content, produto,
-                stage_id, owner_id, owner_name, lost_reason, updated_at)
-           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now())
+                stage_id, owner_id, owner_name, lost_reason, oport_time, updated_at)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now())
            ON CONFLICT (deal_id) DO UPDATE SET
                 won_time=EXCLUDED.won_time, lost_time=EXCLUDED.lost_time,
                 status=EXCLUDED.status, valor=EXCLUDED.valor, origem=EXCLUDED.origem,
@@ -113,7 +125,8 @@ def _upsert_deal(cur, d: dict, labels: dict[str, str]) -> None:
                 utm_term=EXCLUDED.utm_term, utm_content=EXCLUDED.utm_content,
                 produto=EXCLUDED.produto, stage_id=EXCLUDED.stage_id,
                 owner_id=EXCLUDED.owner_id, owner_name=EXCLUDED.owner_name,
-                lost_reason=EXCLUDED.lost_reason, updated_at=now()
+                lost_reason=EXCLUDED.lost_reason, oport_time=EXCLUDED.oport_time,
+                updated_at=now()
            WHERE (mkt_deals_attribution.status, mkt_deals_attribution.stage_id,
                   mkt_deals_attribution.won_time, mkt_deals_attribution.valor,
                   mkt_deals_attribution.owner_id, mkt_deals_attribution.lost_reason)
@@ -127,7 +140,7 @@ def _upsert_deal(cur, d: dict, labels: dict[str, str]) -> None:
          (d.get("user_id") or {}).get("id") if isinstance(d.get("user_id"), dict) else d.get("user_id"),
          (d.get("user_id") or {}).get("name") if isinstance(d.get("user_id"), dict)
          else _txt(d.get("owner_name")),
-         _txt(d.get("lost_reason"))))
+         _txt(d.get("lost_reason")), _opp_ts(d.get(F_DIA_OPP))))
 
 
 def sync_deals(conn: Any, since: dt.date = dt.date(2025, 1, 1)) -> int:
@@ -224,7 +237,7 @@ def _deal_tuplas(d: dict, labels: dict[str, str]) -> tuple[tuple, tuple]:
     meta = ((_txt(d.get(F_SOURCE)) or "").lower() or None, _txt(d.get(F_MEDIUM)),
             _txt(d.get(F_TERM)), _txt(d.get(F_CAMPAIGN)), _txt(d.get(F_CONTENT)),
             prod, (uid or {}).get("name") if isinstance(uid, dict) else _txt(d.get("owner_name")),
-            _num_br(d.get(F_VALOR)))
+            _num_br(d.get(F_VALOR)), _opp_ts(d.get(F_DIA_OPP)))
     return core, meta
 
 
@@ -271,12 +284,12 @@ def sync_deals_from_cache(conn: Any, since: dt.date = dt.date(2025, 1, 1)) -> in
         cur.execute(_DEALS_DDL_EXTRA)
         cur.execute("""SELECT deal_id, status, stage_id, won_time, valor, owner_id, lost_reason,
                               origem, utm_medium, utm_term, utm_campaign, utm_content,
-                              produto, owner_name, valor_custom
+                              produto, owner_name, valor_custom, oport_time
                          FROM mkt_deals_attribution""")
         db: dict[int, tuple[tuple, tuple]] = {}
         for row in cur.fetchall():
             db[row[0]] = ((row[1], row[2], _norm_ts(row[3]), _norm_val(row[4]), row[5], row[6]),
-                          tuple(row[7:14]) + (_norm_val(row[14]),))
+                          tuple(row[7:14]) + (_norm_val(row[14]), _norm_ts(row[15])))
     novos = mudou_core = mudou_meta = 0
     ids_cache: list[int] = []
     with conn.cursor() as cur:
@@ -295,7 +308,8 @@ def sync_deals_from_cache(conn: Any, since: dt.date = dt.date(2025, 1, 1)) -> in
             elif meta != atual[1]:
                 cur.execute("""UPDATE mkt_deals_attribution SET origem=%s, utm_medium=%s,
                                    utm_term=%s, utm_campaign=%s, utm_content=%s,
-                                   produto=%s, owner_name=%s, valor_custom=%s WHERE deal_id=%s""",
+                                   produto=%s, owner_name=%s, valor_custom=%s, oport_time=%s
+                                 WHERE deal_id=%s""",
                             (*meta, did))
                 mudou_meta += 1
         # apagados: sumiu do cache íntegro = deletado no Pipedrive

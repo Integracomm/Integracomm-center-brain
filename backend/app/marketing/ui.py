@@ -580,82 +580,83 @@ def _svg_line(series, labels, fmt_y=None):
 # ---------------------------------------------------------------------------
 # Aba — Funil de Prospecção
 # ---------------------------------------------------------------------------
-# Etapas do Pipedrive (inspecionado 2026-07-07). Funil de COORTE: deals criados
-# no período; "passou da etapa X" = etapa atual (ou desfecho) com ordem >= X —
-# won passa por todas. Reagendamento (loop) equivale à Reunião agendada.
-# Pipeline 2 (prospecção ativa) mapeia para as ordens equivalentes.
-_STAGE_ORDER = {1: 0, 2: 1, 3: 2, 4: 3, 6: 4, 5: 4, 7: 5,
-                14: 0, 13: 1, 12: 2, 15: 3}
 # Taxonomia OFICIAL do time (mesma dos apps Lovable): Lead, MQL, SAL, SQL,
-# Oportunidade, Booking — mapeada sobre a progressão de etapas do Pipedrive.
-# Negociação/Reagendamento contam dentro de Oportunidade (ordem >= 4).
+# Oportunidade, Booking — réguas em _funil_oficial (abaixo).
 _FUNIL_ETAPAS = [("Lead", 0), ("MQL", 1), ("SAL", 2),
                  ("SQL", 3), ("Oportunidade", 4)]
+# definições OFICIAIS do time (copiadas do dashboard Lovable, 14/07/26)
 _FUNIL_DEFS = {
-    "Lead": "contato que entrou no funil (formulário, campanha ou outra origem)",
-    "MQL": "Marketing Qualified Lead — perfil validado pelo marketing; recebeu o primeiro contato",
-    "SAL": "Sales Accepted Lead — aceito por vendas; conexão estabelecida com o contato",
-    "SQL": "Sales Qualified Lead — qualificado por vendas (fit, dor e orçamento confirmados)",
-    "Oportunidade": "negociação real em curso — reunião agendada/realizada, proposta na mesa",
-    "Booking": "contrato fechado (won no Pipedrive)",
+    "Lead": "cliente potencial que deixou ao menos 1 informação de contato",
+    "MQL": "lead que passou por ao menos um processo de qualificação (desconta os perdidos por lead score baixo)",
+    "SAL": "MQL que cumpre os requisitos e foi aceito pelo time de SDR (desconta os desqualificados)",
+    "SQL": "MQL que cumpre os requisitos e agendou uma reunião (deal na mão de um closer)",
+    "Oportunidade": "MQL que compareceu à reunião de vendas (campo Dia Oportunidade)",
+    "Booking": "cliente com contrato de serviços assinado e pago (won no Pipedrive)",
 }
 _ETAPAS_PLANO = ["Lead", "MQL", "SAL", "SQL", "Oportunidade", "Booking"]
 
 
-def _coorte(conn, a: dt.date, b: dt.date) -> tuple[list[int], int, int]:
-    """Coorte de deals criados em [a,b]: quantos passaram de cada etapa
-    (_FUNIL_ETAPAS); won conta em todas. → (passou[5], bookings, total)."""
-    with conn.cursor() as cur:
-        cur.execute("""SELECT stage_id, status, count(*) FROM mkt_deals_attribution
-                        WHERE add_time >= %s AND add_time < %s GROUP BY 1, 2""",
-                    (a, b + dt.timedelta(days=1)))
-        passou = [0] * 5
-        booked = total = 0
-        for stage_id, status, n in cur.fetchall():
-            total += n
-            nivel = 4 if status == "won" else min(_STAGE_ORDER.get(stage_id, 0), 4)
-            for k in range(0, nivel + 1):
-                passou[k] += n
-            if status == "won":
-                booked += n
-        passou[0] = total
-        return passou, booked, total
+# Régua OFICIAL do funil (14/07/26) = a MESMA do "Dashboard - Comercial
+# (Pipedrive)" do time — extraída do código do app Lovable (useFunnelDashboard
+# .ts) e validada contra os números que a gestão confere no Pipedrive:
+#   Lead = deals CRIADOS no período (add_time, corte BRT)
+#   MQL  = Lead menos perdidos c/ motivo em _MQL_EXCLUI
+#   SAL  = Lead menos perdidos c/ motivo de desqualificação (_SAL_EXCLUI)
+#   SQL  = Lead cujo DONO ATUAL é closer (handoff SDR→closer = agendou reunião)
+#   Oportunidade = campo "Dia Oportunidade" no período (compareceu; NÃO é coorte
+#                  — por isso pode superar SQL)
+#   Booking = won no período + receita
+# ATENÇÃO: MQL/SAL/SQL são RETROATIVOS — desqualificar ou trocar o dono de um
+# lead move o número do mês em que o lead ENTROU; funil de mês fechado respira.
+_MQL_EXCLUI = {"Lead Score Baixo - Não contactamos"}
+_SAL_EXCLUI = {"Não tem estoque", "Lead Score Baixo - Não contactamos",
+               "Não é empresário", "Tentativas de reagendamentos excedidas",
+               "Tentativas de contato excedidas", "Dropshipping", "Sem retorno"}
+# closers = lista do app do time (SQL_CLOSERS); casa por inclusão, sem acento
+_CLOSERS = ("camila fernandes", "denise", "marcos rafael", "valeria",
+            "vitoria lazzerini", "lucas pereira", "giovana fornazari",
+            "giovana fornazzari", "johnatan", "ana beatriz")
 
 
-def _funil_eventos(conn, a: dt.date, b: dt.date) -> tuple[list[int], int, int, float]:
-    """Contagem POR EVENTO no período — mesma régua do Pipedrive/app Lovable:
-    Lead = deals CRIADOS; MQL..Oportunidade = deals que ENTRARAM em etapa
-    daquela ordem (mkt_stage_events, via /flow); Booking = ganhos (won) no
-    período + receita. Taxas podem passar de 100%: o evento pode ser de deal
-    criado antes do período (ex.: agendou em junho, compareceu em julho)."""
-    # Régua CONFIRMADA com o Otávio (08/07, números validados contra o app):
-    # MQL = Lead; SAL = criados no período c/ 1º contato (stages 2/13);
-    # SQL = criados no período c/ reunião agendada (6/15); Oportunidade = TODOS
-    # que entraram em Negociação (7) no período — indicações PULAM etapas e
-    # entram direto, por isso Oportunidade pode superar SQL.
-    # cortes de período em HORÁRIO DE BRASÍLIA (o Insights do Pipedrive corta
-    # assim; em UTC os leads de fim de noite caíam no dia errado)
+def _eh_closer(nome: str | None) -> bool:
+    import unicodedata
+    n = "".join(c for c in unicodedata.normalize("NFD", (nome or "").lower())
+                if unicodedata.category(c) != "Mn").strip()
+    return bool(n) and any(n == c or c in n for c in _CLOSERS)
+
+
+def _funil_oficial(conn, a: dt.date, b: dt.date) -> tuple[list[int], int, int, float]:
+    """Funil com a régua oficial do time (comentário acima). Cortes em HORÁRIO
+    DE BRASÍLIA (o dashboard/Insights cortam assim; em UTC os leads de fim de
+    noite caíam no dia errado). → (passou[Lead,MQL,SAL,SQL,Oport], bookings,
+    total_leads, receita)."""
     a, fim = f"{a} 00:00-03", f"{b + dt.timedelta(days=1)} 00:00-03"
     with conn.cursor() as cur:
+        cur.execute("""SELECT COALESCE(lost_reason, ''), COALESCE(owner_name, ''), count(*)
+                         FROM mkt_deals_attribution
+                        WHERE add_time >= %s AND add_time < %s GROUP BY 1, 2""", (a, fim))
+        total = mql = sal = sql_n = 0
+        for reason, owner, n in cur.fetchall():
+            total += n
+            r = reason.strip()
+            if r not in _MQL_EXCLUI:
+                mql += n
+            if r not in _SAL_EXCLUI:
+                sal += n
+            if _eh_closer(owner):
+                sql_n += n
         cur.execute("""SELECT count(*) FROM mkt_deals_attribution
-                        WHERE add_time >= %s AND add_time < %s""", (a, fim))
-        total = cur.fetchone()[0]
-
-        def coorte_etapa(stages):
-            cur.execute("""SELECT count(DISTINCT e.deal_id) FROM mkt_stage_events e
-                             JOIN mkt_deals_attribution d ON d.deal_id = e.deal_id
-                            WHERE e.entered_at >= %s AND e.entered_at < %s
-                              AND d.add_time >= %s AND d.add_time < %s
-                              AND e.stage_id = ANY(%s)""", (a, fim, a, fim, list(stages)))
-            return cur.fetchone()[0]
-
-        sal = coorte_etapa((2, 13))
-        sql_n = coorte_etapa((6, 15))
-        cur.execute("""SELECT count(DISTINCT deal_id) FROM mkt_stage_events
-                        WHERE entered_at >= %s AND entered_at < %s AND stage_id = 7""",
-                    (a, fim))
+                        WHERE oport_time >= %s AND oport_time < %s""", (a, fim))
         oport = cur.fetchone()[0]
-        passou = [total, total, sal, sql_n, oport]
+        if not oport:
+            # oport_time ainda não populado (coletor passou a trazer o campo
+            # Dia Oportunidade em 14/07) — entrada em Negociação (7) é o proxy
+            # que casa na prática até a primeira rodada de sync backfillar
+            cur.execute("""SELECT count(DISTINCT deal_id) FROM mkt_stage_events
+                            WHERE entered_at >= %s AND entered_at < %s AND stage_id = 7""",
+                        (a, fim))
+            oport = cur.fetchone()[0]
+        passou = [total, mql, sal, sql_n, oport]
         cur.execute("""SELECT count(*), COALESCE(sum(valor), 0) FROM mkt_deals_attribution
                         WHERE status='won' AND won_time >= %s AND won_time < %s""", (a, fim))
         booked, receita = cur.fetchone()
@@ -688,7 +689,7 @@ def _funil_vs_meta(conn, ini: dt.date, fim: dt.date) -> str:
     plan = _plan_funil(conn, [mes_ref]).get(mes_ref) or {}
     if not any((v.get("qtde") is not None) for v in plan.values()):
         return ""
-    passou, booked, _total = _coorte(conn, ini, fim)
+    passou, booked, _total, _rec = _funil_oficial(conn, ini, fim)
     reais = passou + [booked]
     frac = min(1.0, ((fim - ini).days + 1) / _dias_mes(mes_ref))
     rows = ""
@@ -731,8 +732,8 @@ def _funil(conn, request: Request) -> str:
     dias = (fim - ini).days + 1
     ini_p, fim_p = ini - dt.timedelta(days=dias), ini - dt.timedelta(days=1)
 
-    passou, booked, total, receita_book = _funil_eventos(conn, ini, fim)
-    passou_p, booked_p, total_p, _rec_p = _funil_eventos(conn, ini_p, fim_p)
+    passou, booked, total, receita_book = _funil_oficial(conn, ini, fim)
+    passou_p, booked_p, total_p, _rec_p = _funil_oficial(conn, ini_p, fim_p)
 
     mes_ref = fim.replace(day=1)
     with conn.cursor() as cur:
@@ -894,7 +895,7 @@ def _funil(conn, request: Request) -> str:
                      "(a versão via Claude entra quando os créditos de API estiverem disponíveis)</p><div class=card>" + itens +
                      "<style>.sug-item{padding:8px 0;border-top:1px solid var(--border);font-size:var(--fs-sm);line-height:1.6;color:var(--text-2)}.sug-item:first-child{border-top:none}</style></div></section>")
 
-    return (f"<h1>Funil de Prospecção</h1><div class=sub>contagem por EVENTO no período (mesma régua do Pipedrive): Lead = criados · etapas = quem ENTROU na etapa · Booking = ganhos — por isso uma etapa pode superar a anterior</div>"
+    return (f"<h1>Funil de Prospecção</h1><div class=sub>régua OFICIAL do dashboard do time (Pipedrive): Lead = criados no período · MQL/SAL = descontam desqualificados · SQL = na mão de closer · Oportunidade = Dia Oportunidade (não é coorte, pode superar SQL) · Booking = ganhos</div>"
             f"<form method=get action=/marketing><input type=hidden name=view value=funil>{form}</form>"
             + meta_html +
             f"<section><h2>Funil</h2><p class=secsub>largura proporcional ao volume · pílula = conversão sobre a etapa anterior</p>{funil_visual}</section>"
@@ -948,7 +949,7 @@ def _metas(conn) -> str:
         if mes > mes_atual:
             continue
         fim_m = min(hoje, mes.replace(day=_dias_mes(mes)))
-        passou, booked, _t = _coorte(conn, mes, fim_m)
+        passou, booked, _t, _rec = _funil_oficial(conn, mes, fim_m)
         reais[mes] = passou + [booked]
 
     # ---- KPIs do mês corrente (com ritmo esperado)
