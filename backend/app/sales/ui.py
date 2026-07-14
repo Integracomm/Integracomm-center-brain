@@ -504,7 +504,7 @@ def _pv_sdrs(conn, request: Request) -> str:
                   f"<span style='color:var(--text-faint);font-size:var(--fs-2xs)'> ({tl_o})</span></td>{tds}</tr>")
     sec_ori = ("<section><h2>Conversão por origem × SDR</h2>"
                "<p class=secsub>taxa lead→oportunidade (coorte do período; a oportunidade conta a qualquer tempo) · verde = bem acima do time naquela origem, vermelho = bem abaixo (mín. 8 leads) — mostra quem trata melhor cada tipo de lead</p>"
-               + _card(_tbl([("Origem", "left"), ("Time", "left")] + [(_abrev(n), "left") for n in cols], xrows))
+               + _card(_tbl([("Origem", "left"), ("Time", "center")] + [(_abrev(n), "center") for n in cols], xrows))
                + "</section>") if xrows else ""
 
     # (c) AGENDAMENTOS (oportunidades) por PLANO × SDR
@@ -533,13 +533,19 @@ def _pv_sdrs(conn, request: Request) -> str:
         brws += f"<tr><td style='{_nc}'><b>{escape(bd)}</b></td>{tds}</tr>"
     sec_bnd = ("<section><h2>Oportunidades por plano × SDR</h2>"
                "<p class=secsub>oportunidades geradas no período por bundle (% = participação no total da própria SDR) · mix concentrado em B1 numa pessoa com o time mirando B3-B5 = qualificação a puxar para cima</p>"
-               + _card(_tbl([("Plano", "left")] + [(_abrev(n), "left") for n in cols], brws))
+               + _card(_tbl([("Plano", "left")] + [(_abrev(n), "center") for n in cols], brws))
                + "</section>") if brws else ""
 
     # planos de ação individuais sobre os MESMOS números da tabela (só time ativo)
     for p in sorted(time_stats, key=lambda x: -(x["taxa_agend"] or 0)):
         if not p["ativo"]:
             continue
+        # motivo de desqualificação dominante da pessoa entra no plano (14/07)
+        motivos_p = [x for x in (desq_por.get(p["nome"]) or []) if x[0] != "(sem motivo)"]
+        if motivos_p:
+            top_m = max(motivos_p, key=lambda x: x[1])
+            if top_m[1] >= 5:
+                p["desq_top"] = top_m
         pl = ESP.plano_sdr(p, time_stats)
         itens = ("".join(f"<li style='color:var(--status-baixo)'>{escape(f)}</li>" for f in pl["fortes"])
                  + "".join(f"<li style='color:var(--status-alto)'>{escape(f)}</li>" for f in pl["fracos"])
@@ -1173,15 +1179,33 @@ def _vd_closers(conn, request: Request) -> str:
     ini, fim, form = _periodo(request)
     a, b = _brt(ini, fim)
     with conn.cursor() as cur:
+        # ticket em MRR: B1 é contrato SEMESTRAL pago à vista (regra do Otávio,
+        # reafirmada 14/07) — dividir por 6 p/ comparar com os mensais; sem
+        # isso quem fecha muito B1 aparecia como "ticket alto" indevidamente
         cur.execute("""
             SELECT d.owner_name,
                    count(*) FILTER (WHERE d.oport_time >= %s AND d.oport_time < %s) AS oports,
                    count(*) FILTER (WHERE d.status='won' AND d.won_time >= %s AND d.won_time < %s) AS wins,
-                   avg(COALESCE(d.valor_custom, d.valor)) FILTER (WHERE d.status='won' AND d.won_time >= %s AND d.won_time < %s) AS ticket
+                   avg(CASE WHEN substring(d.produto FROM 'B[1-5]') = 'B1'
+                            THEN COALESCE(d.valor_custom, d.valor) / 6.0
+                            ELSE COALESCE(d.valor_custom, d.valor) END)
+                       FILTER (WHERE d.status='won' AND d.won_time >= %s AND d.won_time < %s) AS ticket
               FROM mkt_deals_attribution d
              WHERE d.owner_name IS NOT NULL
              GROUP BY 1""", (a, b, a, b, a, b))
         dados = cur.fetchall()
+        # ciclo mediano por closer (1ª reunião → won, ganhos do período) — era
+        # sempre vazio e as regras de ciclo dos planos nunca disparavam (14/07)
+        cur.execute("""
+            SELECT d.owner_name,
+                   percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(epoch FROM d.won_time - m.primeiro) / 86400)
+              FROM mkt_deals_attribution d
+              JOIN (SELECT deal_id, min(entered_at) AS primeiro FROM mkt_stage_events
+                     WHERE stage_id IN (6, 5, 7) GROUP BY 1) m ON m.deal_id = d.deal_id
+             WHERE d.status='won' AND d.won_time >= %s AND d.won_time < %s
+               AND d.won_time > m.primeiro
+             GROUP BY 1""", (a, b))
+        ciclo_por = {n: float(v) for n, v in cur.fetchall() if v is not None}
     from .. import team_config as TC
     time_stats = []
     for nome, oports, wins, ticket in dados:
@@ -1193,7 +1217,7 @@ def _vd_closers(conn, request: Request) -> str:
         time_stats.append({"nome": nome, "oports": oports or 0, "bookings": wins or 0,
                            "taxa_conv": (wins / oports if oports else None),
                            "ticket": float(ticket) if ticket else None,
-                           "ciclo_dias": None, "perdas_top": None, "papel": papel})
+                           "ciclo_dias": ciclo_por.get(nome), "perdas_top": None, "papel": papel})
     if not time_stats:
         return (f"<h1>Time de Vendas</h1><div class=sub>coordenação: {ESP.COORD_VENDAS}</div>"
                 f"<section>{_aviso_coleta('dono dos deals (atribuição por closer)')}</section>")
@@ -1221,6 +1245,7 @@ def _vd_closers(conn, request: Request) -> str:
                  f"<td style='{_TD};text-align:right'>{p['bookings']}</td>"
                  f"<td style='{_TD};text-align:right'>{_fmt(p['taxa_conv'], 'pct')}</td>"
                  f"<td style='{_TD};text-align:right'>{_fmt(p['ticket'], 'brl')}</td>"
+                 f"<td style='{_TD};text-align:right'>{_fmt(p['ciclo_dias'], 'dias')}</td>"
                  f"<td style='{_TD}'>{escape((p['perdas_top'] or '—')[:30])}</td></tr>")
         # plano/mediana: SÓ colaboradores do time (coordenação/gerência ficam fora)
         if p["papel"] == "membro":
@@ -1264,7 +1289,7 @@ def _vd_closers(conn, request: Request) -> str:
         brws += f"<tr><td style='{_nc}'><b>{escape(bd)}</b></td>{tds}</tr>"
     sec_bnd = ("<section><h2>Fechamentos por plano × closer</h2>"
                "<p class=secsub>contratos ganhos no período por bundle — quem fecha o quê; forte em B1 e zerado em B3-B5 = treinar oferta para cima (prioridade da empresa)</p>"
-               + _card(_tbl([("Plano", "left")] + [(_abrev(c), "left") for c in cols], brws))
+               + _card(_tbl([("Plano", "left")] + [(_abrev(c), "center") for c in cols], brws))
                + "</section>") if brws else ""
 
     # (b) REUNIÕES por closer × hora (1ª entrada em Negociação, proxy da
@@ -1323,7 +1348,7 @@ def _vd_closers(conn, request: Request) -> str:
     return (f"<h1>Desempenho Individual — Vendas</h1><div class=sub>coordenação: {ESP.COORD_VENDAS} · gerência: Marcos (Vendas + Pré-vendas) · dono do deal = atribuição · lista editável no Painel Administrativo</div>"
             f"<form method=get action=/vendas><input type=hidden name=view value=closers>{form}</form>"
             f"<section><h2>Performance por closer</h2>"
-            + _card(_tbl([("Closer", "left"), ("Oports", "right"), ("Bookings", "right"), ("Conversão", "right"), ("Ticket", "right"), ("Perda nº1", "left")], rows)) + "</section>"
+            + _card(_tbl([("Closer", "left"), ("Oports", "right"), ("Bookings", "right"), ("Conversão", "right"), ("Ticket (MRR)", "right"), ("Ciclo (med.)", "right"), ("Perda nº1", "left")], rows)) + "</section>"
             + sec_bnd + sec_hora +
             f"<section><h2>Planos de ação individuais</h2><p class=secsub>{ESP.PERSONA_VENDAS}</p>{_card(planos or '<span class=note>—</span>')}</section>")
 
@@ -1465,8 +1490,11 @@ def _vd_forecast(conn, request: Request) -> str:
 def _vd_horarios(conn, request: Request) -> str:
     """Melhor Horário de VENDAS (pedido 14/07): existe hora melhor p/ a
     REUNIÃO acontecer? Base: 1ª entrada do deal em Negociação (7) — o card é
-    movido após a reunião, então o carimbo é o proxy da reunião realizada;
-    'fechou' = deal won a qualquer tempo (taxa por janela)."""
+    movido após a reunião, então o carimbo é o proxy da reunião realizada.
+    TAXA = ganhas ÷ DECIDIDAS (won+lost) da própria coorte: deals ainda
+    abertos não derrubam a taxa (14/07 — o 9,1% sobre o total confundia com
+    os 15,2% do funil, que mistura coortes: bookings do mês ÷ oportunidades
+    do mês, incluindo reuniões de meses anteriores)."""
     ini, fim, bundle = _horarios_periodo(request)
     a, b = _brt(ini, fim)
     filtro_b, args = "", [a, b]
@@ -1483,57 +1511,68 @@ def _vd_horarios(conn, request: Request) -> str:
                  GROUP BY e.deal_id)
             SELECT extract(dow  FROM p.entered_at AT TIME ZONE 'America/Sao_Paulo')::int,
                    extract(hour FROM p.entered_at AT TIME ZONE 'America/Sao_Paulo')::int,
-                   count(*), count(*) FILTER (WHERE d.status = 'won')
+                   count(*), count(*) FILTER (WHERE d.status = 'won'),
+                   count(*) FILTER (WHERE d.status = 'lost')
               FROM primeira p JOIN mkt_deals_attribution d ON d.deal_id = p.deal_id
              GROUP BY 1, 2""", args)
-        celulas = {(dow, h): (n, w) for dow, h, n, w in cur.fetchall()}
-    total = sum(n for n, _w in celulas.values())
+        celulas = {(dow, h): (n, w, lo) for dow, h, n, w, lo in cur.fetchall()}
+    total = sum(n for n, _w, _lo in celulas.values())
     if not total:
         return ("<h1>Melhor Horário — reuniões de Vendas</h1><div class=sub>quando as reuniões acontecem e quanto convertem</div>"
                 "<section><div class=warn>sem reuniões no período/filtro selecionado</div></section>")
-    total_w = sum(w for _n, w in celulas.values())
+    total_w = sum(w for _n, w, _lo in celulas.values())
+    total_lo = sum(lo for _n, _w, lo in celulas.values())
+    abertas = total - total_w - total_lo
 
     # --- heatmap dia × hora (reuniões; tooltip traz a conversão da célula) ---
     dows = [1, 2, 3, 4, 5] + ([6] if any(d == 6 for d, _ in celulas) else []) \
         + ([0] if any(d == 0 for d, _ in celulas) else [])
     horas = sorted({h for _, h in celulas})
     horas = list(range(min(horas), max(horas) + 1))
-    vmax = max(n for n, _w in celulas.values())
+    vmax = max(n for n, _w, _lo in celulas.values())
     linhas = ""
     for h in horas:
         tds = ""
         for d in dows:
-            n, w = celulas.get((d, h), (0, 0))
+            n, w, lo = celulas.get((d, h), (0, 0, 0))
             alpha = int(8 + 62 * (n / vmax)) if n else 0
             bg = f"background:color-mix(in srgb,var(--brand) {alpha}%,transparent);" if n else ""
-            tds += (f"<td title='{_DOW_NOME[d]} {h:02d}h — {n} reunião(ões), {w} fechada(s) ({w / n * 100:.0f}%)' "
+            dec = w + lo
+            tds += (f"<td title='{_DOW_NOME[d]} {h:02d}h — {n} reunião(ões): {w} fechada(s), {lo} perdida(s), {n - dec} em aberto"
+                    f"{f' · taxa {w / dec * 100:.0f}% das decididas' if dec else ''}' "
                     if n else "<td ") + f"style='{_TD};text-align:center;{bg}'>{n or ''}</td>"
         linhas += f"<tr><td style='{_TD};color:var(--text-muted)'>{h:02d}h</td>{tds}</tr>"
     heat = _tbl([("", "left")] + [(_DOW_NOME[d], "left") for d in dows], linhas)
 
-    # --- por HORA: reuniões × fechadas × taxa (a pergunta central da aba) ---
+    # --- por HORA: a pergunta central — taxa = fechadas ÷ DECIDIDAS ---------
     por_hora: dict[int, list[int]] = {}
-    for (_d, h), (n, w) in celulas.items():
-        t = por_hora.setdefault(h, [0, 0])
-        t[0] += n; t[1] += w
+    for (_d, h), (n, w, lo) in celulas.items():
+        t = por_hora.setdefault(h, [0, 0, 0])
+        t[0] += n; t[1] += w; t[2] += lo
     hrows, melhores = "", []
     for h in sorted(por_hora):
-        n, w = por_hora[h]
-        tx = w / n if n else None
-        if n >= 15:
-            melhores.append((tx or 0, h, n))
+        n, w, lo = por_hora[h]
+        dec = w + lo
+        tx = w / dec if dec else None
+        if dec >= 15:
+            melhores.append((tx or 0, h, dec))
         hrows += (f"<tr><td style='{_TD}'><b>{h:02d}h</b></td>"
                   f"<td style='{_TD};text-align:right'>{n}</td>"
                   f"<td style='{_TD};text-align:right'>{w}</td>"
-                  f"<td style='{_TD};text-align:right'>{_fmt(tx, 'pct')}</td>"
-                  f"<td style='{_TD};text-align:right'>{'<span class=note>amostra pequena</span>' if n < 15 else ''}</td></tr>")
+                  f"<td style='{_TD};text-align:right'>{lo}</td>"
+                  f"<td style='{_TD};text-align:right;color:var(--text-muted)'>{n - dec}</td>"
+                  f"<td style='{_TD};text-align:right'><b>{_fmt(tx, 'pct')}</b></td>"
+                  f"<td style='{_TD};text-align:right'>{'<span class=note>amostra pequena</span>' if dec < 15 else ''}</td></tr>")
     melhores.sort(key=lambda x: -x[0])
-    melhor_txt = (f"{melhores[0][1]:02d}h ({_fmt(melhores[0][0], 'pct')} em {melhores[0][2]} reuniões)"
+    melhor_txt = (f"{melhores[0][1]:02d}h ({_fmt(melhores[0][0], 'pct')} em {melhores[0][2]} decididas)"
                   if melhores else "—")
+    decididas = total_w + total_lo
     kpis = ("<div class=kpis>"
             f"<div class=kpi><div class=n>{total}</div><div class=l>reuniões no período</div><div class=s>1ª entrada em Negociação</div></div>"
-            f"<div class=kpi><div class=n>{_fmt(total_w / total, 'pct')}</div><div class=l>viraram contrato</div></div>"
-            f"<div class=kpi><div class=n>{escape(melhor_txt)}</div><div class=l>melhor hora (conversão)</div><div class=s>mín. 15 reuniões na hora</div></div></div>")
+            f"<div class=kpi><div class=n>{_fmt(total_w / decididas if decididas else None, 'pct')}</div><div class=l>taxa de fechamento</div>"
+            f"<div class=s>{total_w} ganhas ÷ {decididas} decididas</div></div>"
+            f"<div class=kpi><div class=n>{abertas}</div><div class=l>ainda em aberto</div><div class=s>fora da taxa — a coorte segue amadurecendo</div></div>"
+            f"<div class=kpi><div class=n>{escape(melhor_txt)}</div><div class=l>melhor hora (conversão)</div><div class=s>mín. 15 decididas na hora</div></div></div>")
 
     opts_b = "".join(f"<option value='{v}' {'selected' if bundle == v else ''}>{lbl}</option>"
                      for v, lbl in [("todos", "todos os bundles"), ("B1", "B1"), ("B2", "B2"),
@@ -1545,15 +1584,17 @@ def _vd_horarios(conn, request: Request) -> str:
             f"<button type=submit>Aplicar</button></div></form>")
     return ("<h1>Melhor Horário — reuniões de Vendas</h1>"
             "<div class=sub>momento em que o deal ENTROU em Negociação (horário de Brasília) — o card é movido após a reunião, "
-            "então é o proxy de quando ela aconteceu · 'fechou' = deal ganho a qualquer tempo</div>"
+            "então é o proxy de quando ela aconteceu · taxa = ganhas ÷ DECIDIDAS da própria coorte (as em aberto não contam — "
+            "por isso pode diferir da taxa do funil, que divide os bookings do mês pelas oportunidades do mês misturando coortes)</div>"
             + form + kpis +
             "<section><h2>Mapa de calor — dia da semana × hora</h2>"
             f"<p class=secsub>período {ini.strftime('%d-%m-%Y')} a {fim.strftime('%d-%m-%Y')}"
-            f"{' · bundle ' + bundle if bundle != 'todos' else ''} · quanto mais escuro, mais reuniões · passe o mouse para ver a conversão da célula</p>"
+            f"{' · bundle ' + bundle if bundle != 'todos' else ''} · quanto mais escuro, mais reuniões · passe o mouse para ver o desfecho da célula</p>"
             + _card(heat) + "</section>"
             "<section><h2>Conversão por hora da reunião</h2>"
-            "<p class=secsub>a pergunta central: reunião em qual horário FECHA mais? · use janelas com amostra razoável antes de mudar a agenda do time</p>"
-            + _card(_tbl([("Hora", "left"), ("Reuniões", "right"), ("Fechadas", "right"), ("Taxa", "right"), ("", "right")], hrows)) + "</section>")
+            "<p class=secsub>a pergunta central: reunião em qual horário FECHA mais? · taxa sobre as decididas (ganhas + perdidas) · use janelas com amostra razoável antes de mudar a agenda do time</p>"
+            + _card(_tbl([("Hora", "left"), ("Reuniões", "right"), ("Fechadas", "right"), ("Perdidas", "right"),
+                          ("Em aberto", "right"), ("Taxa", "right"), ("", "right")], hrows)) + "</section>")
 
 
 # ---------------------------------------------------------------------------

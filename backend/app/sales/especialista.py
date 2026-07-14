@@ -56,6 +56,9 @@ def plano_sdr(p: dict, time: list[dict]) -> dict:
     if med_vol and p["leads"] < med_vol * 0.6 and p.get("ativo", True):
         fracos.append(f"Volume {p['leads']:.0f} leads vs mediana {med_vol:.0f} — verificar distribuição de leads ou capacidade.")
         acoes.append("Revisar com a coordenação a régua de distribuição de leads e possíveis travas operacionais.")
+    if p.get("desq_top"):
+        m, n = p["desq_top"]
+        acoes.append(f"Motivo de desqualificação dominante: “{m}” ({n}× no período) — separar 3 casos para o 1:1 e ajustar esse ponto específico do roteiro.")
     if not acoes and fortes:
         acoes.append("Manter o padrão e documentar o que funciona (roteiro/horários) para nivelar o time por cima.")
     if not fortes and not fracos:
