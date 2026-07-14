@@ -1,10 +1,12 @@
 """Análises da área de Marketing sobre o cache mkt_* (só lê Postgres).
 
 Canal a partir do utm_source (versionado no histórico: meta_ads, _v2, _v3 —
-agrupamos por PREFIXO). Marcos do funil v1: lead = deal criado (add_time);
-booking = won. "Oportunidade" usa PROXY: deal que avançou do estágio inicial
-(stage_id >= 3) ou fechou — o tempo exato de avanço entra quando o
-enriquecimento via /flow for ligado (documentado no coletor).
+agrupamos por PREFIXO). Marcos (14/07 — mesmos do funil oficial, fim do proxy
+stage_id>=3): lead = deal criado (add_time, corte BRT); oportunidade = campo
+Dia Oportunidade preenchido (aqui é COORTE: lead do período que VIROU
+oportunidade a qualquer tempo — mede qualidade do lead, difere de propósito
+da aba Funil, que conta oportunidades ocorridas NO período); booking = won;
+receita = VALOR custom c/ fallback no value.
 
 Lag (aba Tempo até Resultado): por campanha Meta/Google casada por NOME
 (mkt_campaigns.nome == utm_campaign do deal), medimos dias do lançamento
@@ -44,12 +46,13 @@ def ranking_canais(conn: Any, ini: dt.date, fim: dt.date) -> list[dict]:
     relativa preservada."""
     with conn.cursor() as cur:
         cur.execute("""SELECT origem, count(*) AS leads,
-                              count(*) FILTER (WHERE stage_id >= 3 OR status IN ('won','lost')) AS oport,
+                              count(*) FILTER (WHERE oport_time IS NOT NULL) AS oport,
                               count(*) FILTER (WHERE status='won') AS bookings,
-                              COALESCE(sum(valor) FILTER (WHERE status='won'), 0) AS receita
+                              COALESCE(sum(COALESCE(valor_custom, valor)) FILTER (WHERE status='won'), 0) AS receita
                          FROM mkt_deals_attribution
                         WHERE add_time >= %s AND add_time < %s
-                        GROUP BY origem""", (ini, fim + dt.timedelta(days=1)))
+                        GROUP BY origem""",
+                    (f"{ini} 00:00-03", f"{fim + dt.timedelta(days=1)} 00:00-03"))
         por_canal: dict[str, dict] = {}
         for origem, leads, oport, book, receita in cur.fetchall():
             c = por_canal.setdefault(canal_de(origem), {"leads": 0, "oport": 0,
@@ -82,12 +85,12 @@ def funil_por_origem(conn: Any, ini: dt.date, fim: dt.date, origem: str | None =
     """Funil por origem crua; com `origem`, detalha por campanha e criativo."""
     grp = "utm_campaign, utm_content" if origem else "origem"
     filtro = "AND origem = %s" if origem else ""
-    args = [ini, fim + dt.timedelta(days=1)] + ([origem] if origem else [])
+    args = [f"{ini} 00:00-03", f"{fim + dt.timedelta(days=1)} 00:00-03"] + ([origem] if origem else [])
     with conn.cursor() as cur:
         cur.execute(f"""SELECT {grp}, count(*) AS leads,
-                              count(*) FILTER (WHERE stage_id >= 3 OR status IN ('won','lost')) AS oport,
+                              count(*) FILTER (WHERE oport_time IS NOT NULL) AS oport,
                               count(*) FILTER (WHERE status='won') AS bookings,
-                              COALESCE(sum(valor) FILTER (WHERE status='won'),0) AS receita
+                              COALESCE(sum(COALESCE(valor_custom, valor)) FILTER (WHERE status='won'),0) AS receita
                          FROM mkt_deals_attribution
                         WHERE add_time >= %s AND add_time < %s {filtro}
                         GROUP BY {grp} ORDER BY leads DESC""", args)

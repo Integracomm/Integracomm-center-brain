@@ -732,18 +732,13 @@ def _hub_sales_stats(conn: Any) -> dict | None:
         a, b = f"{mes} 00:00-03", f"{hoje + dt.timedelta(days=1)} 00:00-03"
         mes_ant = (mes - dt.timedelta(days=1)).replace(day=1)
         a_ant, b_ant = f"{mes_ant} 00:00-03", f"{mes} 00:00-03"
+        # PRÉ-VENDAS: leads e SQL (régua OFICIAL do funil — deal na mão de
+        # closer = agendou) vs mês anterior; mesmos números da aba /prevendas
+        from .marketing.ui import _funil_oficial
+        passou, _bk, leads, _rc = _funil_oficial(conn, mes, hoje)
+        passou_ant, _bk2, leads_ant, _rc2 = _funil_oficial(conn, mes_ant, mes - dt.timedelta(days=1))
+        reunioes, reunioes_ant = passou[3], passou_ant[3]
         with conn.cursor() as cur:
-            # PRÉ-VENDAS: leads recebidos, reuniões agendadas, taxa vs mês anterior
-            cur.execute("SELECT count(*) FROM mkt_deals_attribution WHERE add_time >= %s AND add_time < %s", (a, b))
-            leads = cur.fetchone()[0]
-            cur.execute("""SELECT count(DISTINCT deal_id) FROM mkt_stage_events
-                            WHERE stage_id IN (6, 15) AND entered_at >= %s AND entered_at < %s""", (a, b))
-            reunioes = cur.fetchone()[0]
-            cur.execute("SELECT count(*) FROM mkt_deals_attribution WHERE add_time >= %s AND add_time < %s", (a_ant, b_ant))
-            leads_ant = cur.fetchone()[0]
-            cur.execute("""SELECT count(DISTINCT deal_id) FROM mkt_stage_events
-                            WHERE stage_id IN (6, 15) AND entered_at >= %s AND entered_at < %s""", (a_ant, b_ant))
-            reunioes_ant = cur.fetchone()[0]
             # speed-to-lead do mês (mediana) + leads ainda sem 1º contato
             cur.execute("""SELECT percentile_cont(0.5) WITHIN GROUP
                                   (ORDER BY EXTRACT(epoch FROM t.first_at - d.add_time) / 60),
@@ -752,8 +747,9 @@ def _hub_sales_stats(conn: Any) -> dict | None:
                              LEFT JOIN sales_first_touch t ON t.deal_id = d.deal_id
                             WHERE d.add_time >= %s AND d.add_time < %s""", (a, b))
             speed_med, sem_toque = cur.fetchone()
-            # VENDAS: fechados + receita, pipeline aberto, metas do mês
-            cur.execute("""SELECT count(*), COALESCE(sum(valor), 0) FROM mkt_deals_attribution
+            # VENDAS: fechados + receita (VALOR custom, fallback value), pipeline
+            cur.execute("""SELECT count(*), COALESCE(sum(COALESCE(valor_custom, valor)), 0)
+                             FROM mkt_deals_attribution
                             WHERE status='won' AND won_time >= %s AND won_time < %s""", (a, b))
             book, receita = cur.fetchone()
             cur.execute("SELECT count(*) FROM mkt_deals_attribution WHERE status='open' AND stage_id IN (6, 5, 7)")
@@ -1153,8 +1149,8 @@ def _render_hub(role: str, st: dict, users: list[dict] | None = None,
             f"<div class=an>Pré-vendas</div>{chip_area('prevendas')}</div>"
             "<div class=agrid>"
             + am(_num(sales["leads"]), "leads recebidos")
-            + am(_num(sales["reunioes"]), "reuniões agendadas")
-            + am(taxa_txt, "lead→reunião", c_taxa)
+            + am(_num(sales["reunioes"]), "SQLs (agendaram)")
+            + am(taxa_txt, "lead→SQL", c_taxa)
             + am(speed_txt, "1º contato (mediana)",
                  "var(--status-critico)" if (sales["speed_med"] or 0) > 60 else None)
             + f"</div><div class=ad>{escape(saude['prevendas'][1])}</div></a>")
@@ -1169,7 +1165,7 @@ def _render_hub(role: str, st: dict, users: list[dict] | None = None,
             "<div class=agrid>"
             + am(v_bk, "bookings no mês", c_bk)
             + am(rec_txt, "receita/meta")
-            + am(_num(sales["pipeline"]), "oportunidades abertas")
+            + am(_num(sales["pipeline"]), "deals abertos no pipe")
             + f"</div><div class=ad>{escape(saude['vendas'][1])}</div></a>")
     else:
         pv_card = ("<a class='area' href='/prevendas'><div class=ahead>"

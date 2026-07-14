@@ -350,75 +350,68 @@ def _pv_sdrs(conn, request: Request) -> str:
                          FROM mkt_deals_attribution
                         WHERE status='won' AND won_time >= %s AND won_time < %s GROUP BY 1""", (_SEM, a, b))
         book_por = {n: (q, float(v)) for n, q, v in cur.fetchall()}
+    # speed do 1º contato por pessoa (sales_first_touch) — entra como COLUNA
+    # da mesma tabela, casada por nome; os volumes são sempre os oficiais acima
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT t.quem,
+                   percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(epoch FROM t.first_at - d.add_time) / 60)
+              FROM sales_first_touch t
+              JOIN mkt_deals_attribution d ON d.deal_id = t.deal_id
+             WHERE d.add_time >= %s AND d.add_time < %s AND t.quem IS NOT NULL AND t.quem <> ''
+             GROUP BY 1""", (a, b))
+        speed_por = {TC.norm(q): float(s) for q, s in cur.fetchall() if s is not None}
+
     colaboradores = sorted(set(leads_por) | set(oport_por),
                            key=lambda n: (n == _SEM, -leads_por.get(n, 0), -oport_por.get(n, 0)))
     orows, tl = "", [0, 0, 0]
+    time_stats, planos = [], ""
     for nome in colaboradores[:15]:
         l, o = leads_por.get(nome, 0), oport_por.get(nome, 0)
         bq, _bv = book_por.get(nome, (0, 0.0))
         tl[0] += l; tl[1] += o; tl[2] += bq
+        speed = speed_por.get(TC.norm(nome))
         chip = ("" if eh_sdr(nome) or nome == _SEM
                 else " <span class=chip style='--c:var(--status-semdados)'>fora do time de PV</span>")
+        if eh_sdr(nome) and not TC.ativo(conn, "prevendas", nome):
+            chip = " <span class=chip style='--c:var(--status-semdados)'>desligada</span>"
         orows += (f"<tr><td style='{_TD}'><b>{escape(nome[:30])}</b>{chip}</td>"
                   f"<td style='{_TD};text-align:right'>{l}</td>"
                   f"<td style='{_TD};text-align:right'>{o}</td>"
                   f"<td style='{_TD};text-align:right'>{_fmt(o / l if l else None, 'pct')}</td>"
-                  f"<td style='{_TD};text-align:right'>{bq or ''}</td></tr>")
+                  f"<td style='{_TD};text-align:right'>{bq or ''}</td>"
+                  f"<td style='{_TD};text-align:right'>{_fmt(speed, 'min')}</td></tr>")
+        if eh_sdr(nome):
+            time_stats.append({"nome": nome, "leads": l, "agendadas": o,
+                               "taxa_agend": (o / l if l else None), "speed_min": speed,
+                               "ativo": TC.ativo(conn, "prevendas", nome)})
     orows += (f"<tr><td style='{_TD};border-top:2px solid var(--border-strong)'><b>Total</b></td>"
               f"<td style='{_TD};text-align:right;border-top:2px solid var(--border-strong)'><b>{tl[0]}</b></td>"
               f"<td style='{_TD};text-align:right;border-top:2px solid var(--border-strong)'><b>{tl[1]}</b></td>"
               f"<td style='{_TD};text-align:right;border-top:2px solid var(--border-strong)'>{_fmt(tl[1] / tl[0] if tl[0] else None, 'pct')}</td>"
-              f"<td style='{_TD};text-align:right;border-top:2px solid var(--border-strong)'><b>{tl[2]}</b></td></tr>")
+              f"<td style='{_TD};text-align:right;border-top:2px solid var(--border-strong)'><b>{tl[2]}</b></td>"
+              f"<td style='{_TD};border-top:2px solid var(--border-strong)'></td></tr>")
     oficial = ("<section><h2>Leads e oportunidades por colaborador</h2>"
-               "<p class=secsub>régua dos gráficos do Pipedrive: atribuição pelo campo SDR do deal · "
-               "leads = criados no período · oportunidades = Dia Oportunidade no período · lead ainda sem SDR entra em '(sem SDR definido)'</p>"
+               "<p class=secsub>volumes na régua dos gráficos do Pipedrive (atribuição pelo campo SDR do deal; "
+               "leads = criados no período · oportunidades = Dia Oportunidade no período) · Speed = mediana do 1º contato registrado (atividades) · "
+               "lead ainda sem SDR entra em '(sem SDR definido)'</p>"
                + _card(_tbl([("Colaborador", "left"), ("Leads", "right"), ("Oportunidades", "right"),
-                             ("Lead→Oport", "right"), ("Bookings", "right")], orows)) + "</section>")
+                             ("Lead→Oport", "right"), ("Bookings", "right"), ("Speed 1º contato", "right")], orows)) + "</section>")
 
-    # ---- régua OPERACIONAL (1º contato registrado nas atividades): speed e
-    # reuniões — complementa a oficial; a atribuição aqui é quem TOCOU primeiro
-    with conn.cursor() as cur:
-        cur.execute("""
-            SELECT t.quem, count(DISTINCT d.deal_id) AS leads,
-                   count(DISTINCT e.deal_id) AS agendadas,
-                   percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(epoch FROM t.first_at - d.add_time) / 60) AS speed
-              FROM sales_first_touch t
-              JOIN mkt_deals_attribution d ON d.deal_id = t.deal_id
-              LEFT JOIN mkt_stage_events e ON e.deal_id = d.deal_id AND e.stage_id = ANY(%s)
-                   AND e.entered_at >= %s AND e.entered_at < %s
-             WHERE d.add_time >= %s AND d.add_time < %s AND t.quem IS NOT NULL AND t.quem <> ''
-             GROUP BY 1""", (list(_ST_REUNIAO), a, b, a, b))
-        dados = cur.fetchall()
-    time_stats = [{"nome": q, "leads": l, "agendadas": g,
-                   "taxa_agend": (g / l if l else None),
-                   "speed_min": float(s) if s is not None else None,
-                   "ativo": TC.ativo(conn, "prevendas", q)}
-                  for q, l, g, s in dados if eh_sdr(q)]
-    if not time_stats:
-        return (f"<h1>Time de Pré-vendas</h1><div class=sub>coordenação: {ESP.COORD_PREVENDAS}</div>"
-                f"<form method=get action=/prevendas><input type=hidden name=view value=sdrs>{form}</form>"
-                + oficial + f"<section>{_aviso_coleta('atividades (atribuição por SDR)')}</section>")
-    rows, planos = "", ""
+    # planos de ação individuais sobre os MESMOS números da tabela (só time ativo)
     for p in sorted(time_stats, key=lambda x: -(x["taxa_agend"] or 0)):
-        tag = " <span class=chip style='--c:var(--status-semdados)'>desligada</span>" if not p["ativo"] else ""
-        rows += (f"<tr><td style='{_TD}'><b>{escape(p['nome'])}</b>{tag}</td>"
-                 f"<td style='{_TD};text-align:right'>{p['leads']}</td>"
-                 f"<td style='{_TD};text-align:right'>{p['agendadas']}</td>"
-                 f"<td style='{_TD};text-align:right'>{_fmt(p['taxa_agend'], 'pct')}</td>"
-                 f"<td style='{_TD};text-align:right'>{_fmt(p['speed_min'], 'min')}</td></tr>")
-        if p["ativo"]:
-            pl = ESP.plano_sdr(p, time_stats)
-            itens = ("".join(f"<li style='color:var(--status-baixo)'>{escape(f)}</li>" for f in pl["fortes"])
-                     + "".join(f"<li style='color:var(--status-alto)'>{escape(f)}</li>" for f in pl["fracos"])
-                     + "".join(f"<li>→ {escape(acao)}</li>" for acao in pl["acoes"]))
-            planos += (f"<div style='margin-top:12px'><b>{escape(p['nome'])}</b>"
-                       f"<ul class=note style='margin:4px 0 0;padding-left:18px'>{itens}</ul></div>")
+        if not p["ativo"]:
+            continue
+        pl = ESP.plano_sdr(p, time_stats)
+        itens = ("".join(f"<li style='color:var(--status-baixo)'>{escape(f)}</li>" for f in pl["fortes"])
+                 + "".join(f"<li style='color:var(--status-alto)'>{escape(f)}</li>" for f in pl["fracos"])
+                 + "".join(f"<li>→ {escape(acao)}</li>" for acao in pl["acoes"]))
+        planos += (f"<div style='margin-top:12px'><b>{escape(p['nome'])}</b>"
+                   f"<ul class=note style='margin:4px 0 0;padding-left:18px'>{itens}</ul></div>")
     return (f"<h1>Time de Pré-vendas</h1><div class=sub>coordenação: {ESP.COORD_PREVENDAS} · lista do time editável no Painel Administrativo · comparação com a mediana, tom construtivo</div>"
             f"<form method=get action=/prevendas><input type=hidden name=view value=sdrs>{form}</form>"
             + oficial +
-            f"<section><h2>Produtividade por SDR (régua operacional)</h2><p class=secsub>atribuição por quem fez o 1º CONTATO registrado nas atividades — mede esforço e velocidade; difere da atribuição oficial por campo SDR</p>"
-            + _card(_tbl([("SDR", "left"), ("Leads tocados", "right"), ("Reuniões", "right"), ("Lead→Reunião", "right"), ("Speed (med.)", "right")], rows)) + "</section>"
-            f"<section><h2>Planos de ação individuais</h2><p class=secsub>{ESP.PERSONA_PREVENDAS}</p>{_card(planos or '<span class=note>—</span>')}</section>")
+            f"<section><h2>Planos de ação individuais</h2><p class=secsub>{ESP.PERSONA_PREVENDAS} · derivados dos números da tabela acima</p>{_card(planos or '<span class=note>—</span>')}</section>")
 
 
 # --- Melhor Horário (pedido do time de Pré-vendas, 10/07/26) ----------------
@@ -732,22 +725,26 @@ def _vd_funil(conn, request: Request) -> str:
     ini, fim, form = _periodo(request)
     a, b = _brt(ini, fim)
     reunioes = _entradas(conn, _ST_REUNIAO, a, b, coorte=False)
-    negoc = _entradas(conn, _ST_NEGOC, a, b, coorte=False)
     with conn.cursor() as cur:
-        cur.execute("""SELECT count(*), COALESCE(sum(valor), 0) FROM mkt_deals_attribution
+        # oportunidade = campo Dia Oportunidade (régua oficial, igual em todas
+        # as áreas desde 14/07); receita = VALOR custom c/ fallback no value
+        cur.execute("""SELECT count(*) FROM mkt_deals_attribution
+                        WHERE oport_time >= %s AND oport_time < %s""", (a, b))
+        negoc = cur.fetchone()[0]
+        cur.execute("""SELECT count(*), COALESCE(sum(COALESCE(valor_custom, valor)), 0)
+                         FROM mkt_deals_attribution
                         WHERE status='won' AND won_time >= %s AND won_time < %s""", (a, b))
         book, receita = cur.fetchone()
         # tendência mensal Oport→Booking (6 meses)
         cur.execute("""
-            WITH oport AS (SELECT date_trunc('month', entered_at - interval '3 hours') m,
-                                  count(DISTINCT deal_id) n
-                             FROM mkt_stage_events WHERE stage_id = ANY(%s) GROUP BY 1),
+            WITH oport AS (SELECT date_trunc('month', oport_time - interval '3 hours') m, count(*) n
+                             FROM mkt_deals_attribution WHERE oport_time IS NOT NULL GROUP BY 1),
                  wins AS (SELECT date_trunc('month', won_time - interval '3 hours') m, count(*) n
                             FROM mkt_deals_attribution WHERE status='won' GROUP BY 1)
             SELECT to_char(o.m, 'MM-YYYY'), o.n, COALESCE(w.n, 0)
               FROM oport o LEFT JOIN wins w ON w.m = o.m
              WHERE o.m >= date_trunc('month', now()) - interval '5 months'
-             ORDER BY o.m""", (list(_ST_NEGOC),))
+             ORDER BY o.m""")
         tend = cur.fetchall()
     conv = book / negoc if negoc else None
     kpis = ("<div class=kpis>"
@@ -772,7 +769,7 @@ def _vd_funil(conn, request: Request) -> str:
     ins_html = "".join(f"<div class=sug-item>→ {escape(i)}</div>" for i in ins)
 
     # OPORTUNIDADES POR BUNDLE (movida de Pré-vendas 13/07: oportunidade e
-    # fechamento são território de Vendas): entradas em Negociação no período ×
+    # fechamento são território de Vendas): Dia Oportunidade no período ×
     # contratos FECHADOS no período; bookings validados com a gestão (jul: B1 6,
     # B2 4, B3 2, B4 1, Assessoria Smart 1). Produto nasce na Negociação.
     with conn.cursor() as cur:
@@ -780,10 +777,9 @@ def _vd_funil(conn, request: Request) -> str:
             WITH op AS (
                 SELECT COALESCE(substring(d.produto FROM 'B[1-5]'),
                                 left(COALESCE(d.produto, '(sem plano)'), 30)) AS bnd,
-                       count(DISTINCT d.deal_id) AS n
+                       count(*) AS n
                   FROM mkt_deals_attribution d
-                  JOIN mkt_stage_events e ON e.deal_id = d.deal_id
-                       AND e.stage_id = 7 AND e.entered_at >= %s AND e.entered_at < %s
+                 WHERE d.oport_time >= %s AND d.oport_time < %s
                  GROUP BY 1),
                  wn AS (
                 SELECT COALESCE(substring(produto FROM 'B[1-5]'),
@@ -860,7 +856,8 @@ def _vd_winloss(conn, request: Request) -> str:
     ini, fim, form = _periodo(request)
     a, b = _brt(ini, fim)
     with conn.cursor() as cur:
-        cur.execute("""SELECT COALESCE(lost_reason, '(sem motivo)'), count(*), COALESCE(sum(valor), 0)
+        cur.execute("""SELECT COALESCE(lost_reason, '(sem motivo)'), count(*),
+                              COALESCE(sum(COALESCE(valor_custom, valor)), 0)
                          FROM mkt_deals_attribution
                         WHERE status='lost' AND lost_time >= %s AND lost_time < %s
                           AND stage_id IN (6, 5, 7)
@@ -901,11 +898,12 @@ def _vd_ciclo(conn, request: Request) -> str:
         ciclos = [float(r[0]) for r in cur.fetchall() if r[0] is not None and r[0] >= 0]
         # deals abertos na fase de Vendas + dias desde o último movimento
         cur.execute("""
-            SELECT d.deal_id, d.stage_id, d.valor, d.produto, d.owner_name,
+            SELECT d.deal_id, d.stage_id, COALESCE(d.valor_custom, d.valor) AS valor,
+                   d.produto, d.owner_name,
                    EXTRACT(epoch FROM now() - max(e.entered_at)) / 86400 AS dias
               FROM mkt_deals_attribution d JOIN mkt_stage_events e ON e.deal_id = d.deal_id
              WHERE d.status='open' AND d.stage_id IN (6, 5, 7)
-             GROUP BY d.deal_id, d.stage_id, d.valor, d.produto, d.owner_name""")
+             GROUP BY d.deal_id, d.stage_id, COALESCE(d.valor_custom, d.valor), d.produto, d.owner_name""")
         abertos = cur.fetchall()
     med = st.median(ciclos) if ciclos else None
     p25, p75 = (st.quantiles(ciclos, n=4)[0], st.quantiles(ciclos, n=4)[2]) if len(ciclos) >= 4 else (None, None)
@@ -937,14 +935,12 @@ def _vd_closers(conn, request: Request) -> str:
     with conn.cursor() as cur:
         cur.execute("""
             SELECT d.owner_name,
-                   count(DISTINCT e.deal_id) FILTER (WHERE e.stage_id = ANY(%s)) AS oports,
-                   count(DISTINCT d.deal_id) FILTER (WHERE d.status='won' AND d.won_time >= %s AND d.won_time < %s) AS wins,
-                   avg(d.valor) FILTER (WHERE d.status='won' AND d.won_time >= %s AND d.won_time < %s) AS ticket
+                   count(*) FILTER (WHERE d.oport_time >= %s AND d.oport_time < %s) AS oports,
+                   count(*) FILTER (WHERE d.status='won' AND d.won_time >= %s AND d.won_time < %s) AS wins,
+                   avg(COALESCE(d.valor_custom, d.valor)) FILTER (WHERE d.status='won' AND d.won_time >= %s AND d.won_time < %s) AS ticket
               FROM mkt_deals_attribution d
-              LEFT JOIN mkt_stage_events e ON e.deal_id = d.deal_id
-                   AND e.entered_at >= %s AND e.entered_at < %s
              WHERE d.owner_name IS NOT NULL
-             GROUP BY 1""", (list(_ST_NEGOC), a, b, a, b, a, b))
+             GROUP BY 1""", (a, b, a, b, a, b))
         dados = cur.fetchall()
     from .. import team_config as TC
     eh_closer = TC.casador(conn, "vendas")
@@ -1016,7 +1012,7 @@ def _vd_forecast(conn, request: Request) -> str:
         cur.execute("SELECT plano, meta_qtde, meta_valor FROM mkt_goals WHERE mes=%s AND plano <> 'total'", (mes,))
         metas = {p_: (float(q or 0), float(v or 0)) for p_, q, v in cur.fetchall()}
         cur.execute("""SELECT COALESCE(substring(produto FROM 'B[1-5]'), 'outros'),
-                              count(*), COALESCE(sum(valor), 0)
+                              count(*), COALESCE(sum(COALESCE(valor_custom, valor)), 0)
                          FROM mkt_deals_attribution
                         WHERE status='won' AND won_time >= %s AND won_time < %s GROUP BY 1""", (a, b))
         feito = {p_: (n, float(v)) for p_, n, v in cur.fetchall()}
@@ -1024,8 +1020,7 @@ def _vd_forecast(conn, request: Request) -> str:
                          FROM mkt_deals_attribution WHERE status='open' AND stage_id IN (6, 5, 7)
                         GROUP BY 1""")
         pipe = dict(cur.fetchall())
-        cur.execute("""SELECT count(DISTINCT deal_id) FROM mkt_stage_events
-                        WHERE stage_id = ANY(%s) AND entered_at >= %s""", (list(_ST_NEGOC), a90))
+        cur.execute("SELECT count(*) FROM mkt_deals_attribution WHERE oport_time >= %s", (a90,))
         oport90 = cur.fetchone()[0]
         cur.execute("SELECT count(*) FROM mkt_deals_attribution WHERE status='won' AND won_time >= %s", (a90,))
         win90 = cur.fetchone()[0]

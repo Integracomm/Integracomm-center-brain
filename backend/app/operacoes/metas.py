@@ -114,8 +114,9 @@ def _auto_comercial(conn: Any, year: int, months: list[int]) -> dict[str, dict[i
                              FROM mkt_deals_attribution
                             WHERE status='won' AND won_time >= %s AND won_time < %s""", (a, b))
             wins, receita = cur.fetchone()
-            cur.execute("""SELECT count(DISTINCT deal_id) FROM mkt_stage_events
-                            WHERE stage_id = 7 AND entered_at >= %s AND entered_at < %s""", (a, b))
+            # oportunidade = campo Dia Oportunidade (régua oficial do funil, 14/07)
+            cur.execute("""SELECT count(*) FROM mkt_deals_attribution
+                            WHERE oport_time >= %s AND oport_time < %s""", (a, b))
             oport = cur.fetchone()[0]
             cur.execute("SELECT count(*) FROM mkt_deals_attribution WHERE add_time >= %s AND add_time < %s", (a, b))
             mqls = cur.fetchone()[0]
@@ -150,8 +151,8 @@ def _auto_marketing(conn: Any, year: int, months: list[int]) -> dict[str, dict[i
             fut = dt.date(year, m, 1) > dt.date.today().replace(day=1)
             cur.execute("SELECT count(*) FROM mkt_deals_attribution WHERE add_time >= %s AND add_time < %s", (a, b))
             out["mqls"][m] = None if fut else float(cur.fetchone()[0])
-            cur.execute("""SELECT count(DISTINCT deal_id) FROM mkt_stage_events
-                            WHERE stage_id = 7 AND entered_at >= %s AND entered_at < %s""", (a, b))
+            cur.execute("""SELECT count(*) FROM mkt_deals_attribution
+                            WHERE oport_time >= %s AND oport_time < %s""", (a, b))
             out["oportunidades"][m] = None if fut else float(cur.fetchone()[0])
     return out
 

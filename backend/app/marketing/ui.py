@@ -239,7 +239,7 @@ def _canais(conn, request: Request) -> str:
             f"<th class=num>CPL</th><th class=num>Lead→Oport</th><th class=num>Bookings</th><th class=num>Lead→Book</th>"
             f"<th class=num>Receita</th><th class=num>CAC</th><th class=num>ROAS</th></tr>{rows}</table>"
             f"<p class='note' style='margin:10px 0 0'>Canais sem custo de mídia aparecem com CPL/CAC “—” (custo zero) — a eficiência relativa está nas conversões. "
-            f"“Oportunidade” = deal que avançou do estágio inicial (proxy; o marco exato entra com o histórico de etapas).</p></div></section>")
+            f"“Oportunidade” = lead do período que tem Dia Oportunidade preenchido (virou oportunidade a qualquer tempo — régua de COORTE, mede a qualidade do lead; a aba Funil conta as oportunidades ocorridas NO período).</p></div></section>")
 
 
 def _origem_paga(origem) -> bool:
@@ -484,7 +484,7 @@ def _criativos(conn, request: Request) -> str:
         args = [publico] if publico else []
         cur.execute(f"""
             SELECT i.ad_name, max(i.adset_name) AS pub, sum(i.spend) AS gasto, sum(i.leads) AS leads,
-                   count(DISTINCT d.deal_id) FILTER (WHERE d.stage_id >= 3 OR d.status IN ('won','lost')) AS oport,
+                   count(DISTINCT d.deal_id) FILTER (WHERE d.oport_time IS NOT NULL) AS oport,
                    count(DISTINCT d.deal_id) FILTER (WHERE d.status='won') AS books
               FROM mkt_insights_daily i
               LEFT JOIN mkt_deals_attribution d ON d.utm_content = i.ad_name
@@ -650,7 +650,9 @@ def _funil_oficial(conn, a: dt.date, b: dt.date) -> tuple[list[int], int, int, f
                         (a, fim))
             oport = cur.fetchone()[0]
         passou = [total, mql, sal, sql_n, oport]
-        cur.execute("""SELECT count(*), COALESCE(sum(valor), 0) FROM mkt_deals_attribution
+        # receita = VALOR custom (régua validada c/ a gestão) c/ fallback no value
+        cur.execute("""SELECT count(*), COALESCE(sum(COALESCE(valor_custom, valor)), 0)
+                         FROM mkt_deals_attribution
                         WHERE status='won' AND won_time >= %s AND won_time < %s""", (a, fim))
         booked, receita = cur.fetchone()
     return passou, booked, total, float(receita)
@@ -1047,10 +1049,11 @@ def _metas(conn) -> str:
     if mes_atual in reais:
         with conn.cursor() as cur:
             for canal, cond in _CANAIS_SQL.items():
-                cur.execute(f"""SELECT count(*) FILTER (WHERE stage_id >= 3 OR status IN ('won','lost'))
-                                  FROM mkt_deals_attribution
-                                 WHERE add_time >= %s AND add_time < %s AND {cond}""",
-                            (mes_atual, hoje + dt.timedelta(days=1)))
+                # oportunidades DO MÊS por canal = Dia Oportunidade no mês
+                # (régua oficial; não é coorte de criação)
+                cur.execute(f"""SELECT count(*) FROM mkt_deals_attribution
+                                 WHERE oport_time >= %s AND oport_time < %s AND {cond}""",
+                            (f"{mes_atual} 00:00-03", f"{hoje + dt.timedelta(days=1)} 00:00-03"))
                 reais_canal[canal] = cur.fetchone()[0] or 0
     linhas_k = ""
     for canal in _CANAIS_PLANO:
