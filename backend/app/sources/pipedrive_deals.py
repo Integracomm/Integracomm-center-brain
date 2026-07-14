@@ -142,6 +142,7 @@ def _upsert_deal(cur, d: dict, labels: dict[str, str]) -> None:
                 owner_active, updated_at)
            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now())
            ON CONFLICT (deal_id) DO UPDATE SET
+                add_time=EXCLUDED.add_time,
                 won_time=EXCLUDED.won_time, lost_time=EXCLUDED.lost_time,
                 status=EXCLUDED.status, valor=EXCLUDED.valor, origem=EXCLUDED.origem,
                 utm_medium=EXCLUDED.utm_medium, utm_campaign=EXCLUDED.utm_campaign,
@@ -262,7 +263,11 @@ def _deal_tuplas(d: dict, labels: dict[str, str]) -> tuple[tuple, tuple]:
             _txt(d.get(F_TERM)), _txt(d.get(F_CAMPAIGN)), _txt(d.get(F_CONTENT)),
             prod, (uid or {}).get("name") if isinstance(uid, dict) else _txt(d.get("owner_name")),
             _num_br(d.get(F_VALOR)), _opp_ts(d.get(F_DIA_OPP)), _sdr_nome(d.get(F_SDR)),
-            _uid_active(uid))
+            _uid_active(uid),
+            # add_time no diff QUIETO (14/07): a fonte corrigiu um desvio de
+            # +3h de uma era antiga — congelado no INSERT, precisa se auto-
+            # curar sem avançar updated_at (senão 19k deals re-entram no /flow)
+            _norm_ts(d.get("add_time")))
     return core, meta
 
 
@@ -288,19 +293,32 @@ def sync_deals_from_cache(conn: Any, since: dt.date = dt.date(2025, 1, 1)) -> in
     if isinstance(deals, str):  # a tabela guarda o JSON como string
         deals = json.loads(deals)
     if isinstance(deals, dict) and deals.get("storage"):
-        # 13/07 à tarde: o app deles passou a guardar só um PONTEIRO na tabela;
-        # o payload vive no Storage público (gzip) — segue o ponteiro
+        # 13/07 à tarde: o app deles passou a guardar só um PONTEIRO na tabela
+        # (payload no Storage público, gzip). 14/07 à tarde: o payload virou
+        # MANIFESTO FATIADO ({storage: .../manifest.json, chunks: N} + arquivos
+        # 0.json.gz..N-1.json.gz) — baixamos e concatenamos os chunks.
         import gzip
         import time
-        sr = httpx.get(f"{_LOVABLE_SB}/storage/v1/object/public/pipedrive-cache/{deals['storage']}",
-                       params={"cb": int(time.time())}, timeout=180)
-        sr.raise_for_status()
-        raw = sr.content
-        if raw[:2] == b"\x1f\x8b":
-            raw = gzip.decompress(raw)
-        deals = json.loads(raw)
-        if isinstance(deals, str):
-            deals = json.loads(deals)
+
+        def _obj_storage(caminho: str):
+            r2 = httpx.get(f"{_LOVABLE_SB}/storage/v1/object/public/pipedrive-cache/{caminho}",
+                           params={"cb": int(time.time())}, timeout=180)
+            r2.raise_for_status()
+            raw = r2.content
+            if raw[:2] == b"\x1f\x8b":
+                raw = gzip.decompress(raw)
+            j = json.loads(raw)
+            return json.loads(j) if isinstance(j, str) else j
+
+        ptr = deals
+        deals = _obj_storage(ptr["storage"])
+        if isinstance(deals, dict):  # manifesto fatiado
+            n_chunks = int(deals.get("chunks") or ptr.get("chunks") or 0)
+            base = ptr["storage"].rsplit("/", 1)[0]
+            todas: list = []
+            for i in range(n_chunks):
+                todas.extend(_obj_storage(f"{base}/{i}.json.gz"))
+            deals = todas
     if not isinstance(deals, list) or len(deals) < 15_000:
         raise RuntimeError(f"cache do Lovable suspeito ({len(deals) if isinstance(deals, list) else '?'} deals)")
     labels = _labels_from_cache()
@@ -309,12 +327,14 @@ def sync_deals_from_cache(conn: Any, since: dt.date = dt.date(2025, 1, 1)) -> in
         cur.execute(_DEALS_DDL_EXTRA)
         cur.execute("""SELECT deal_id, status, stage_id, won_time, valor, owner_id, lost_reason,
                               origem, utm_medium, utm_term, utm_campaign, utm_content,
-                              produto, owner_name, valor_custom, oport_time, sdr, owner_active
+                              produto, owner_name, valor_custom, oport_time, sdr, owner_active,
+                              add_time
                          FROM mkt_deals_attribution""")
         db: dict[int, tuple[tuple, tuple]] = {}
         for row in cur.fetchall():
             db[row[0]] = ((row[1], row[2], _norm_ts(row[3]), _norm_val(row[4]), row[5], row[6]),
-                          tuple(row[7:14]) + (_norm_val(row[14]), _norm_ts(row[15]), row[16], row[17]))
+                          tuple(row[7:14]) + (_norm_val(row[14]), _norm_ts(row[15]), row[16], row[17],
+                                              _norm_ts(row[18])))
     novos = mudou_core = mudou_meta = 0
     ids_cache: list[int] = []
     with conn.cursor() as cur:
@@ -334,7 +354,7 @@ def sync_deals_from_cache(conn: Any, since: dt.date = dt.date(2025, 1, 1)) -> in
                 cur.execute("""UPDATE mkt_deals_attribution SET origem=%s, utm_medium=%s,
                                    utm_term=%s, utm_campaign=%s, utm_content=%s,
                                    produto=%s, owner_name=%s, valor_custom=%s, oport_time=%s,
-                                   sdr=%s, owner_active=%s
+                                   sdr=%s, owner_active=%s, add_time=%s
                                  WHERE deal_id=%s""",
                             (*meta, did))
                 mudou_meta += 1
