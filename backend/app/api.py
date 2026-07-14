@@ -538,20 +538,29 @@ def admin_panel(request: Request):
                                     teams_html=teams))
 
 
-@app.post("/admin/times")
-async def admin_times(request: Request):
-    """Salva os times por área (form do Painel Administrativo). Só admin."""
-    s = _session(request)
-    if not s or s[1] != "admin":
-        return RedirectResponse("/login", status_code=302)
-    user, _role = s
-    form = await request.form()
-    from .team_config import salvar
+@app.post("/api/admin/times")
+def api_admin_times(request: Request, payload: dict = Body(...)):
+    """Operações do card Times por área (adicionar / desligar / trocar função).
+    Só admin; desligar NUNCA apaga — a régua histórica do funil depende."""
+    actor, role = _require_api(request)
+    if role != "admin":
+        return JSONResponse({"error": "só o administrador gerencia os times"}, status_code=403)
+    area = payload.get("area")
+    action = payload.get("action")
+    nome = (payload.get("nome") or "").strip()[:60]
+    if area not in {a for a, _t, _n in _TEAM_AREAS} or not nome:
+        return JSONResponse({"error": "área ou nome inválido"}, status_code=400)
+    from . import team_config as TC
     with _conn() as c:
-        for area, _titulo, _nota in _TEAM_AREAS:
-            if area in form:
-                salvar(c, area, str(form[area]).splitlines(), user)
-    return RedirectResponse("/admin", status_code=303)
+        if action == "add":
+            TC.adicionar(c, area, nome, payload.get("papel") or "membro", actor)
+        elif action == "desligar":
+            TC.desligar(c, area, nome, actor)
+        elif action == "papel":
+            TC.definir_papel(c, area, nome, payload.get("papel") or "", actor)
+        else:
+            return JSONResponse({"error": "ação inválida"}, status_code=400)
+    return {"ok": True}
 
 
 @app.post("/api/users/{user_id}/status")
@@ -870,37 +879,81 @@ def _llm_budget_html(llm: dict | None) -> str:
         + linhas + "</div></section>")
 
 
-_TEAM_AREAS = [("prevendas", "Pré-vendas (SDRs)",
+_TEAM_AREAS = [("prevendas", "Pré-vendas",
                 "destaque e planos de ação da aba Time & Planos"),
-               ("vendas", "Vendas (closers)",
-                "⚠ a lista inteira (todos os papéis) é a RÉGUA do SQL do funil oficial (deal na mão de closer) — manter equivalente ao SQL_CLOSERS do dashboard do time")]
-_PAPEL_SUFIXO = {"coordenacao": " | coordenação", "gerencia": " | gerência"}
+               ("vendas", "Vendas",
+                "⚠ a lista (todas as funções) é a RÉGUA do SQL do funil oficial — equivalente ao SQL_CLOSERS do dashboard do time")]
+_PAPEL_LBL = {"membro": "Membro do time", "coordenacao": "Coordenação", "gerencia": "Gerência"}
 
 
 def _teams_html(conn) -> str:
-    """Times por área editáveis (tabela area_team): um nome por linha;
-    '| papel' = coordenação/gerência. Desligados (automático via Pipedrive)
-    NÃO aparecem nem aqui — o salvar os preserva invisivelmente p/ a régua."""
-    from .team_config import eh_desligado, listas
+    """Times por área (tabela area_team): visualização com nome + função e
+    modo de edição (adicionar, trocar função, desligar com confirmação — que
+    avisa se a pessoa ainda está ATIVA no Pipedrive). Desligados não aparecem
+    (detecção automática via Pipedrive; manuais idem) mas ficam na régua."""
+    from .team_config import eh_desligado, listas, status_pipedrive
     blocos = ""
     for area, titulo, nota in _TEAM_AREAS:
-        linhas = "\n".join(nome + _PAPEL_SUFIXO.get(papel, "")
-                           for nome, _ativo, papel in listas(conn, area)
-                           if not eh_desligado(conn, area, nome))
-        blocos += (f"<div style='flex:1;min-width:280px'><b>{titulo}</b>"
-                   f"<p class=secsub style='margin:4px 0 6px'>{nota}</p>"
-                   f"<textarea name='{area}' rows=8 style='width:100%;background:var(--bg-panel);"
-                   f"border:1px solid var(--border-strong);border-radius:var(--radius-sm);color:var(--text);"
-                   f"font-family:var(--font-body);font-size:var(--fs-sm);padding:9px 11px'>{escape(linhas)}</textarea></div>")
+        linhas = ""
+        for nome, _ativo, papel in listas(conn, area):
+            if eh_desligado(conn, area, nome):
+                continue
+            pd = status_pipedrive(conn, nome)
+            pd_dot = {"ativo": ("var(--status-baixo)", "ativo no Pipedrive"),
+                      "desativado": ("var(--status-critico)", "desativado no Pipedrive"),
+                      "sem dados": ("var(--text-faint)", "sem deals no nome ainda")}[pd]
+            opts = "".join(f"<option value='{v}' {'selected' if v == papel else ''}>{lbl}</option>"
+                           for v, lbl in _PAPEL_LBL.items())
+            chip_papel = ("" if papel == "membro" else
+                          f" <span class=chip style='--c:var(--brand)'>{_PAPEL_LBL[papel].lower()}</span>")
+            linhas += (
+                f"<tr data-area='{area}'>"
+                f"<td><span title='{pd_dot[1]}' style='display:inline-block;width:8px;height:8px;border-radius:50%;"
+                f"background:{pd_dot[0]};margin-right:8px'></span><b>{escape(nome)}</b>{chip_papel}</td>"
+                f"<td class='tm-view' style='color:var(--text-muted)'>{_PAPEL_LBL[papel]}</td>"
+                f"<td class='tm-edit' style='display:none'>"
+                f"<select onchange=\"tmPapel('{area}',this)\" data-nome=\"{escape(nome)}\">{opts}</select></td>"
+                f"<td class='tm-edit' style='display:none;text-align:right'>"
+                f"<button class=abtn style='border-color:var(--status-critico);color:var(--status-critico)' "
+                f"onclick=\"tmDesligar('{area}',this)\" data-nome=\"{escape(nome)}\" data-pd='{pd}'>desligar</button></td></tr>")
+        blocos += (
+            f"<div style='flex:1;min-width:300px'>"
+            f"<div style='display:flex;justify-content:space-between;align-items:baseline;gap:10px'>"
+            f"<b style='font-size:var(--fs-md)'>{titulo}</b>"
+            f"<button class='abtn tm-view' onclick=\"tmEditar(true)\">✎ editar</button>"
+            f"<button class='abtn tm-edit' style='display:none' onclick=\"tmEditar(false)\">concluir edição</button></div>"
+            f"<p class=secsub style='margin:4px 0 8px'>{nota}</p>"
+            f"<table class=tmtbl>{linhas}</table>"
+            f"<div class='tm-edit' style='display:none;margin-top:10px'>"
+            f"<div class=filters><input id='tm-nome-{area}' placeholder='nome como está no Pipedrive' "
+            f"style='flex:1;min-width:170px'>"
+            f"<select id='tm-papel-{area}'>" + "".join(f"<option value='{v}'>{lbl}</option>" for v, lbl in _PAPEL_LBL.items())
+            + f"</select><button class=abtn onclick=\"tmAdd('{area}')\">+ adicionar</button></div></div></div>")
     return ("<section><h2>Times por área</h2>"
-            "<p class=secsub>um nome por linha, como aparece no Pipedrive (o casamento ignora acentos e aceita nome contido) · "
-            "sufixos: <b>| coordenação</b> e <b>| gerência</b> (chip próprio, fora de planos/mediana) · salvar vale na hora · "
-            "DESLIGADOS não aparecem em lugar nenhum (detecção automática: usuário desativado no Pipedrive) — os ex-colaboradores são "
-            "preservados de forma invisível para o funil de meses passados continuar batendo; para desligar alguém manualmente antes do "
-            "Pipedrive, prefixe a linha com <b>-</b> e salve</p>"
-            "<div class=central><form method=post action='/admin/times'>"
-            "<div style='display:flex;gap:18px;flex-wrap:wrap'>" + blocos + "</div>"
-            "<button type=submit style='margin-top:12px'>Salvar times</button></form></div></section>")
+            "<p class=secsub>quem compõe cada time e a função de cada um · o ponto indica a situação do usuário no Pipedrive · "
+            "✎ editar libera: trocar função (promoção), desligar (com confirmação; some das telas, números preservados nas réguas) e adicionar colaborador</p>"
+            "<div class=central>"
+            "<div style='display:flex;gap:26px;flex-wrap:wrap'>" + blocos + "</div></div>"
+            "<script>"
+            "function tmEditar(on){[].slice.call(document.querySelectorAll('.tm-edit')).forEach(function(e){e.style.display=on?'':'none';});"
+            "[].slice.call(document.querySelectorAll('.tm-view')).forEach(function(e){e.style.display=on?'none':'';});}"
+            "function tmPost(body){fetch('/api/admin/times',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})"
+            ".then(function(r){return r.json();}).then(function(j){if(j.error)alert(j.error);else location.reload();})"
+            ".catch(function(){alert('falha de rede');});}"
+            "function tmDesligar(area,btn){var nome=btn.getAttribute('data-nome');var pd=btn.getAttribute('data-pd');"
+            "var msg='Desligar '+nome+' de '+(area==='vendas'?'Vendas':'Pré-vendas')+'?\\n\\nA pessoa some de todas as telas do painel; os números dela permanecem nas réguas históricas do funil.';"
+            "if(pd==='ativo')msg+='\\n\\n⚠ ATENÇÃO: este colaborador ainda está ATIVO no Pipedrive — confirme se o desligamento é mesmo agora.';"
+            "if(confirm(msg))tmPost({area:area,action:'desligar',nome:nome});}"
+            "function tmPapel(area,sel){tmPost({area:area,action:'papel',nome:sel.getAttribute('data-nome'),papel:sel.value});}"
+            "function tmAdd(area){var nome=document.getElementById('tm-nome-'+area).value.trim();"
+            "if(!nome){alert('informe o nome como está no Pipedrive');return;}"
+            "tmPost({area:area,action:'add',nome:nome,papel:document.getElementById('tm-papel-'+area).value});}"
+            "</script>"
+            "<style>.tmtbl{width:100%;border-collapse:collapse;font-size:var(--fs-sm)}"
+            ".tmtbl td{padding:8px 6px;border-bottom:1px solid var(--border);vertical-align:middle}"
+            ".tmtbl select,#tm-nome-prevendas,#tm-nome-vendas,#tm-papel-prevendas,#tm-papel-vendas{background:var(--bg-panel);"
+            "border:1px solid var(--border-strong);border-radius:var(--radius-sm);color:var(--text);"
+            "font-family:var(--font-body);font-size:var(--fs-xs);padding:5px 8px}</style></section>")
 
 
 def _admin_html(users: list[dict]) -> str:

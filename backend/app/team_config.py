@@ -84,18 +84,39 @@ def casador(conn: Any, area: str, so_ativos: bool = False):
     return casa
 
 
-def desligados_pipedrive(conn: Any) -> list[str]:
-    """Nomes de usuários DESATIVADOS no Pipedrive (active_flag=False, coluna
-    owner_active vinda do cache) — a fonte automática de 'desligado'."""
-    hit = _CACHE.get("_pd_inativos")
+def _nomes_pipedrive(conn: Any, flag: bool) -> list[str]:
+    key = f"_pd_{'ativos' if flag else 'inativos'}"
+    hit = _CACHE.get(key)
     if hit and time.monotonic() - hit[0] < _TTL_S:
         return hit[1]
     with conn.cursor() as cur:
         cur.execute("""SELECT DISTINCT owner_name FROM mkt_deals_attribution
-                        WHERE owner_active IS FALSE AND owner_name IS NOT NULL""")
+                        WHERE owner_active = %s AND owner_name IS NOT NULL""", (flag,))
         nomes = [r[0] for r in cur.fetchall()]
-    _CACHE["_pd_inativos"] = (time.monotonic(), nomes)
+    _CACHE[key] = (time.monotonic(), nomes)
     return nomes
+
+
+def desligados_pipedrive(conn: Any) -> list[str]:
+    """Nomes de usuários DESATIVADOS no Pipedrive (active_flag=False, coluna
+    owner_active vinda do cache) — a fonte automática de 'desligado'."""
+    return _nomes_pipedrive(conn, False)
+
+
+def status_pipedrive(conn: Any, nome: str | None) -> str:
+    """'ativo' | 'desativado' | 'sem dados' — situação do usuário no Pipedrive
+    (mostrada na confirmação de desligamento do admin)."""
+    n = norm(nome)
+    if not n:
+        return "sem dados"
+
+    def casa(lista):
+        return any(n == c or c in n or n in c for c in (norm(x) for x in lista))
+    if casa(_nomes_pipedrive(conn, True)):
+        return "ativo"
+    if casa(_nomes_pipedrive(conn, False)):
+        return "desativado"
+    return "sem dados"
 
 
 def eh_desligado(conn: Any, area: str, nome: str | None) -> bool:
@@ -126,41 +147,41 @@ def papel_de(conn: Any, area: str, nome: str | None) -> str | None:
     return None
 
 
-def _papel_do_sufixo(s: str) -> str:
-    x = norm(s)
-    if "coorden" in x:
-        return "coordenacao"
-    if "geren" in x:
-        return "gerencia"
-    return "membro"
+# --- operações do admin (UI de edição, 14/07) --------------------------------
+PAPEIS_VALIDOS = ("membro", "coordenacao", "gerencia")
 
 
-def salvar(conn: Any, area: str, linhas: list[str], actor: str) -> None:
-    """Substitui a lista VISÍVEL da área (Nome [| papel]; '-' no começo =
-    força desligado). Ex-colaboradores DESLIGADOS não aparecem no admin, mas
-    são PRESERVADOS automaticamente aqui — sem eles a régua histórica do
-    funil (SQL de meses passados) deixaria de bater com o Pipedrive."""
-    trios: list[tuple[str, bool, str]] = []
-    for ln in linhas:
-        ln = ln.strip()
-        if not ln:
-            continue
-        inativo = ln.startswith("-")
-        corpo = ln.lstrip("-").strip()
-        nome, _, sufixo = corpo.partition("|")
-        nome = nome.strip()
-        if nome:
-            trios.append((nome, not inativo, _papel_do_sufixo(sufixo) if sufixo else "membro"))
-    novos = {norm(n) for n, _a, _p in trios}
-    preservar = [(n, a, p) for n, a, p in listas(conn, area)
-                 if eh_desligado(conn, area, n) and norm(n) not in novos]
+def _audit(cur, actor: str, detalhe: str) -> None:
+    cur.execute("INSERT INTO audit_log (actor, action, scope) VALUES (%s,'area_team',%s)",
+                (actor, detalhe))
+
+
+def adicionar(conn: Any, area: str, nome: str, papel: str, actor: str) -> None:
+    """Adiciona colaborador (ou RECONTRATA um desligado manual: volta ativo)."""
+    papel = papel if papel in PAPEIS_VALIDOS else "membro"
     with conn.cursor() as cur:
         cur.execute(_DDL)
-        cur.execute("DELETE FROM area_team WHERE area=%s", (area,))
-        todos = trios + preservar
-        if todos:
-            cur.executemany("INSERT INTO area_team (area, nome, ativo, papel) VALUES (%s,%s,%s,%s)",
-                            [(area, n, a, p) for n, a, p in todos])
-        cur.execute("INSERT INTO audit_log (actor, action, scope) VALUES (%s,'area_team',%s)",
-                    (actor, f"{area}:{len(trios)} nomes (+{len(preservar)} ex preservados)"))
+        cur.execute("""INSERT INTO area_team (area, nome, ativo, papel) VALUES (%s,%s,TRUE,%s)
+                       ON CONFLICT (area, nome) DO UPDATE SET ativo=TRUE, papel=EXCLUDED.papel""",
+                    (area, nome, papel))
+        _audit(cur, actor, f"{area}: + {nome} ({papel})")
+    _CACHE.pop(area, None)
+
+
+def desligar(conn: Any, area: str, nome: str, actor: str) -> None:
+    """Desligamento manual: some de todas as telas, PERMANECE na régua
+    histórica do funil (nunca apagamos — o SQL de meses passados depende)."""
+    with conn.cursor() as cur:
+        cur.execute("UPDATE area_team SET ativo=FALSE WHERE area=%s AND nome=%s", (area, nome))
+        _audit(cur, actor, f"{area}: desligado {nome}")
+    _CACHE.pop(area, None)
+
+
+def definir_papel(conn: Any, area: str, nome: str, papel: str, actor: str) -> None:
+    """Troca a função (promoção: membro → coordenação, etc.)."""
+    if papel not in PAPEIS_VALIDOS:
+        return
+    with conn.cursor() as cur:
+        cur.execute("UPDATE area_team SET papel=%s WHERE area=%s AND nome=%s", (papel, area, nome))
+        _audit(cur, actor, f"{area}: {nome} -> {papel}")
     _CACHE.pop(area, None)
