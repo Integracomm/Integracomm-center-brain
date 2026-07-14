@@ -564,6 +564,97 @@ def api_admin_times(request: Request, payload: dict = Body(...)):
     return {"ok": True}
 
 
+@app.post("/api/accounts/{account_id}/outcome")
+def api_account_outcome(account_id: str, request: Request, payload: dict = Body(...)):
+    """Registra o DESFECHO real de uma conta (feedback loop do Growth, 14/07):
+    retida | cancelada | em_negociacao. SÓ COLETA — nenhuma recalibração
+    automática do modelo (decisão posterior, com volume). Auditado."""
+    actor, _role = _require_api(request)
+    outcome = payload.get("outcome")
+    if outcome not in ("retida", "cancelada", "em_negociacao"):
+        return JSONResponse({"error": "desfecho inválido"}, status_code=400)
+    notes = (payload.get("notes") or "").strip()[:400] or None
+    data = payload.get("date")
+    with _conn() as c, c.cursor() as cur:
+        cur.execute("""ALTER TABLE outcomes
+                        ADD COLUMN IF NOT EXISTS recorded_by TEXT,
+                        ADD COLUMN IF NOT EXISTS notes TEXT""")
+        cur.execute("SELECT 1 FROM accounts WHERE id=%s", (account_id,))
+        if not cur.fetchone():
+            return JSONResponse({"error": "conta não encontrada"}, status_code=404)
+        cur.execute("""INSERT INTO outcomes (account_id, outcome, outcome_date, source,
+                                             recorded_by, notes)
+                       VALUES (%s, %s, COALESCE(%s::date, CURRENT_DATE), 'manual_gestor', %s, %s)""",
+                    (account_id, outcome, data, actor, notes))
+        cur.execute("INSERT INTO audit_log (actor, action, scope) VALUES (%s,'outcome',%s)",
+                    (actor, f"conta:{account_id}:{outcome}"))
+    return {"ok": True}
+
+
+def _modelo_precisao(conn: Any) -> dict | None:
+    """Previsões × desfechos registrados — a medição de ROI do modelo.
+    Falso positivo provável = alertada, retida SEM intervenção registrada."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""ALTER TABLE outcomes
+                            ADD COLUMN IF NOT EXISTS recorded_by TEXT,
+                            ADD COLUMN IF NOT EXISTS notes TEXT""")
+            cur.execute("""
+                WITH alertadas AS (
+                    SELECT account_id, bool_or(severity='critico') AS critico
+                      FROM alerts GROUP BY 1),
+                desf AS (
+                    SELECT DISTINCT ON (account_id) account_id, outcome
+                      FROM outcomes ORDER BY account_id, recorded_at DESC)
+                SELECT count(*),
+                       count(d.outcome),
+                       count(*) FILTER (WHERE d.outcome IN ('cancelou','cancelada')),
+                       count(*) FILTER (WHERE d.outcome IN ('renovou','retida')),
+                       count(*) FILTER (WHERE d.outcome = 'em_negociacao'),
+                       count(*) FILTER (WHERE d.outcome IN ('renovou','retida') AND EXISTS
+                             (SELECT 1 FROM interventions i WHERE i.account_id = al.account_id)),
+                       count(*) FILTER (WHERE al.critico AND d.outcome IN ('cancelou','cancelada')),
+                       count(*) FILTER (WHERE al.critico AND d.outcome IS NOT NULL),
+                       COALESCE(sum(ac.recurring_revenue) FILTER (WHERE d.outcome IN ('renovou','retida')), 0)
+                  FROM alertadas al
+                  LEFT JOIN desf d ON d.account_id = al.account_id
+                  LEFT JOIN accounts ac ON ac.id = al.account_id""")
+            (alertadas, com_desf, cancel, retidas, negoc, retidas_int,
+             crit_cancel, crit_desf, mrr_salvo) = cur.fetchone()
+        return {"alertadas": alertadas, "com_desf": com_desf, "cancel": cancel,
+                "retidas": retidas, "negoc": negoc, "retidas_int": retidas_int,
+                "crit_cancel": crit_cancel, "crit_desf": crit_desf,
+                "mrr_salvo": float(mrr_salvo or 0)}
+    except Exception:  # noqa: BLE001 — medição nunca derruba a aba
+        return None
+
+
+def _modelo_html(m: dict | None) -> str:
+    if m is None:
+        return ""
+    corpo = (
+        f"<div class=kpis>"
+        f"<div class=kpi><div class=n>{m['alertadas']}</div><div class=l>contas alertadas (histórico)</div></div>"
+        f"<div class=kpi><div class=n>{m['com_desf']}</div><div class=l>com desfecho registrado</div></div>"
+        f"<div class=kpi><div class=n>{(m['crit_cancel'] / m['crit_desf'] * 100 if m['crit_desf'] else 0):.0f}%</div>"
+        f"<div class=l>acerto em críticas</div><div class=s>cancelaram ÷ críticas c/ desfecho</div></div>"
+        f"<div class=kpi><div class=n>{(m['retidas'] / m['com_desf'] * 100 if m['com_desf'] else 0):.0f}%</div>"
+        f"<div class=l>retenção pós-alerta</div><div class=s>{m['retidas_int']} com intervenção registrada</div></div>"
+        f"<div class=kpi><div class=n>R$ {m['mrr_salvo']:,.0f}</div><div class=l>MRR retido pós-alerta</div>"
+        f"<div class=s>o argumento de ROI da ferramenta</div></div></div>".replace(",", "."))
+    if not m["com_desf"]:
+        corpo += ("<p class=note>Ainda sem desfechos registrados — use o seletor <b>desfecho…</b> na aba Contas "
+                  "quando uma conta alertada cancelar, for retida ou entrar em negociação. Com volume, esta seção "
+                  "vira a régua de precisão do modelo (nenhuma recalibração automática por enquanto — só medir).</p>")
+    else:
+        corpo += (f"<p class=note>Retidas SEM intervenção registrada = possível falso positivo "
+                  f"({m['retidas'] - m['retidas_int']} caso(s)) — confirme antes de concluir; "
+                  f"em negociação: {m['negoc']}.</p>")
+    return ("<section><div class=sec-head><h2>Precisão do modelo</h2>"
+            "<span class=sub>previsões × desfechos reais — registre desfechos na aba Contas</span></div>"
+            + corpo + "</section>")
+
+
 @app.post("/api/users/{user_id}/status")
 def api_user_status(user_id: str, request: Request, payload: dict = Body(...)):
     """Aprova/bloqueia uma conta criada no cadastro. Só admin."""
@@ -616,6 +707,7 @@ def dashboard(request: Request, view: str = Query("contas")):
         practices = _top_practices(c)
         interventions = _recent_interventions(c) if view == "playbooks" else None
         cancel = _cancel_rows(c) if view == "cancelamentos" else None
+        modelo = _modelo_precisao(c) if view == "alertas" else None
         base_bundle = None
         if view == "cancelamentos":
             with c.cursor() as cur:
@@ -624,7 +716,7 @@ def dashboard(request: Request, view: str = Query("contas")):
                 base_bundle = dict(cur.fetchall())
     return HTMLResponse(_render(role, scores, alerts, practices, view=view,
                                 interventions=interventions, cancel=cancel, usermail=user,
-                                request=request, base_bundle=base_bundle))
+                                request=request, base_bundle=base_bundle, modelo=modelo))
 
 
 def _recent_interventions(conn: Any, limit: int = 20) -> list[dict]:
@@ -1554,7 +1646,7 @@ def _render(role: str, scores: list[dict], alerts: list[dict],
             practices: dict | None = None, view: str = "contas",
             interventions: list | None = None, cancel: list | None = None,
             usermail: str = "", request: Request | None = None,
-            base_bundle: dict | None = None) -> str:
+            base_bundle: dict | None = None, modelo: dict | None = None) -> str:
     evaluable = [s for s in scores if s["evaluable"]]
     non_eval = [s for s in scores if not s["evaluable"]]
     evaluable.sort(key=lambda s: (float(s["score"]), -_mrr_val(s)))
@@ -1590,7 +1682,13 @@ def _render(role: str, scores: list[dict], alerts: list[dict],
             f"data-alert=\"{sev}\" data-stage=\"{stage_key}\" data-squad=\"{sq}\" data-mrr=\"{mrr:.0f}\">"
             f"<div class='c-name'><div class='nm'>{escape(s['name'][:60])}</div>{mot_line}"
             f"<a class='repbtn' href='/growth/report?account_id={s['account_id']}' "
-            f"title='Relatório mensal de assessoria (mês anterior; gerado na hora)'>Relatório</a></div>"
+            f"title='Relatório mensal de assessoria (mês anterior; gerado na hora)'>Relatório</a> "
+            f"<select class='outsel' onchange=\"outc('{s['account_id']}',this)\" "
+            f"style='background:var(--bg-panel);border:1px solid var(--border-strong);border-radius:6px;"
+            f"color:var(--text-muted);font-size:var(--fs-2xs);padding:2px 4px;margin-top:4px' "
+            f"title='registrar o DESFECHO real da conta — alimenta a medição de precisão do modelo (aba Alertas)'>"
+            f"<option value=''>desfecho…</option><option value='retida'>retida</option>"
+            f"<option value='cancelada'>cancelada</option><option value='em_negociacao'>em negociação</option></select></div>"
             f"<div class='c-score'>{score_cell}</div>"
             f"<div>{_chip(band, _BAND_VAR.get(band, '--status-semdados'))}</div>"
             f"<div class='c-stage'>{stage_dot}{escape(_STAGE_LABEL.get(stage_key, stage_key))}</div>"
@@ -1752,7 +1850,7 @@ __SCRIPT__
             f"<div class=kpi><div class=n style='color:var(--status-critico)'>{sev_counts.get('critico', 0)}</div><div class=l>Crítico</div><div class=s>sinal explícito de saída / faixa crítica</div></div>"
             f"<div class=kpi><div class=n style='color:var(--status-alto)'>{sev_counts.get('alto', 0)}</div><div class=l>Alto</div><div class=s>insatisfação ativa / risco alto</div></div>"
             f"<div class=kpi><div class=n style='color:var(--status-medio)'>{sev_counts.get('atencao', 0)}</div><div class=l>Atenção</div><div class=s>churner quieto — começando a cair</div></div>"
-            f"</div><section>{alerts_tbl}"
+            f"</div>" + _modelo_html(modelo) + f"<section>{alerts_tbl}"
             "<div class=pager><button id=pa-prev onclick='paGo(-1)'>‹ anterior</button>"
             f"<span class=pginfo id=painfo></span><span class=count>total: <b>{len(alerts)}</b></span>"
             "<button id=pa-next onclick='paGo(1)'>próxima ›</button></div>"
@@ -1806,6 +1904,17 @@ __SCRIPT__
 
 
 _CONTAS_JS = """<script>
+function outc(id, sel){
+  if(!sel.value) return;
+  var lbl = sel.options[sel.selectedIndex].text;
+  var nota = window.prompt('Registrar desfecho "'+lbl+'" para esta conta.\\nObservação (opcional):');
+  if(nota===null){sel.value='';return;}
+  fetch('/api/accounts/'+id+'/outcome',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({outcome:sel.value,notes:nota||null})})
+  .then(function(r){return r.json();})
+  .then(function(j){if(j.error){alert(j.error);sel.value='';}else{sel.style.borderColor='var(--status-baixo)';}})
+  .catch(function(){alert('falha de rede');sel.value='';});
+}
 var PAGE=10, page=1;
 function _match(d,f){
   return (!f.n||d.name.indexOf(f.n)>=0)&&(!f.b||d.band===f.b)&&(!f.a||d.alert===f.a)
