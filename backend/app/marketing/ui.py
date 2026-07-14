@@ -612,17 +612,6 @@ _MQL_EXCLUI = {"Lead Score Baixo - Não contactamos"}
 _SAL_EXCLUI = {"Não tem estoque", "Lead Score Baixo - Não contactamos",
                "Não é empresário", "Tentativas de reagendamentos excedidas",
                "Tentativas de contato excedidas", "Dropshipping", "Sem retorno"}
-# closers = lista do app do time (SQL_CLOSERS); casa por inclusão, sem acento
-_CLOSERS = ("camila fernandes", "denise", "marcos rafael", "valeria",
-            "vitoria lazzerini", "lucas pereira", "giovana fornazari",
-            "giovana fornazzari", "johnatan", "ana beatriz")
-
-
-def _eh_closer(nome: str | None) -> bool:
-    import unicodedata
-    n = "".join(c for c in unicodedata.normalize("NFD", (nome or "").lower())
-                if unicodedata.category(c) != "Mn").strip()
-    return bool(n) and any(n == c or c in n for c in _CLOSERS)
 
 
 def _funil_oficial(conn, a: dt.date, b: dt.date) -> tuple[list[int], int, int, float]:
@@ -630,6 +619,10 @@ def _funil_oficial(conn, a: dt.date, b: dt.date) -> tuple[list[int], int, int, f
     DE BRASÍLIA (o dashboard/Insights cortam assim; em UTC os leads de fim de
     noite caíam no dia errado). → (passou[Lead,MQL,SAL,SQL,Oport], bookings,
     total_leads, receita)."""
+    from ..team_config import casador
+    # régua do SQL usa a lista COMPLETA de closers (ativos + desligados),
+    # igual ao SQL_CLOSERS do app do time; edição = Painel Administrativo
+    eh_closer = casador(conn, "vendas")
     a, fim = f"{a} 00:00-03", f"{b + dt.timedelta(days=1)} 00:00-03"
     with conn.cursor() as cur:
         cur.execute("""SELECT COALESCE(lost_reason, ''), COALESCE(owner_name, ''), count(*)
@@ -643,7 +636,7 @@ def _funil_oficial(conn, a: dt.date, b: dt.date) -> tuple[list[int], int, int, f
                 mql += n
             if r not in _SAL_EXCLUI:
                 sal += n
-            if _eh_closer(owner):
+            if eh_closer(owner):
                 sql_n += n
         cur.execute("""SELECT count(*) FROM mkt_deals_attribution
                         WHERE oport_time >= %s AND oport_time < %s""", (a, fim))
@@ -718,6 +711,47 @@ def _funil_vs_meta(conn, ini: dt.date, fim: dt.date) -> str:
 _FUNIL_CORES = {"Lead": "#d9b532", "MQL": "#dd8a3d", "SAL": "#e06060", "SQL": "#b57fdc",
                 "Oportunidade": "#5b8def", "Booking": "#3fce8f"}
 
+
+def funil_visual_html(seq: list[tuple[str, int]], total: int,
+                      receita_book: float | None = None) -> str:
+    """Funil visual COMPARTILHADO (Marketing, Pré-vendas e Vendas): barras
+    centradas com largura proporcional (modelo do app Lovable do time), pílula
+    de conversão vs etapa anterior entre elas e, ao lado, o resumo com
+    definição oficial, TX e TX Lead. seq = [(etapa, valor), ...]."""
+    barras, resumo_rows = "", ""
+    for i, (nome, n) in enumerate(seq):
+        taxa = (n / seq[i - 1][1]) if i and seq[i - 1][1] else None
+        tx_lead = n / total if total and i else None
+        if i:
+            barras += (f"<div style='text-align:center;margin:7px 0'><span style='background:var(--surface-3);"
+                       f"border:1px solid var(--border-strong);border-radius:999px;padding:2px 12px;"
+                       f"font-size:var(--fs-xs);color:var(--text-2)'>{_fmt(taxa, 'pct') if taxa is not None else '—'} conv.</span></div>")
+        w = min(100.0, max(30.0, (n / total * 100) if total else 30.0))
+        extra = (f"<div style='font-size:var(--fs-xs);font-weight:600;opacity:.8'>{_fmt(receita_book, 'brl')}</div>"
+                 if nome == "Booking" and receita_book is not None else "")
+        barras += (f"<div title='{escape(_FUNIL_DEFS.get(nome, ''))}' style='width:{w:.1f}%;margin:0 auto;"
+                   f"background:{_FUNIL_CORES.get(nome, 'var(--surface-3)')};border-radius:10px;padding:11px 16px;display:flex;"
+                   f"justify-content:space-between;align-items:center;gap:10px;color:#16181d'>"
+                   f"<b style='font-size:var(--fs-md)'>{nome}</b>"
+                   f"<div style='text-align:right'><span style='font-family:var(--font-display);"
+                   f"font-weight:700;font-size:21px'>{n}</span>{extra}</div></div>")
+        td = "padding:9px 8px;border-bottom:1px solid var(--border);font-size:var(--fs-sm)"
+        resumo_rows += (f"<tr><td style='{td};white-space:nowrap'><span style='display:inline-block;width:9px;"
+                        f"height:9px;border-radius:50%;background:{_FUNIL_CORES.get(nome, 'var(--surface-3)')};margin-right:7px'></span><b>{nome}</b></td>"
+                        f"<td style='{td};color:var(--text-muted);line-height:1.4'>{escape(_FUNIL_DEFS.get(nome, ''))}</td>"
+                        f"<td style='{td};text-align:right;font-variant-numeric:tabular-nums'><b>{n}</b></td>"
+                        f"<td style='{td};text-align:right'>{_fmt(taxa, 'pct') if taxa is not None else '—'}</td>"
+                        f"<td style='{td};text-align:right'>{_fmt(tx_lead, 'pct') if tx_lead is not None else '—'}</td></tr>")
+    th_r = "".join(f"<th style='text-align:{al};padding:8px;border-bottom:1px solid var(--border-strong);"
+                   f"color:var(--text-muted);font-size:var(--fs-2xs);text-transform:uppercase;letter-spacing:var(--tracking-label)'>{h}</th>"
+                   for h, al in (("Etapa", "left"), ("Definição", "left"), ("Total", "right"),
+                                 ("TX", "right"), ("TX Lead", "right")))
+    return (
+        "<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:14px;align-items:start'>"
+        f"<div class=card>{barras}</div>"
+        f"<div class=card><table style='width:100%;border-collapse:collapse'><tr>{th_r}</tr>{resumo_rows}</table>"
+        "<p class='note' style='margin:10px 0 0'>TX = conversão sobre a etapa ANTERIOR · TX Lead = sobre o total de leads.</p></div></div>")
+
 _FUNIL_SUGESTOES = {
     "MQL": "Gargalo na VELOCIDADE de resposta: lead sem contato esfria em horas — revisar o SLA do primeiro toque (referência: <15 min em horário comercial) e a automação de disparo.",
     "SAL": "Muitos contatos sem conexão: variar canal (WhatsApp + ligação + e-mail), horários alternados e cadência de 5-7 tentativas antes de descartar.",
@@ -779,47 +813,9 @@ def _funil(conn, request: Request) -> str:
                    f"<td class=num style='color:var(--text-muted)'>{_fmt(meta_q)}</td>"
                    f"<td class=num>{_fmt(taxa, 'pct') if taxa is not None else '—'}{delta}</td>"
                    f"<td class=num>{meta_td}</td></tr>")
-    # ---- funil visual (modelo do app Lovable do time): barras centradas com
-    # largura proporcional, pílula de conversão VS ETAPA ANTERIOR entre elas,
-    # receita no Booking; ao lado, o Resumo do Funil (TX vs anterior + TX Lead)
+    # ---- funil visual compartilhado (funil_visual_html)
     seq = [(nome, passou[i]) for i, (nome, _) in enumerate(_FUNIL_ETAPAS)] + [("Booking", booked)]
-    for i2 in range(len(seq)):
-        nome, n2 = seq[i2]
-        taxa2 = (n2 / seq[i2 - 1][1]) if i2 and seq[i2 - 1][1] else None
-        cor = _FUNIL_CORES[nome]
-        if i2:
-            barras += (f"<div style='text-align:center;margin:7px 0'><span style='background:var(--surface-3);"
-                       f"border:1px solid var(--border-strong);border-radius:999px;padding:2px 12px;"
-                       f"font-size:var(--fs-xs);color:var(--text-2)'>{_fmt(taxa2, 'pct') if taxa2 is not None else '—'} conv.</span></div>")
-        w = min(100.0, max(30.0, (n2 / total * 100) if total else 30.0))
-        extra = (f"<div style='font-size:var(--fs-xs);font-weight:600;opacity:.8'>{_fmt(receita_book, 'brl')}</div>"
-                 if nome == "Booking" else "")
-        barras += (f"<div title='{escape(_FUNIL_DEFS.get(nome, ''))}' style='width:{w:.1f}%;margin:0 auto;"
-                   f"background:{cor};border-radius:10px;padding:11px 16px;display:flex;"
-                   f"justify-content:space-between;align-items:center;gap:10px;color:#16181d'>"
-                   f"<b style='font-size:var(--fs-md)'>{nome}</b>"
-                   f"<div style='text-align:right'><span style='font-family:var(--font-display);"
-                   f"font-weight:700;font-size:21px'>{n2}</span>{extra}</div></div>")
-    resumo_rows = ""
-    for i2, (nome, n2) in enumerate(seq):
-        taxa2 = (n2 / seq[i2 - 1][1]) if i2 and seq[i2 - 1][1] else None
-        tx_lead = n2 / total if total and i2 else None
-        td = "padding:9px 8px;border-bottom:1px solid var(--border);font-size:var(--fs-sm)"
-        resumo_rows += (f"<tr><td style='{td};white-space:nowrap'><span style='display:inline-block;width:9px;"
-                        f"height:9px;border-radius:50%;background:{_FUNIL_CORES[nome]};margin-right:7px'></span><b>{nome}</b></td>"
-                        f"<td style='{td};color:var(--text-muted);line-height:1.4'>{escape(_FUNIL_DEFS.get(nome, ''))}</td>"
-                        f"<td style='{td};text-align:right;font-variant-numeric:tabular-nums'><b>{n2}</b></td>"
-                        f"<td style='{td};text-align:right'>{_fmt(taxa2, 'pct') if taxa2 is not None else '—'}</td>"
-                        f"<td style='{td};text-align:right'>{_fmt(tx_lead, 'pct') if tx_lead is not None else '—'}</td></tr>")
-    th_r = "".join(f"<th style='text-align:{al};padding:8px;border-bottom:1px solid var(--border-strong);"
-                   f"color:var(--text-muted);font-size:var(--fs-2xs);text-transform:uppercase;letter-spacing:var(--tracking-label)'>{h}</th>"
-                   for h, al in (("Etapa", "left"), ("Definição", "left"), ("Total", "right"),
-                                 ("TX", "right"), ("TX Lead", "right")))
-    funil_visual = (
-        "<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:14px;align-items:start'>"
-        f"<div class=card>{barras}</div>"
-        f"<div class=card><table style='width:100%;border-collapse:collapse'><tr>{th_r}</tr>{resumo_rows}</table>"
-        "<p class='note' style='margin:10px 0 0'>TX = conversão sobre a etapa ANTERIOR · TX Lead = sobre o total de leads.</p></div></div>")
+    funil_visual = funil_visual_html(seq, total, receita_book)
     taxa_final = booked / passou[4] if passou[4] else None
     meta_bk = metas_taxa.get("Booking")
     meta_bk_td = "—"

@@ -18,28 +18,15 @@ PERSONA_VENDAS = ("Especialista Comercial — persona: head de vendas com 15+ an
                   "contratos de serviços para sellers de marketplace (regras determinísticas; "
                   "análise via Claude entra quando houver créditos de API)")
 
-# times validados pelo Otávio (08/07/26); desligados ficam no histórico mas
-# fora de rankings e planos correntes
+# coordenações (14/07/26: as LISTAS dos times saíram daqui — agora são a
+# tabela area_team, editável no Painel Administrativo; ver app/team_config.py)
 COORD_PREVENDAS = "Eduarda"
-SDRS = ["Giovana Moura Alves", "Fernanda Araújo", "Leticia Roman"]
 COORD_VENDAS = "Valéria"
-CLOSERS = ["Ana", "Denise", "Camila Fernandes", "Giovana Fornazari", "Johnatan"]
-DESLIGADOS = {"Leticia Roman", "Johnatan"}  # início de jul/26
 
 
 def _med(vals: list[float]) -> float | None:
     vals = [v for v in vals if v is not None]
     return st.median(vals) if vals else None
-
-
-def time_de(nome: str | None, funcao: str) -> bool:
-    """Pertence ao time? Casamento por prefixo (nomes do Pipedrive variam)."""
-    if not nome:
-        return False
-    lista = SDRS if funcao == "sdr" else CLOSERS
-    return any(nome.lower().startswith(p.split()[0].lower()) and
-               (len(p.split()) == 1 or p.split()[1].lower() in nome.lower())
-               for p in lista)
 
 
 def plano_sdr(p: dict, time: list[dict]) -> dict:

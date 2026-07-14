@@ -134,37 +134,11 @@ def _pv_funil(conn, request: Request) -> str:
     # Lead = criados no período · MQL/SAL = descontam desqualificados por
     # motivo · SQL = dono atual é closer (agendou = handoff p/ Vendas).
     # Oportunidade/Booking ficam no Funil de Fechamento (/vendas).
-    from ..marketing.ui import _FUNIL_CORES, _FUNIL_DEFS, _funil_oficial
+    from ..marketing.ui import _funil_oficial, funil_visual_html
     passou, _booked, leads, _rec = _funil_oficial(conn, ini, fim)
-    seq = [("Lead", passou[0]), ("MQL", passou[1]), ("SAL", passou[2]), ("SQL", passou[3])]
     sql_n = passou[3]
-    barras, resumo_rows = "", ""
-    for i, (nome, n) in enumerate(seq):
-        taxa = (n / seq[i - 1][1]) if i and seq[i - 1][1] else None
-        tx_lead = n / leads if leads and i else None
-        if i:
-            barras += (f"<div style='text-align:center;margin:7px 0'><span style='background:var(--surface-3);"
-                       f"border:1px solid var(--border-strong);border-radius:999px;padding:2px 12px;"
-                       f"font-size:var(--fs-xs);color:var(--text-2)'>{_fmt(taxa, 'pct') if taxa is not None else '—'} conv.</span></div>")
-        w = min(100.0, max(30.0, (n / leads * 100) if leads else 30.0))
-        barras += (f"<div title='{escape(_FUNIL_DEFS.get(nome, ''))}' style='width:{w:.1f}%;margin:0 auto;"
-                   f"background:{_FUNIL_CORES[nome]};border-radius:10px;padding:11px 16px;display:flex;"
-                   f"justify-content:space-between;align-items:center;gap:10px;color:#16181d'>"
-                   f"<b style='font-size:var(--fs-md)'>{nome}</b>"
-                   f"<span style='font-family:var(--font-display);font-weight:700;font-size:21px'>{n}</span></div>")
-        td = "padding:9px 8px;border-bottom:1px solid var(--border);font-size:var(--fs-sm)"
-        resumo_rows += (f"<tr><td style='{td};white-space:nowrap'><span style='display:inline-block;width:9px;"
-                        f"height:9px;border-radius:50%;background:{_FUNIL_CORES[nome]};margin-right:7px'></span><b>{nome}</b></td>"
-                        f"<td style='{td};color:var(--text-muted);line-height:1.4'>{escape(_FUNIL_DEFS.get(nome, ''))}</td>"
-                        f"<td style='{td};text-align:right;font-variant-numeric:tabular-nums'><b>{n}</b></td>"
-                        f"<td style='{td};text-align:right'>{_fmt(taxa, 'pct') if taxa is not None else '—'}</td>"
-                        f"<td style='{td};text-align:right'>{_fmt(tx_lead, 'pct') if tx_lead is not None else '—'}</td></tr>")
-    funil_visual = (
-        "<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:14px;align-items:start'>"
-        f"<div class=card>{barras}</div>"
-        f"<div class=card>" + _tbl([("Etapa", "left"), ("Definição", "left"), ("Total", "right"),
-                                    ("TX", "right"), ("TX Lead", "right")], resumo_rows)
-        + "<p class='note' style='margin:10px 0 0'>TX = conversão sobre a etapa ANTERIOR · TX Lead = sobre o total de leads.</p></div></div>")
+    funil_visual = funil_visual_html(
+        [("Lead", passou[0]), ("MQL", passou[1]), ("SAL", passou[2]), ("SQL", passou[3])], leads)
     # por origem: qualidade do lead (lead → reunião) por canal
     with conn.cursor() as cur:
         cur.execute("""
@@ -353,6 +327,56 @@ def _pv_sdrs(conn, request: Request) -> str:
     _ensure_touch(conn)
     ini, fim, form = _periodo(request)
     a, b = _brt(ini, fim)
+    from .. import team_config as TC
+    eh_sdr = TC.casador(conn, "prevendas")
+
+    # ---- números OFICIAIS por colaborador (régua dos gráficos do Pipedrive/
+    # Insights que a gestão acompanha): atribuição = campo SDR do deal, SEM
+    # fallback — deal sem o campo entra em '(sem SDR definido)'. Leads = deals
+    # CRIADOS no período; Oportunidades = campo Dia Oportunidade no período
+    # (TODOS os deals, não é coorte); Bookings = won no período
+    _SEM = "(sem SDR definido)"
+    with conn.cursor() as cur:
+        cur.execute("""SELECT COALESCE(sdr, %s), count(*)
+                         FROM mkt_deals_attribution
+                        WHERE add_time >= %s AND add_time < %s GROUP BY 1""", (_SEM, a, b))
+        leads_por = dict(cur.fetchall())
+        cur.execute("""SELECT COALESCE(sdr, %s), count(*)
+                         FROM mkt_deals_attribution
+                        WHERE oport_time >= %s AND oport_time < %s GROUP BY 1""", (_SEM, a, b))
+        oport_por = dict(cur.fetchall())
+        cur.execute("""SELECT COALESCE(sdr, %s), count(*),
+                              COALESCE(sum(COALESCE(valor_custom, valor)), 0)
+                         FROM mkt_deals_attribution
+                        WHERE status='won' AND won_time >= %s AND won_time < %s GROUP BY 1""", (_SEM, a, b))
+        book_por = {n: (q, float(v)) for n, q, v in cur.fetchall()}
+    colaboradores = sorted(set(leads_por) | set(oport_por),
+                           key=lambda n: (n == _SEM, -leads_por.get(n, 0), -oport_por.get(n, 0)))
+    orows, tl = "", [0, 0, 0]
+    for nome in colaboradores[:15]:
+        l, o = leads_por.get(nome, 0), oport_por.get(nome, 0)
+        bq, _bv = book_por.get(nome, (0, 0.0))
+        tl[0] += l; tl[1] += o; tl[2] += bq
+        chip = ("" if eh_sdr(nome) or nome == _SEM
+                else " <span class=chip style='--c:var(--status-semdados)'>fora do time de PV</span>")
+        orows += (f"<tr><td style='{_TD}'><b>{escape(nome[:30])}</b>{chip}</td>"
+                  f"<td style='{_TD};text-align:right'>{l}</td>"
+                  f"<td style='{_TD};text-align:right'>{o}</td>"
+                  f"<td style='{_TD};text-align:right'>{_fmt(o / l if l else None, 'pct')}</td>"
+                  f"<td style='{_TD};text-align:right'>{bq or ''}</td></tr>")
+    orows += (f"<tr><td style='{_TD};border-top:2px solid var(--border-strong)'><b>Total</b></td>"
+              f"<td style='{_TD};text-align:right;border-top:2px solid var(--border-strong)'><b>{tl[0]}</b></td>"
+              f"<td style='{_TD};text-align:right;border-top:2px solid var(--border-strong)'><b>{tl[1]}</b></td>"
+              f"<td style='{_TD};text-align:right;border-top:2px solid var(--border-strong)'>{_fmt(tl[1] / tl[0] if tl[0] else None, 'pct')}</td>"
+              f"<td style='{_TD};text-align:right;border-top:2px solid var(--border-strong)'><b>{tl[2]}</b></td></tr>")
+    oficial = ("<section><h2>Leads e oportunidades por colaborador</h2>"
+               "<p class=secsub>régua dos gráficos do Pipedrive: atribuição pelo campo SDR do deal · "
+               "leads = criados no período · oportunidades = Dia Oportunidade no período · lead ainda sem SDR entra em '(sem SDR definido)'</p>"
+               + _card(_tbl([("Colaborador", "left"), ("Leads", "right"), ("Oportunidades", "right"),
+                             ("Lead→Oport", "right"), ("Bookings", "right")], orows)) + "</section>")
+
+    # ---- régua OPERACIONAL (1º contato registrado nas atividades): speed e
+    # reuniões — complementa a oficial; a atribuição aqui é quem TOCOU primeiro
     with conn.cursor() as cur:
         cur.execute("""
             SELECT t.quem, count(DISTINCT d.deal_id) AS leads,
@@ -368,11 +392,12 @@ def _pv_sdrs(conn, request: Request) -> str:
     time_stats = [{"nome": q, "leads": l, "agendadas": g,
                    "taxa_agend": (g / l if l else None),
                    "speed_min": float(s) if s is not None else None,
-                   "ativo": q not in ESP.DESLIGADOS}
-                  for q, l, g, s in dados if ESP.time_de(q, "sdr")]
+                   "ativo": TC.ativo(conn, "prevendas", q)}
+                  for q, l, g, s in dados if eh_sdr(q)]
     if not time_stats:
         return (f"<h1>Time de Pré-vendas</h1><div class=sub>coordenação: {ESP.COORD_PREVENDAS}</div>"
-                f"<section>{_aviso_coleta('atividades (atribuição por SDR)')}</section>")
+                f"<form method=get action=/prevendas><input type=hidden name=view value=sdrs>{form}</form>"
+                + oficial + f"<section>{_aviso_coleta('atividades (atribuição por SDR)')}</section>")
     rows, planos = "", ""
     for p in sorted(time_stats, key=lambda x: -(x["taxa_agend"] or 0)):
         tag = " <span class=chip style='--c:var(--status-semdados)'>desligada</span>" if not p["ativo"] else ""
@@ -388,10 +413,11 @@ def _pv_sdrs(conn, request: Request) -> str:
                      + "".join(f"<li>→ {escape(acao)}</li>" for acao in pl["acoes"]))
             planos += (f"<div style='margin-top:12px'><b>{escape(p['nome'])}</b>"
                        f"<ul class=note style='margin:4px 0 0;padding-left:18px'>{itens}</ul></div>")
-    return (f"<h1>Time de Pré-vendas</h1><div class=sub>coordenação: {ESP.COORD_PREVENDAS} · atribuição pelo 1º contato · comparação com a mediana do time, tom construtivo</div>"
+    return (f"<h1>Time de Pré-vendas</h1><div class=sub>coordenação: {ESP.COORD_PREVENDAS} · lista do time editável no Painel Administrativo · comparação com a mediana, tom construtivo</div>"
             f"<form method=get action=/prevendas><input type=hidden name=view value=sdrs>{form}</form>"
-            f"<section><h2>Produtividade por SDR</h2>"
-            + _card(_tbl([("SDR", "left"), ("Leads", "right"), ("Reuniões", "right"), ("Lead→Reunião", "right"), ("Speed (med.)", "right")], rows)) + "</section>"
+            + oficial +
+            f"<section><h2>Produtividade por SDR (régua operacional)</h2><p class=secsub>atribuição por quem fez o 1º CONTATO registrado nas atividades — mede esforço e velocidade; difere da atribuição oficial por campo SDR</p>"
+            + _card(_tbl([("SDR", "left"), ("Leads tocados", "right"), ("Reuniões", "right"), ("Lead→Reunião", "right"), ("Speed (med.)", "right")], rows)) + "</section>"
             f"<section><h2>Planos de ação individuais</h2><p class=secsub>{ESP.PERSONA_PREVENDAS}</p>{_card(planos or '<span class=note>—</span>')}</section>")
 
 
@@ -805,9 +831,19 @@ def _vd_funil(conn, request: Request) -> str:
                    f"<td style='{_TD};text-align:right'><b>{tot_o}</b></td>"
                    f"<td style='{_TD};text-align:right'>{_fmt(tot_o / l_o if l_o else None, 'pct')}</td></tr>")
 
-    return (f"<h1>Funil de Fechamento</h1><div class=sub>da reunião agendada ao contrato · régua por evento no período (BRT)</div>"
+    # funil COMPLETO Lead→Booking (pedido do Otávio 14/07): a mesma régua
+    # oficial das abas de Marketing e Pré-vendas, agora também em Vendas
+    from ..marketing.ui import _funil_oficial, funil_visual_html
+    passou, book_of, leads_of, receita_of = _funil_oficial(conn, ini, fim)
+    funil_completo = funil_visual_html(
+        [("Lead", passou[0]), ("MQL", passou[1]), ("SAL", passou[2]),
+         ("SQL", passou[3]), ("Oportunidade", passou[4]), ("Booking", book_of)],
+        leads_of, receita_of)
+
+    return (f"<h1>Funil de Fechamento</h1><div class=sub>da reunião agendada ao contrato · régua por evento no período (BRT) · funil completo = régua OFICIAL do dashboard do time</div>"
             f"<form method=get action=/vendas><input type=hidden name=view value=funil>{form}</form>"
             + kpis +
+            f"<section><h2>Funil completo (Lead → Booking)</h2><p class=secsub>régua oficial do dashboard do time — os mesmos números das abas Funil de Marketing e Pré-vendas · Oportunidade não é coorte, pode superar SQL</p>{funil_completo}</section>"
             f"<section><h2>Oportunidades por bundle</h2><p class=secsub>oportunidades novas e contratos fechados no período, por plano — planos antigos/exceções aparecem pelo nome</p>"
             + _card(_tbl([("Bundle", "left"), ("Oportunidades", "right"), ("% do mix", "right"),
                           ("Bookings", "right"), ("Oport→Booking", "right")], brows)) + "</section>"
@@ -910,15 +946,17 @@ def _vd_closers(conn, request: Request) -> str:
              WHERE d.owner_name IS NOT NULL
              GROUP BY 1""", (list(_ST_NEGOC), a, b, a, b, a, b))
         dados = cur.fetchall()
+    from .. import team_config as TC
+    eh_closer = TC.casador(conn, "vendas")
     time_stats = []
     for nome, oports, wins, ticket in dados:
-        if not ESP.time_de(nome, "closer"):
+        if not eh_closer(nome):
             continue
         time_stats.append({"nome": nome, "oports": oports or 0, "bookings": wins or 0,
                            "taxa_conv": (wins / oports if oports else None),
                            "ticket": float(ticket) if ticket else None,
                            "ciclo_dias": None, "perdas_top": None,
-                           "ativo": not any(nome.lower().startswith(dd.split()[0].lower()) for dd in ESP.DESLIGADOS)})
+                           "ativo": TC.ativo(conn, "vendas", nome)})
     if not time_stats:
         return (f"<h1>Time de Vendas</h1><div class=sub>coordenação: {ESP.COORD_VENDAS}</div>"
                 f"<section>{_aviso_coleta('dono dos deals (atribuição por closer)')}</section>")

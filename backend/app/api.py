@@ -526,6 +526,7 @@ def admin_panel(request: Request):
         users = list_users(c)
         from .llm_budget import month_summary
         llm = month_summary(c)
+        teams = _teams_html(c)
         with c.cursor() as cur:
             cur.execute("""SELECT actor, count(*), max(at) FROM audit_log
                             WHERE action='view' GROUP BY actor""")
@@ -533,7 +534,24 @@ def admin_panel(request: Request):
     for u in users:
         n, ult = acessos.get(u["email"], (0, None))
         u["views"], u["last_seen"] = n, (ult.strftime("%d/%m/%Y às %H:%M") if ult else None)
-    return HTMLResponse(_render_hub(user, stats, users, None, page="admin", llm=llm))
+    return HTMLResponse(_render_hub(user, stats, users, None, page="admin", llm=llm,
+                                    teams_html=teams))
+
+
+@app.post("/admin/times")
+async def admin_times(request: Request):
+    """Salva os times por área (form do Painel Administrativo). Só admin."""
+    s = _session(request)
+    if not s or s[1] != "admin":
+        return RedirectResponse("/login", status_code=302)
+    user, _role = s
+    form = await request.form()
+    from .team_config import salvar
+    with _conn() as c:
+        for area, _titulo, _nota in _TEAM_AREAS:
+            if area in form:
+                salvar(c, area, str(form[area]).splitlines(), user)
+    return RedirectResponse("/admin", status_code=303)
 
 
 @app.post("/api/users/{user_id}/status")
@@ -856,6 +874,32 @@ def _llm_budget_html(llm: dict | None) -> str:
         + linhas + "</div></section>")
 
 
+_TEAM_AREAS = [("prevendas", "Pré-vendas (SDRs)",
+                "destaque e planos de ação da aba Time & Planos"),
+               ("vendas", "Vendas (closers)",
+                "⚠ é a RÉGUA do SQL do funil oficial (deal na mão de closer) — manter idêntica ao SQL_CLOSERS do dashboard do time; desligados ficam na lista como inativos")]
+
+
+def _teams_html(conn) -> str:
+    """Times por área editáveis (tabela area_team): um nome por linha, linha
+    começando com '-' = inativo (fora dos rankings; segue valendo na régua)."""
+    from .team_config import listas
+    blocos = ""
+    for area, titulo, nota in _TEAM_AREAS:
+        linhas = "\n".join(("-" if not ativo else "") + nome for nome, ativo in listas(conn, area))
+        blocos += (f"<div style='flex:1;min-width:280px'><b>{titulo}</b>"
+                   f"<p class=secsub style='margin:4px 0 6px'>{nota}</p>"
+                   f"<textarea name='{area}' rows=9 style='width:100%;background:var(--bg-panel);"
+                   f"border:1px solid var(--border-strong);border-radius:var(--radius-sm);color:var(--text);"
+                   f"font-family:var(--font-body);font-size:var(--fs-sm);padding:9px 11px'>{escape(linhas)}</textarea></div>")
+    return ("<section><h2>Times por área</h2>"
+            "<p class=secsub>um nome por linha, como aparece no Pipedrive (o casamento ignora acentos e aceita nome contido) · "
+            "linha começando com <b>-</b> = desligado (sai dos rankings, permanece nas réguas) · salvar vale na hora</p>"
+            "<div class=central><form method=post action='/admin/times'>"
+            "<div style='display:flex;gap:18px;flex-wrap:wrap'>" + blocos + "</div>"
+            "<button type=submit style='margin-top:12px'>Salvar times</button></form></div></section>")
+
+
 def _admin_html(users: list[dict]) -> str:
     """Painel administrativo: linha por conta com interruptor POR ÁREA (aplica
     na hora via /api/users/{id}/areas), nº de acessos e último login (audit_log),
@@ -935,7 +979,8 @@ def _pacing_nivel(real, meta, frac) -> tuple[str, float]:
 
 def _render_hub(role: str, st: dict, users: list[dict] | None = None,
                 mkt: dict | None = None, page: str = "home",
-                llm: dict | None = None, sales: dict | None = None) -> str:
+                llm: dict | None = None, sales: dict | None = None,
+                teams_html: str = "") -> str:
     n_alerts = sum(st["sev"].values())
     crit = st["sev"].get("critico", 0)
 
@@ -1268,7 +1313,7 @@ __BODY__
         body = (
             "<h1>Painel Administrativo</h1>"
             "<p class=sub>controle de acessos por conta — aprovar/bloquear cadastros e definir quais áreas cada usuário enxerga</p>"
-            + _llm_budget_html(llm) +
+            + _llm_budget_html(llm) + teams_html +
             "<section><h2>Contas e permissões</h2>"
             "<p class=secsub>pendentes primeiro · os interruptores aplicam NA HORA (vale em até 60s) · busca por nome/e-mail</p>"
             + _admin_html(users or []))
