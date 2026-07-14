@@ -1822,7 +1822,7 @@ __BODY__
             "<h1>Visão central</h1>"
             "<p class=sub>Painel de saúde da empresa: Growth, Marketing, Pré-vendas, Vendas e Operações ativas (Financeiro em breve). A pior área do momento aparece primeiro na faixa de saúde.</p>"
             f"<div class=kpis>{kpi_html}</div>"
-            + mudancas + receita_rr +
+            + mudancas +
             "<section><h2>Saúde por área</h2>"
             "<p class=secsub>diagnóstico automático do mês corrente, ordenado da área que mais demanda atenção para a mais saudável — clique para abrir</p>"
             f"<div class=hbar>{hbar}</div></section>"
@@ -1831,7 +1831,10 @@ __BODY__
             f"<div class=central>{init_html}</div></section>"
             "<section><h2>Áreas</h2>"
             "<p class=secsub>resumo do andamento de cada área — clique para abrir o painel completo; verde = no ritmo/meta, vermelho = atenção</p>"
-            f"<div class=areas>{area_cards}</div></section>")
+            f"<div class=areas>{area_cards}</div></section>"
+            # visão executiva de receita fica ao FINAL (14/07: as áreas merecem
+            # a atenção do primeiro olhar)
+            + receita_rr)
     return (head.replace("__TOKENS__", _tokens_css()).replace("__USERMAIL__", escape(role))
             .replace("__HOME_ON__", " active" if page != "admin" else "")
             .replace("__ADM_ON__", " active" if page == "admin" else "")
@@ -1962,10 +1965,11 @@ _STAGE_LABEL = {"saudavel": "saudável", "desengajamento_inicial": "desengajamen
 
 
 def _carga_content(scores: list[dict], mirror: dict | None) -> str:
-    """Carga e Capacidade por Squad/GC (cross-área #2, 14/07): risco por
-    PESSOA, não por conta — alocação e suporte, NÃO ranking de culpados.
-    GC vem do espelho da Operação (gerente_de_contas) — cobertura parcial,
-    reportada; squad cobre 100% via _squad_label."""
+    """Carga e Capacidade por Squad (cross-área #2, 14/07): risco por TIME e
+    por responsável, não por conta — alocação e suporte, NÃO ranking.
+    Squad = o REAL da planilha de composição (S1..S8, sem fragmentar por
+    serviço/bundle — feedback 14/07); responsável = campo 'gerente de contas'
+    do espelho da Operação (mistura Growth e GC; cobertura reportada)."""
     def agrega(chave):
         m: dict[str, dict] = {}
         for s in scores:
@@ -1992,8 +1996,8 @@ def _carga_content(scores: list[dict], mirror: dict | None) -> str:
             info = mirror.get(norm_account(s["name"] or ""))
             if info and info.get("gerente_de_contas"):
                 return info["gerente_de_contas"][:28]
-        return "(sem GC no espelho)"
-    por_squad = agrega(lambda s: _squad_label(s["name"], mirror))
+        return "(sem responsável no espelho)"
+    por_squad = agrega(lambda s: _resolve_squad(s["name"], mirror) or "(sem squad na planilha)")
     por_gc = agrega(gc_de)
     tot_risco = sum(d["mrr_risco"] for d in por_squad.values()) or 1.0
     _td = "padding:7px 9px;border-bottom:1px solid var(--border);text-align:right;font-variant-numeric:tabular-nums;font-size:var(--fs-sm)"
@@ -2026,14 +2030,16 @@ def _carga_content(scores: list[dict], mirror: dict | None) -> str:
         return f"<div class=central style='padding:6px 14px 12px;overflow-x:auto'><table style='width:100%;border-collapse:collapse'><tr>{ths}</tr>{linhas}</table></div>"
     com_gc = sum(d["n"] for k, d in por_gc.items() if not k.startswith("(sem"))
     return (
-        "<div class=page-head><h1>Carga por Squad / GC</h1>"
+        "<div class=page-head><h1>Carga por Squad</h1>"
         "<span class=role-chip>alocação e suporte — não é ranking</span></div>"
-        "<p class=sub>o risco da carteira visto por PESSOA: quem está com carga desproporcional de contas críticas e MRR em risco — "
+        "<p class=sub>o risco da carteira visto por TIME e por responsável: onde há carga desproporcional de contas críticas e MRR em risco — "
         "decidir realocação/reforço ANTES de a sobrecarga virar churn · chip = concentração (≥3 críticos ou ≥30% do MRR em risco)</p>"
-        "<section><h2>Por squad</h2>" + tabela(por_squad, "Squad") + "</section>"
-        "<section><h2>Por gerente de contas (GC)</h2>"
-        f"<p class=secsub>GC vem do espelho da Operação — preenchido para {com_gc} de {len(scores)} contas; "
-        "completar o campo no ClickUp melhora esta visão</p>" + tabela(por_gc, "GC") + "</section>")
+        "<section><h2>Por squad</h2><p class=secsub>squads REAIS da planilha de composição (S1…S8) — o líder do squad é o Growth</p>"
+        + tabela(por_squad, "Squad") + "</section>"
+        "<section><h2>Por responsável da conta</h2>"
+        f"<p class=secsub>campo “gerente de contas” do espelho da Operação — hoje mistura pessoas do Growth e GCs, e está preenchido "
+        f"para {com_gc} de {len(scores)} contas; completar (e padronizar) o campo no ClickUp deixa esta visão fiel</p>"
+        + tabela(por_gc, "Responsável") + "</section>")
 
 
 def _render(role: str, scores: list[dict], alerts: list[dict],
@@ -2220,8 +2226,7 @@ __SCRIPT__
     # ---- navegação (view ativa; sessão define o papel — sem role na URL) ----
     nav = "<a class='nav-item' href='/'>← Início (central)</a>"
     for v, label in (("contas", "Contas"), ("alertas", "Alertas"),
-                     ("carga", "Carga por Squad"),
-                     ("cancelamentos", "Cancelamentos"),
+                     ("carga", "Carga por Squad"), ("cancelamentos", "Cancelamentos"),
                      ("playbooks", "Playbooks"), ("relatorios", "Relatórios")):
         cls = "nav-item active" if v == view else "nav-item"
         nav += f"<a class='{cls}' href='/growth?view={v}'>{label}</a>"
