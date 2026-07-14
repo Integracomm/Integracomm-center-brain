@@ -1124,13 +1124,95 @@ def _vd_winloss(conn, request: Request) -> str:
     grade_b = (f"<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px;align-items:start'>{bcards}</div>"
                if bcards else _card("<span class=note>sem perdas no período</span>"))
 
+    # ---- cruzamentos e tendência (pedido 14/07: motivo × origem × closer +
+    # evolução temporal + diagnóstico dominante explícito) --------------------
+    with conn.cursor() as cur:
+        cur.execute("""SELECT COALESCE(lost_reason, '(sem motivo)'), COALESCE(origem, '(vazio)'),
+                              COALESCE(owner_name, '—'), count(*)
+                         FROM mkt_deals_attribution
+                        WHERE status='lost' AND lost_time >= %s AND lost_time < %s
+                          AND stage_id IN (6, 5, 7) GROUP BY 1, 2, 3""", (a, b))
+        cruz = cur.fetchall()
+        cur.execute("""SELECT to_char(date_trunc('month', lost_time - interval '3 hours'), 'MM/YY'),
+                              COALESCE(lost_reason, '(sem motivo)'), count(*)
+                         FROM mkt_deals_attribution
+                        WHERE status='lost' AND lost_time >= date_trunc('month', now()) - interval '5 months'
+                          AND stage_id IN (6, 5, 7)
+                        GROUP BY date_trunc('month', lost_time - interval '3 hours'), 2
+                        ORDER BY date_trunc('month', lost_time - interval '3 hours')""")
+        evo = cur.fetchall()
+    top_motivos = [m for m, _n, _v in perdas if m != "(sem motivo)"][:5]
+    _nc = "padding:6px 7px;border-bottom:1px solid var(--border);font-variant-numeric:tabular-nums;font-size:var(--fs-xs)"
+
+    def matriz(dim_idx, titulo, top_dim=6):
+        agg: dict[str, dict[str, int]] = {}
+        tot_dim: dict[str, int] = {}
+        for m, og, ow, n in cruz:
+            k = (og, ow)[dim_idx - 1][:24]
+            tot_dim[k] = tot_dim.get(k, 0) + n
+            if m in top_motivos:
+                agg.setdefault(m, {})[k] = agg.setdefault(m, {}).get(k, 0) + n
+        cols = [k for k, _ in sorted(tot_dim.items(), key=lambda x: -x[1])[:top_dim]]
+        linhas = ""
+        for m in top_motivos:
+            tds = "".join(f"<td style='{_nc};text-align:center'>{agg.get(m, {}).get(c, '') or '—'}</td>" for c in cols)
+            linhas += f"<tr><td style='{_nc}'>{escape(m[:36])}</td>{tds}</tr>"
+        return _card(_tbl([(titulo, "left")] + [(c, "center") for c in cols], linhas)) if cols else ""
+
+    meses_evo = list(dict.fromkeys(m for m, _r, _n in evo))
+    evo_map: dict[str, dict[str, int]] = {}
+    for mes, m, n in evo:
+        if m in top_motivos:
+            evo_map.setdefault(m, {})[mes] = n
+    evo_rows = ""
+    for m in top_motivos:
+        vals = [evo_map.get(m, {}).get(mes, 0) for mes in meses_evo]
+        tend = ""
+        if len(vals) >= 3 and sum(vals[:-1]):
+            ult, med = vals[-2], (sum(vals[:-1]) / len(vals[:-1]))
+            tend = " ↗" if ult > med * 1.3 else (" ↘" if ult < med * 0.7 else "")
+        evo_rows += (f"<tr><td style='{_nc}'>{escape(m[:36])}{tend}</td>"
+                     + "".join(f"<td style='{_nc};text-align:center'>{v or ''}</td>" for v in vals) + "</tr>")
+    sec_evo = (f"<section><h2>Evolução dos motivos (6 meses)</h2><p class=secsub>perdas por mês do fechamento · ↗/↘ = penúltimo mês bem acima/abaixo da média anterior (o mês corrente é parcial)</p>"
+               + _card(_tbl([("Motivo", "left")] + [(m, "center") for m in meses_evo], evo_rows)) + "</section>") if evo_rows else ""
+
+    # diagnóstico dominante explícito (heurística do próprio help)
+    diag = ""
+    if perdas and tem_motivo:
+        top_m, top_n, _v = next(((m, n, v) for m, n, v in perdas if m != "(sem motivo)"), (None, 0, 0))
+        if top_m:
+            ml = top_m.lower()
+            if any(x in ml for x in ("preço", "preco", "valor", "investimento", "caro")):
+                tipo = "ANCORAGEM/PREÇO — revisar apresentação de valor e proposta em Vendas."
+            elif any(x in ml for x in ("timing", "futur", "momento", "budget", "verba", "retorno")):
+                tipo = "QUALIFICAÇÃO — lead sem prontidão chegando à reunião; devolver critérios à Pré-vendas (veja a aba Ponte)."
+            else:
+                tipo = "específico — leia a distribuição por bundle/closer abaixo."
+            conc = ""
+            por_closer = {}
+            for m, _og, ow, n in cruz:
+                if m == top_m:
+                    por_closer[ow] = por_closer.get(ow, 0) + n
+            if por_closer:
+                cw, cn = max(por_closer.items(), key=lambda x: x[1])
+                if top_n >= 8 and cn / top_n >= 0.5:
+                    conc = f" ATENÇÃO: {cn} de {top_n} casos concentrados em {cw} — componente de treino individual."
+            diag = (f"<section><h2>Diagnóstico dominante</h2><div class=card><div class=sug-item>→ "
+                    f"Motivo nº 1: “{escape(top_m)}” ({top_n} deals). Leitura: {escape(tipo)}{escape(conc)}</div>"
+                    "<style>.sug-item{padding:7px 0;font-size:var(--fs-sm);line-height:1.6;color:var(--text-2)}</style></div></section>")
+
     return (f"<h1>Win/Loss — Análise de Perdas</h1><div class=sub>perdas na fase de Vendas (da reunião em diante), por motivo e valor</div>"
             f"<form method=get action=/vendas><input type=hidden name=view value=winloss>{form}</form>"
             f"<section><h2>Motivos de perda</h2>"
             + _card((_tbl([("Motivo", "left"), ("Deals", "right"), ("MRR perdido", "right")], rows) if rows else "<span class=note>sem perdas no período</span>")
                     + ("" if tem_motivo else _aviso_coleta("motivo de perda"))) + "</section>"
+            + diag + sec_evo +
             f"<section><h2>Principais motivos de perda por bundle</h2><p class=secsub>um card por plano: os motivos que mais matam AQUELE bundle, com participação nas perdas dele — concentrado num bundle = preço/produto; espalhado por todos = abordagem</p>"
-            + grade_b + "</section>")
+            + grade_b + "</section>"
+            f"<section><h2>Motivo × origem</h2><p class=secsub>top 5 motivos × origens com mais perdas no período — motivo concentrado numa origem = segmentação do Marketing</p>"
+            + matriz(1, "Motivo") + "</section>"
+            f"<section><h2>Motivo × closer</h2><p class=secsub>motivo concentrado num closer = treino individual; espalhado = processo</p>"
+            + matriz(2, "Motivo") + "</section>")
 
 
 def _vd_ciclo(conn, request: Request) -> str:
