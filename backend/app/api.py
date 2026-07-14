@@ -514,6 +514,15 @@ def hub(request: Request):
         ops = _hub_op_stats(c)
         grava_snapshot_risco(c)
         mudancas = _hub_mudancas(c)
+        try:  # aviso discreto quando fonte crítica está VERMELHA (14/07)
+            vermelhas = [r["fonte"] for r in _integracoes_status(c) if r["status"] == "vermelho"]
+            if vermelhas:
+                mudancas = (
+                    "<div class=warn style='margin:14px 0'>⚠️ Fonte de dados parada: "
+                    f"<b>{escape(' · '.join(vermelhas[:3]))}</b> — diagnósticos podem estar desatualizados. "
+                    "<a href='/admin' style='color:var(--brand)'>ver Saúde das integrações</a></div>") + mudancas
+        except Exception:  # noqa: BLE001
+            pass
         users = list_users(c)
     return HTMLResponse(_render_hub(user, stats, users, mkt, sales=sales, ops=ops,
                                     mudancas=mudancas))
@@ -534,7 +543,7 @@ def admin_panel(request: Request):
         users = list_users(c)
         from .llm_budget import month_summary
         llm = month_summary(c)
-        teams = _teams_html(c)
+        teams = _teams_html(c) + _integracoes_html(_integracoes_status(c))
         with c.cursor() as cur:
             cur.execute("""SELECT actor, count(*), max(at) FROM audit_log
                             WHERE action='view' GROUP BY actor""")
@@ -1049,6 +1058,113 @@ _TEAM_AREAS = [("prevendas", "Pré-vendas",
                ("vendas", "Vendas",
                 "⚠ a lista (todas as funções) é a RÉGUA do SQL do funil oficial — equivalente ao SQL_CLOSERS do dashboard do time")]
 _PAPEL_LBL = {"membro": "Membro do time", "coordenacao": "Coordenação", "gerencia": "Gerência"}
+
+
+def _integracoes_status(conn: Any) -> list[dict]:
+    """Saúde das INTEGRAÇÕES (14/07): última sync por fonte + semáforo.
+    Janelas generosas p/ não gritar de madrugada (sync horário roda 8-21h).
+    verde = dentro do esperado · amarelo = atrasado · vermelho = parado/falhou."""
+    import datetime as _dt
+    agora = _dt.datetime.now(_dt.timezone.utc)
+    hoje = _dt.date.today()
+
+    def idade_h(ts):
+        if ts is None:
+            return None
+        if isinstance(ts, _dt.date) and not isinstance(ts, _dt.datetime):
+            return (hoje - ts).days * 24
+        return (agora - ts).total_seconds() / 3600
+
+    def farol(h, verde, vermelho):
+        if h is None:
+            return "vermelho"
+        return "verde" if h <= verde else ("amarelo" if h <= vermelho else "vermelho")
+    out: list[dict] = []
+
+    def add(nome, ts, verde, vermelho, detalhe="", forcar=None):
+        h = idade_h(ts)
+        out.append({"fonte": nome, "ultima": ts, "h": h,
+                    "status": forcar or farol(h, verde, vermelho), "detalhe": detalhe})
+    with conn.cursor() as cur:
+        cur.execute("SELECT max(updated_at) FROM mkt_deals_attribution")
+        add("Pipedrive · deals (cache Lovable)", cur.fetchone()[0], 14, 36,
+            "sync horário 8-21h via cache do time")
+        cur.execute("SELECT max(synced_at) FROM mkt_flow_synced")
+        add("Pipedrive · histórico de etapas (/flow)", cur.fetchone()[0], 30, 60,
+            "enriquecimento incremental, teto 400/dia")
+        for canal, rot in (("meta", "Meta Ads · mídia"), ("google", "Google Ads · mídia")):
+            cur.execute("SELECT max(date) FROM mkt_insights_daily WHERE canal=%s", (canal,))
+            add(rot, cur.fetchone()[0], 30, 60, "insights diários de gasto/leads")
+        cur.execute("SELECT max(computed_at) FROM scores")
+        ts = cur.fetchone()[0]
+        add("WhatsApp · rodada de análise (Growth)", ts, 30, 60,
+            "carimbo = fim da janela analisada; rodada 06h no servidor")
+        cur.execute("SELECT max(updated_at) FROM sales_first_touch")
+        add("Pipedrive · atividades (1º contato)", cur.fetchone()[0], 36, 72,
+            "base do Speed-to-Lead")
+        try:
+            cur.execute("SELECT max(gravado_em) FROM grw_risk_snapshot")
+            add("Sentinela (30/30min no servidor)", cur.fetchone()[0], 2, 26,
+                "grava o snapshot diário de risco")
+        except Exception:  # noqa: BLE001
+            pass
+        cur.execute("SELECT created_at, ok, message FROM notion_sync_log ORDER BY created_at DESC LIMIT 1")
+        r = cur.fetchone()
+        if r:
+            add("Notion · iniciativas (Operações)", r[0], 30, 60,
+                ("OK" if r[1] else f"ERRO: {str(r[2] or '')[:60]}"),
+                forcar=(None if r[1] else "vermelho"))
+        else:
+            add("Notion · iniciativas (Operações)", None, 30, 60, "nenhum sync registrado")
+        cur.execute("SELECT max(mes) FROM grw_cancelamentos")
+        mes_c = cur.fetchone()[0]
+        st_c = "verde" if (mes_c and mes_c >= hoje.replace(day=1)) else (
+            "amarelo" if (mes_c and (hoje.replace(day=1) - mes_c).days <= 62) else "vermelho")
+        add("Planilha · cancelamentos", mes_c, 1, 1, "granularidade mensal", forcar=st_c)
+        # cobertura (não entram no semáforo — são qualidade, não frescor)
+        cur.execute("""SELECT count(*) FILTER (WHERE origem IS NOT NULL AND origem <> ''), count(*)
+                         FROM mkt_deals_attribution WHERE add_time >= now() - interval '30 days'""")
+        c_org, t_org = cur.fetchone()
+        cur.execute("""SELECT count(*) FILTER (WHERE evaluable), count(*) FROM (
+                         SELECT DISTINCT ON (account_id) evaluable FROM scores
+                          ORDER BY account_id, computed_at DESC) u""")
+        c_ev, t_ev = cur.fetchone()
+    out.append({"fonte": "_cobertura", "ultima": None, "h": None, "status": "",
+                "detalhe": f"{c_org / t_org * 100:.0f}% dos deals (30d) com origem atribuída · "
+                           f"{c_ev / t_ev * 100:.0f}% das contas com conversa avaliável" if t_org and t_ev else ""})
+    return out
+
+
+_FAROL_VAR = {"verde": "--status-baixo", "amarelo": "--status-medio", "vermelho": "--status-critico"}
+
+
+def _integracoes_html(rows: list[dict]) -> str:
+    cob = next((r["detalhe"] for r in rows if r["fonte"] == "_cobertura"), "")
+    _td = "padding:7px 9px;border-bottom:1px solid var(--border);font-size:var(--fs-sm)"
+    linhas = ""
+    for r in rows:
+        if r["fonte"] == "_cobertura":
+            continue
+        ts = r["ultima"]
+        quando = "—"
+        if ts is not None:
+            quando = ts.strftime("%d/%m %H:%M") if hasattr(ts, "hour") else ts.strftime("%d/%m/%Y")
+            if r["h"] is not None:
+                quando += f" <span style='color:var(--text-faint)'>(há {r['h'] / 24:.1f} d)</span>" if r["h"] >= 48 \
+                    else f" <span style='color:var(--text-faint)'>(há {r['h']:.0f} h)</span>"
+        linhas += (f"<tr><td style='{_td}'><span class=sdot style='--c:var({_FAROL_VAR.get(r['status'], '--status-semdados')})'></span> "
+                   f"<b>{escape(r['fonte'])}</b></td>"
+                   f"<td style='{_td};text-align:right;white-space:nowrap'>{quando}</td>"
+                   f"<td style='{_td};color:var(--text-muted)'>{escape(r['detalhe'])}</td></tr>")
+    return ("<section><h2>Saúde das integrações</h2>"
+            "<p class=secsub>última sincronização por fonte · verde = dentro do esperado, amarelo = atrasada, vermelho = parada/falhou — "
+            "fonte quebrada em silêncio = gestor decidindo com dado velho</p>"
+            "<div class=central style='padding:6px 14px 12px'><table style='width:100%;border-collapse:collapse'>"
+            "<tr><th style='text-align:left;padding:7px 9px'>Fonte</th><th style='text-align:right;padding:7px 9px'>Última sync</th>"
+            "<th style='text-align:left;padding:7px 9px'>Detalhe</th></tr>"
+            + linhas + "</table>"
+            + (f"<p class=note style='margin:10px 0 0'>Cobertura: {escape(cob)}.</p>" if cob else "")
+            + "</div></section>")
 
 
 def _teams_html(conn) -> str:
