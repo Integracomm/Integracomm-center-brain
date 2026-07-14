@@ -550,27 +550,49 @@ def _pv_horarios(conn, request: Request) -> str:
             f"<div class=kpi><div class=n>{_fmt(fds / total, 'pct')}</div><div class=l>fim de semana</div></div></div>")
 
     # --- colaborador × hora: cada linha na PRÓPRIA escala (o forte de cada um,
-    # independente do volume); pico = hora com mais agendamentos da pessoa
+    # independente do volume); pico da pessoa = célula CONTORNADA. Compacto de
+    # propósito (14/07): cabe numa página sem scroll lateral — layout fixo,
+    # nome abreviado (tooltip tem o completo), células mínimas.
     por_colab = dados.get("por_colab") or {}
+    # grade fixa 7h-20h (horário comercial); o que cai fora vira a coluna
+    # "outros" — madrugadas raras não podem esticar a tabela
+    horas_c = [h for h in range(7, 21)]
+    tem_fora = any(h < 7 or h > 20 for cel in por_colab.values() for h in cel)
+    _tdc = "padding:3px 2px;border-bottom:1px solid var(--border);text-align:center;font-variant-numeric:tabular-nums;font-size:var(--fs-2xs)"
     crows = ""
     for nome in sorted(por_colab, key=lambda x: (x == "(sem SDR)", -sum(por_colab[x].values()))):
         cel = por_colab[nome]
         tot_c = sum(cel.values())
         vmax_c = max(cel.values())
+        pico_h = max(cel.items(), key=lambda x: x[1])[0]
+        partes = nome.split()
+        curto = nome if len(partes) < 2 else f"{partes[0]} {partes[1][0]}."
         tds = ""
-        for h in horas:
+        for h in horas_c:
             n = cel.get(h, 0)
             alpha = int(8 + 62 * (n / vmax_c)) if n else 0
             bg = f"background:color-mix(in srgb,var(--brand) {alpha}%,transparent);" if n else ""
+            pico = "box-shadow:inset 0 0 0 1.5px var(--brand);border-radius:3px;" if n and h == pico_h else ""
             tds += (f"<td title='{escape(nome)} {h:02d}h — {n} agendamento(s) ({n / tot_c * 100:.0f}% do total dela)' "
-                    f"style='{_TD};text-align:center;{bg}'>{n or ''}</td>")
-        pico_h, pico_n = max(cel.items(), key=lambda x: x[1])
-        aviso = " <span class=note>amostra pequena</span>" if tot_c < 30 else ""
-        crows += (f"<tr><td style='{_TD};white-space:nowrap'><b>{escape(nome[:26])}</b>{aviso}</td>"
-                  f"<td style='{_TD};text-align:right'>{tot_c}</td>{tds}"
-                  f"<td style='{_TD};white-space:nowrap'><b>{pico_h:02d}h</b> ({pico_n})</td></tr>")
-    heat_colab = _tbl([("Colaborador", "left"), ("Total", "right")]
-                      + [(f"{h:02d}h", "left") for h in horas] + [("Pico", "left")], crows)
+                    f"style='{_tdc};{bg}{pico}'>{n or ''}</td>")
+        if tem_fora:
+            fora = sum(n for h, n in cel.items() if h < 7 or h > 20)
+            tds += (f"<td title='{escape(nome)} — {fora} agendamento(s) antes das 7h ou depois das 20h' "
+                    f"style='{_tdc};color:var(--text-muted)'>{fora or ''}</td>")
+        aviso = "*" if tot_c < 30 else ""
+        crows += (f"<tr><td title='{escape(nome)}' style='{_tdc};text-align:left;white-space:nowrap;"
+                  f"overflow:hidden;text-overflow:ellipsis'><b>{escape(curto)}</b>{aviso}</td>"
+                  f"<td style='{_tdc};text-align:right'>{tot_c}</td>{tds}</tr>")
+    _thc = ("<th style='padding:3px 2px;border-bottom:1px solid var(--border-strong);color:var(--text-muted);"
+            "font-size:var(--fs-2xs);text-align:{al};font-weight:600'>{h}</th>")
+    ths_c = (_thc.format(al="left", h="Colaborador") + _thc.format(al="right", h="Tot.")
+             + "".join(_thc.format(al="center", h=str(h)) for h in horas_c)
+             + (_thc.format(al="center", h="outros") if tem_fora else ""))
+    n_cols = len(horas_c) + (1 if tem_fora else 0)
+    heat_colab = (f"<table style='width:100%;border-collapse:collapse;table-layout:fixed'>"
+                  f"<colgroup><col style='width:104px'><col style='width:38px'>"
+                  + f"<col span={n_cols}></colgroup>"
+                  f"<tr>{ths_c}</tr>{crows}</table>")
 
     # --- melhores janelas por bundle ---
     brows = ""
@@ -611,8 +633,8 @@ def _pv_horarios(conn, request: Request) -> str:
             f"{' · bundle ' + bundle if bundle != 'todos' else ''} · quanto mais escuro, mais agendamentos</p>"
             + _card(heat) + "</section>"
             "<section><h2>Agendamentos por colaborador × hora</h2>"
-            "<p class=secsub>atribuição pelo campo SDR do deal · cada linha sombreada na PRÓPRIA escala — mostra o horário forte de cada pessoa, independente do volume · Pico = hora com mais agendamentos dela</p>"
-            + _card("<div style='overflow-x:auto'>" + heat_colab + "</div>") + "</section>"
+            "<p class=secsub>atribuição pelo campo SDR do deal · cada linha sombreada na PRÓPRIA escala — o horário forte de cada pessoa, independente do volume · célula contornada = pico da pessoa · * = amostra pequena (&lt;30)</p>"
+            + _card(heat_colab) + "</section>"
             "<section><h2>Top 5 janelas</h2>" + _card(top_html + estilo) + "</section>"
             "<section><h2>Melhores janelas por bundle</h2>"
             "<p class=secsub>até 3 janelas com mais agendamentos por bundle no período — bundles com poucas "
