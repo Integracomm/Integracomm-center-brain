@@ -223,7 +223,11 @@ def _signup_html(erro: str = "", ok: bool = False) -> str:
   <select name=role style="width:100%;background:var(--bg-panel);border:1px solid var(--border-strong);border-radius:var(--radius-sm);color:var(--text);font-family:var(--font-body);font-size:var(--fs-base);padding:9px 10px">
     <option value=gestor_growth>Growth / Assessoria</option>
     <option value=gestor_marketing>Marketing</option>
+    <option value=gestor_prevendas>Pré-vendas</option>
+    <option value=gestor_vendas>Vendas</option>
+    <option value=gestor_operacoes>Operações</option>
   </select>
+  <div class=hint style="margin-top:6px">A área escolhida é a inicial — o administrador pode liberar outras depois, no painel.</div>
   <label>senha (mínimo 8 caracteres)</label>
   <input type=password name=password autocomplete=new-password>
   <label>confirmar senha</label>
@@ -501,7 +505,7 @@ def hub(request: Request):
         return RedirectResponse("/login", status_code=302)
     user, role = s
     if role != "admin":  # RBAC: hub central é do admin; gestor vai direto à sua área
-        return RedirectResponse("/growth", status_code=302)
+        return RedirectResponse(ROLE_HOME.get(role, "/growth"), status_code=302)
     with _conn() as c:
         _audit_view(c, user, scope="hub")
         stats = _hub_stats(c)

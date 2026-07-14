@@ -40,7 +40,9 @@ _PWD_KEY: dict[str, str] = {
     "gestor_growth": "AUTH_GESTOR_GROWTH_PASSWORD",
 }
 ROLE_HOME: dict[str, str] = {"admin": "/", "gestor_growth": "/growth",
-                             "gestor_marketing": "/marketing"}
+                             "gestor_marketing": "/marketing",
+                             "gestor_prevendas": "/prevendas", "gestor_vendas": "/vendas",
+                             "gestor_operacoes": "/operacoes"}
 
 # Áreas do produto (controle de acesso POR CONTA — admin marca no hub quais
 # áreas cada conta enxerga). Chave = slug usado na coluna users.areas (csv).
@@ -51,7 +53,10 @@ AREA_HOME: dict[str, str] = {"growth": "/growth", "marketing": "/marketing",
                              "vendas": "/vendas", "prevendas": "/prevendas",
                              "operacoes": "/operacoes"}
 _ROLE_AREAS: dict[str, set[str]] = {"admin": set(AREAS), "gestor_growth": {"growth"},
-                                    "gestor_marketing": {"marketing"}}
+                                    "gestor_marketing": {"marketing"},
+                                    "gestor_prevendas": {"prevendas"},
+                                    "gestor_vendas": {"vendas"},
+                                    "gestor_operacoes": {"operacoes"}}
 COOKIE = "iasession"
 
 
@@ -124,7 +129,8 @@ def create_user(conn: Any, email: str, name: str, password: str,
 
     email = (email or "").strip().lower()
     name = (name or "").strip()
-    if role not in ("gestor_growth", "gestor_marketing"):
+    if role not in ("gestor_growth", "gestor_marketing", "gestor_prevendas",
+                    "gestor_vendas", "gestor_operacoes"):
         return "área inválida"
     if not _EMAIL_RE.match(email):
         return "e-mail inválido"
