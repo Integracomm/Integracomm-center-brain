@@ -525,7 +525,7 @@ def hub(request: Request):
             pass
         users = list_users(c)
     return HTMLResponse(_render_hub(user, stats, users, mkt, sales=sales, ops=ops,
-                                    mudancas=mudancas))
+                                    mudancas=mudancas, receita_rr=_receita_recorrente_html()))
 
 
 @app.get("/admin", response_class=HTMLResponse)
@@ -774,7 +774,7 @@ def dashboard(request: Request, view: str = Query("contas")):
     if redir:
         return redir
     user, role = s
-    if view not in ("contas", "alertas", "playbooks", "relatorios", "cancelamentos"):
+    if view not in ("contas", "alertas", "playbooks", "relatorios", "cancelamentos", "carga"):
         view = "contas"
     with _conn() as c:
         _audit_view(c, user, scope=f"growth/{view}")
@@ -1335,6 +1335,67 @@ def _hub_op_stats(conn: Any) -> dict | None:
         return None
 
 
+def _receita_recorrente_html() -> str:
+    """Saúde da Receita Recorrente (ISR + Quick Ratio) na central — duas visões
+    SEPARADAS (B2-B5 = sinal do modelo novo · Consolidado = caixa, c/ antigos
+    em runoff). Fonte: planilha (parser isolado p/ migrar ao Omie depois)."""
+    try:
+        from .sources.receita_recorrente import carrega
+        d = carrega()
+    except Exception:  # noqa: BLE001
+        d = None
+    if not d:
+        return ""
+    hoje = dt.date.today()
+    idx_atual = min(12, (hoje.year - 2025) * 12 + hoje.month - 12)  # dez/25 = 0
+
+    def f_(v, nd=0, suf=""):
+        return _DASH if v is None else f"{v:,.{nd}f}{suf}".replace(",", "X").replace(".", ",").replace("X", ".")
+    _td = "padding:6px 8px;border-bottom:1px solid var(--border);text-align:right;font-variant-numeric:tabular-nums;font-size:var(--fs-xs)"
+    linhas = ""
+    for i in range(1, 13):
+        base_ant = d["base_b2b5"][i - 1]
+        peq = base_ant is not None and base_ant < 100_000
+        flag = (" <span class=note>base pequena, alta variância</span>" if peq
+                else (" <span class=note>projeção</span>" if i > idx_atual else ""))
+        cor_isr = ""
+        if d["isr_b2b5"][i] is not None and not peq:
+            cor_isr = ";color:var(--status-baixo)" if d["isr_b2b5"][i] >= 100 else ";color:var(--status-critico)"
+        cross = " ★" if d["crossover_idx"] == i else ""
+        linhas += (f"<tr><td style='{_td};text-align:left'><b>{d['meses'][i]}</b>{cross}{flag}</td>"
+                   f"<td style='{_td}'>{f_(d['base_b2b5'][i])}</td>"
+                   f"<td style='{_td}{cor_isr}'>{f_(d['isr_b2b5'][i], 0)}</td>"
+                   f"<td style='{_td}'>{f_(d['novo'][i])}</td>"
+                   f"<td style='{_td}'>{f_(d['perdido'][i])}</td>"
+                   f"<td style='{_td}'><b>{f_(d['qr'][i], 1)}</b></td>"
+                   f"<td style='{_td};border-left:1px solid var(--border-strong)'>{f_(d['isr_consol'][i], 1)}</td>"
+                   f"<td style='{_td}'>{f_(d['qr_consol'][i], 1)}</td></tr>")
+    i = min(idx_atual, 12)
+    alerta = ""
+    if d["alertas"]:
+        m, txt = d["alertas"][-1]
+        alerta = (f"<div class=warn style='margin:10px 0'>⚠️ {escape(txt)} (até {m}) — "
+                  "o modelo recorrente não está se sustentando; olhe cancelamentos por bundle.</div>")
+    cross_txt = (f"★ Crossover projetado: <b>{d['meses'][d['crossover_idx']]}</b> — mês em que a base B2-B5 "
+                 f"supera os planos antigos (o modelo novo passa a sustentar a receita sozinho)."
+                 if d["crossover_idx"] is not None else "Crossover B2-B5 × antigos ainda não ocorre em 2026.")
+    ths = "".join(f"<th style='text-align:{al};padding:6px 8px;font-size:var(--fs-2xs)'>{h}</th>" for h, al in
+                  (("Mês", "left"), ("Base B2-B5", "right"), ("ISR", "right"), ("Nova", "right"),
+                   ("Perdida", "right"), ("QR", "right"), ("ISR consol.", "right"), ("QR consol.", "right")))
+    return (
+        "<section><h2>Saúde da Receita Recorrente</h2>"
+        "<p class=secsub>ISR = base recorrente ÷ mês anterior ×100 (≥100 = crescendo) · Quick Ratio = nova ÷ perdida (≥1 = ganha mais do que perde) · "
+        "duas visões que NÃO se misturam: <b>B2-B5</b> = o sinal do modelo novo · <b>Consolidado</b> = caixa com antigos em runoff · fonte: planilha de planejamento (migra ao Omie quando o Financeiro abrir)</p>"
+        f"<div class=kpis>"
+        f"<div class=kpi><div class=n>{f_(d['base_b2b5'][i])}</div><div class=l>base recorrente B2-B5 ({d['meses'][i]})</div></div>"
+        f"<div class=kpi><div class=n{' style=color:var(--status-baixo)' if (d['isr_b2b5'][i] or 0) >= 100 else ' style=color:var(--status-critico)'}>{f_(d['isr_b2b5'][i], 0)}</div><div class=l>ISR B2-B5</div><div class=s>≥100 = base crescendo</div></div>"
+        f"<div class=kpi><div class=n>{f_(d['qr'][i], 1)}</div><div class=l>Quick Ratio B2-B5</div><div class=s>nova ÷ perdida</div></div>"
+        f"<div class=kpi><div class=n>{f_(d['isr_consol'][i], 1)}</div><div class=l>ISR consolidado</div><div class=s>caixa (antigos em runoff)</div></div></div>"
+        + alerta +
+        f"<div class=central style='padding:8px 14px 12px'><table style='width:100%;border-collapse:collapse'><tr>{ths}</tr>{linhas}</table>"
+        f"<p class=note style='margin:10px 0 0'>{cross_txt}</p></div></section>")
+
+
 def _hub_mudancas(conn: Any) -> str:
     """'O que mudou desde ontem' (14/07): deltas das últimas 24h/última rodada,
     derivados dos dados existentes — a rotina diária de 30 segundos do gestor."""
@@ -1407,7 +1468,7 @@ def _render_hub(role: str, st: dict, users: list[dict] | None = None,
                 mkt: dict | None = None, page: str = "home",
                 llm: dict | None = None, sales: dict | None = None,
                 teams_html: str = "", ops: dict | None = None,
-                mudancas: str = "") -> str:
+                mudancas: str = "", receita_rr: str = "") -> str:
     n_alerts = sum(st["sev"].values())
     crit = st["sev"].get("critico", 0)
 
@@ -1761,7 +1822,7 @@ __BODY__
             "<h1>Visão central</h1>"
             "<p class=sub>Painel de saúde da empresa: Growth, Marketing, Pré-vendas, Vendas e Operações ativas (Financeiro em breve). A pior área do momento aparece primeiro na faixa de saúde.</p>"
             f"<div class=kpis>{kpi_html}</div>"
-            + mudancas +
+            + mudancas + receita_rr +
             "<section><h2>Saúde por área</h2>"
             "<p class=secsub>diagnóstico automático do mês corrente, ordenado da área que mais demanda atenção para a mais saudável — clique para abrir</p>"
             f"<div class=hbar>{hbar}</div></section>"
@@ -1898,6 +1959,81 @@ def _guide(s: dict, practices: dict | None = None) -> str:
 _STAGE_LABEL = {"saudavel": "saudável", "desengajamento_inicial": "desengajamento",
                 "insatisfacao_latente": "insatisfação latente", "insatisfacao_ativa": "insatisfação ativa",
                 "intencao_de_saida": "intenção de saída", "nao_avaliavel": "não avaliável"}
+
+
+def _carga_content(scores: list[dict], mirror: dict | None) -> str:
+    """Carga e Capacidade por Squad/GC (cross-área #2, 14/07): risco por
+    PESSOA, não por conta — alocação e suporte, NÃO ranking de culpados.
+    GC vem do espelho da Operação (gerente_de_contas) — cobertura parcial,
+    reportada; squad cobre 100% via _squad_label."""
+    def agrega(chave):
+        m: dict[str, dict] = {}
+        for s in scores:
+            k = chave(s)
+            d = m.setdefault(k, {"n": 0, "mrr": 0.0, "mrr_risco": 0.0, "crit": 0, "alto": 0,
+                                 "atencao": 0, "exec_atr": 0, "bandas": {"baixo": 0, "medio": 0, "alto": 0, "critico": 0, "sem": 0}})
+            d["n"] += 1
+            mrr = max(0.0, _mrr_val(s))
+            d["mrr"] += mrr
+            band = s["risk_band"] if s["evaluable"] else "sem"
+            d["bandas"][band if band in d["bandas"] else "sem"] += 1
+            if band in ("alto", "critico"):
+                d["mrr_risco"] += mrr
+            sev = s.get("alert_sev")
+            if sev in ("critico", "alto", "atencao"):
+                d[sev if sev != "critico" else "crit"] = d.get(sev if sev != "critico" else "crit", 0) + 1
+            if (s.get("exec_score") or 100) < 40:
+                d["exec_atr"] += 1
+        return m
+
+    def gc_de(s):
+        if mirror:
+            from .sources.nps_sheets import norm_account
+            info = mirror.get(norm_account(s["name"] or ""))
+            if info and info.get("gerente_de_contas"):
+                return info["gerente_de_contas"][:28]
+        return "(sem GC no espelho)"
+    por_squad = agrega(lambda s: _squad_label(s["name"], mirror))
+    por_gc = agrega(gc_de)
+    tot_risco = sum(d["mrr_risco"] for d in por_squad.values()) or 1.0
+    _td = "padding:7px 9px;border-bottom:1px solid var(--border);text-align:right;font-variant-numeric:tabular-nums;font-size:var(--fs-sm)"
+    _tdl = _td.replace("text-align:right", "text-align:left")
+
+    def tabela(m, rotulo):
+        linhas = ""
+        for k, d in sorted(m.items(), key=lambda x: (x[0].startswith("(sem"), -x[1]["mrr_risco"], -x[1]["crit"])):
+            conc = d["mrr_risco"] / tot_risco
+            chip = (" <span class=chip style='--c:var(--status-critico)'>concentração de risco</span>"
+                    if (d["crit"] >= 3 or conc >= 0.3) and not k.startswith("(sem") else "")
+            faixas = (f"<span style='color:var(--status-baixo)'>{d['bandas']['baixo']}</span> · "
+                      f"<span style='color:var(--status-medio)'>{d['bandas']['medio']}</span> · "
+                      f"<span style='color:var(--status-alto)'>{d['bandas']['alto']}</span> · "
+                      f"<span style='color:var(--status-critico)'>{d['bandas']['critico']}</span>"
+                      + (f" · <span style='color:var(--text-faint)'>{d['bandas']['sem']} s/d</span>" if d['bandas']['sem'] else ""))
+            linhas += (f"<tr><td style='{_tdl}'><b>{escape(k)}</b>{chip}</td>"
+                       f"<td style='{_td}'>{d['n']}</td>"
+                       f"<td style='{_td}'>R$ {d['mrr']:,.0f}</td>".replace(",", ".") +
+                       f"<td style='{_td};color:var(--status-critico)'>{d['crit'] or ''}</td>"
+                       f"<td style='{_td}'>{d['alto'] or ''}</td>"
+                       f"<td style='{_td}'>{d['atencao'] or ''}</td>"
+                       f"<td style='{_td}'>R$ {d['mrr_risco']:,.0f} ({conc * 100:.0f}%)</td>".replace(",", ".") +
+                       f"<td style='{_td}'>{d['exec_atr'] or ''}</td>"
+                       f"<td style='{_td};text-align:center'>{faixas}</td></tr>")
+        ths = "".join(f"<th style='text-align:{al};padding:7px 9px;font-size:var(--fs-2xs)'>{h}</th>" for h, al in
+                      ((rotulo, "left"), ("Contas", "right"), ("MRR", "right"), ("Crít.", "right"),
+                       ("Alto", "right"), ("Aten.", "right"), ("MRR em risco", "right"),
+                       ("Exec. atras.", "right"), ("Faixas 🟢🟡🟠🔴", "center")))
+        return f"<div class=central style='padding:6px 14px 12px;overflow-x:auto'><table style='width:100%;border-collapse:collapse'><tr>{ths}</tr>{linhas}</table></div>"
+    com_gc = sum(d["n"] for k, d in por_gc.items() if not k.startswith("(sem"))
+    return (
+        "<div class=page-head><h1>Carga por Squad / GC</h1>"
+        "<span class=role-chip>alocação e suporte — não é ranking</span></div>"
+        "<p class=sub>o risco da carteira visto por PESSOA: quem está com carga desproporcional de contas críticas e MRR em risco — "
+        "decidir realocação/reforço ANTES de a sobrecarga virar churn · chip = concentração (≥3 críticos ou ≥30% do MRR em risco)</p>"
+        "<section><h2>Por squad</h2>" + tabela(por_squad, "Squad") + "</section>"
+        "<section><h2>Por gerente de contas (GC)</h2>"
+        f"<p class=secsub>GC vem do espelho da Operação — preenchido para {com_gc} de {len(scores)} contas; "
+        "completar o campo no ClickUp melhora esta visão</p>" + tabela(por_gc, "GC") + "</section>")
 
 
 def _render(role: str, scores: list[dict], alerts: list[dict],
@@ -2084,6 +2220,7 @@ __SCRIPT__
     # ---- navegação (view ativa; sessão define o papel — sem role na URL) ----
     nav = "<a class='nav-item' href='/'>← Início (central)</a>"
     for v, label in (("contas", "Contas"), ("alertas", "Alertas"),
+                     ("carga", "Carga por Squad"),
                      ("cancelamentos", "Cancelamentos"),
                      ("playbooks", "Playbooks"), ("relatorios", "Relatórios")):
         cls = "nav-item active" if v == view else "nav-item"
@@ -2115,6 +2252,8 @@ __SCRIPT__
             "<button id=pa-next onclick='paGo(1)'>próxima ›</button></div>"
             "</section>" + foot)
         script = _ALERTS_JS
+    elif view == "carga":
+        content = _carga_content(ordered, _mirror) + foot
     elif view == "playbooks":
         content = _playbooks_content(practices or {}, interventions or []) + foot
     elif view == "cancelamentos":
