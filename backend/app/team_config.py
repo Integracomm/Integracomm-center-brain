@@ -136,9 +136,10 @@ def _papel_do_sufixo(s: str) -> str:
 
 
 def salvar(conn: Any, area: str, linhas: list[str], actor: str) -> None:
-    """Substitui a lista da área. Formato da linha: Nome [| papel];
-    '-' no começo = força desligado (o normal é a detecção automática pelo
-    Pipedrive). Papéis: coordenação · gerência."""
+    """Substitui a lista VISÍVEL da área (Nome [| papel]; '-' no começo =
+    força desligado). Ex-colaboradores DESLIGADOS não aparecem no admin, mas
+    são PRESERVADOS automaticamente aqui — sem eles a régua histórica do
+    funil (SQL de meses passados) deixaria de bater com o Pipedrive."""
     trios: list[tuple[str, bool, str]] = []
     for ln in linhas:
         ln = ln.strip()
@@ -150,12 +151,16 @@ def salvar(conn: Any, area: str, linhas: list[str], actor: str) -> None:
         nome = nome.strip()
         if nome:
             trios.append((nome, not inativo, _papel_do_sufixo(sufixo) if sufixo else "membro"))
+    novos = {norm(n) for n, _a, _p in trios}
+    preservar = [(n, a, p) for n, a, p in listas(conn, area)
+                 if eh_desligado(conn, area, n) and norm(n) not in novos]
     with conn.cursor() as cur:
         cur.execute(_DDL)
         cur.execute("DELETE FROM area_team WHERE area=%s", (area,))
-        if trios:
+        todos = trios + preservar
+        if todos:
             cur.executemany("INSERT INTO area_team (area, nome, ativo, papel) VALUES (%s,%s,%s,%s)",
-                            [(area, n, a, p) for n, a, p in trios])
+                            [(area, n, a, p) for n, a, p in todos])
         cur.execute("INSERT INTO audit_log (actor, action, scope) VALUES (%s,'area_team',%s)",
-                    (actor, f"{area}:{len(trios)} nomes"))
+                    (actor, f"{area}:{len(trios)} nomes (+{len(preservar)} ex preservados)"))
     _CACHE.pop(area, None)
