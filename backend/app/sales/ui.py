@@ -566,14 +566,16 @@ _ST_AGENDA = (6,)
 
 
 def _horarios_periodo(request: Request) -> tuple[dt.date, dt.date, str]:
+    # padrão = início do mês atual → hoje (regra do Otávio 14/07 p/ TODOS os
+    # filtros de data; era 180d aqui — p/ estudo longo, é só ajustar o "de")
     hoje = dt.date.today()
     qp = request.query_params
-    ini_s = qp.get("ini") or (hoje - dt.timedelta(days=180)).isoformat()
+    ini_s = qp.get("ini") or hoje.replace(day=1).isoformat()
     fim_s = qp.get("fim") or hoje.isoformat()
     try:
         ini, fim = dt.date.fromisoformat(ini_s), dt.date.fromisoformat(fim_s)
     except ValueError:
-        ini, fim = hoje - dt.timedelta(days=180), hoje
+        ini, fim = hoje.replace(day=1), hoje
     bundle = qp.get("bundle") or "todos"
     if bundle not in ("B1", "B2", "B3", "B4", "B5"):
         bundle = "todos"
