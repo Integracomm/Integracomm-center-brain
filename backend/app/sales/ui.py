@@ -26,9 +26,10 @@ router = APIRouter()
 # o foco é o desempenho de cada membro, não os planos/bundles)
 _PV_VIEWS = [("funil", "Funil de Qualificação"), ("speed", "Speed-to-Lead"),
              ("horarios", "Melhor Horário"), ("sdrs", "Desempenho Individual")]
-_VD_VIEWS = [("funil", "Funil de Fechamento"), ("winloss", "Win/Loss"),
-             ("ciclo", "Ciclo & Empacados"), ("horarios", "Melhor Horário"),
-             ("closers", "Desempenho Individual"), ("forecast", "Performance & Meta")]
+_VD_VIEWS = [("funil", "Funil de Fechamento"), ("ponte", "Ponte PV → Vendas"),
+             ("winloss", "Win/Loss"), ("ciclo", "Ciclo & Empacados"),
+             ("horarios", "Melhor Horário"), ("closers", "Desempenho Individual"),
+             ("forecast", "Performance & Meta")]
 
 # etapas (validadas na inspeção do Pipedrive 08/07)
 _ST_REUNIAO = (6,)        # handoff Pré-vendas → Vendas
@@ -1489,6 +1490,116 @@ def _vd_forecast(conn, request: Request) -> str:
             + plano_gap)
 
 
+def _vd_ponte(conn, request: Request) -> str:
+    """Ponte Pré-vendas → Vendas (pedido 14/07): a conversão Oport→Booking
+    fraca é HERDADA de qualificação ruim ou é do FECHAMENTO? Cruza, por
+    oportunidade do período, características da qualificação (SLA de 1º
+    contato, tempo lead→oportunidade, origem, SDR) × desfecho em Vendas.
+    Taxa sempre sobre DECIDIDAS (ganhas+perdidas) — em aberto fica fora."""
+    ini, fim, form = _periodo(request)
+    a, b = _brt(ini, fim)
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT d.deal_id, d.status, COALESCE(d.origem, '(vazio)'),
+                   COALESCE(d.sdr, '(sem SDR)'),
+                   COALESCE(d.owner_name, '—'),
+                   EXTRACT(epoch FROM (t.first_at - d.add_time)) / 60,
+                   EXTRACT(epoch FROM (d.oport_time - d.add_time)) / 86400
+              FROM mkt_deals_attribution d
+              LEFT JOIN sales_first_touch t ON t.deal_id = d.deal_id
+             WHERE d.oport_time >= %s AND d.oport_time < %s""", (a, b))
+        rows = cur.fetchall()
+    if not rows:
+        return ("<h1>Ponte Pré-vendas → Vendas</h1>"
+                "<section><div class=warn>sem oportunidades no período selecionado</div></section>")
+
+    def agrega(chave):
+        seg: dict[str, list[int]] = {}
+        for r in rows:
+            k = chave(r)
+            if k is None:
+                continue
+            t = seg.setdefault(k, [0, 0, 0])  # decididas_ganhas, decididas, total
+            if r[1] == "won":
+                t[0] += 1; t[1] += 1
+            elif r[1] == "lost":
+                t[1] += 1
+            t[2] += 1
+        return seg
+
+    def tabela(seg, rotulo, ordem=None):
+        chaves = ordem or sorted(seg, key=lambda k: -seg[k][2])
+        linhas = ""
+        for k in chaves:
+            if k not in seg:
+                continue
+            g, dec, tot = seg[k]
+            tx = g / dec if dec else None
+            fraca = dec < 10
+            linhas += (f"<tr><td style='{_TD}'><b>{escape(str(k)[:30])}</b></td>"
+                       f"<td style='{_TD};text-align:right'>{tot}</td>"
+                       f"<td style='{_TD};text-align:right'>{g}</td>"
+                       f"<td style='{_TD};text-align:right'>{dec - g}</td>"
+                       f"<td style='{_TD};text-align:right'>{tot - dec}</td>"
+                       f"<td style='{_TD};text-align:right'><b>{_fmt(tx, 'pct')}</b></td>"
+                       f"<td style='{_TD};text-align:right'>{'<span class=note>amostra pequena</span>' if fraca else ''}</td></tr>")
+        return (f"<div class=card>{_tbl([(rotulo, 'left'), ('Oports', 'right'), ('Fechadas', 'right'), ('Perdidas', 'right'), ('Em aberto', 'right'), ('Taxa', 'right'), ('', 'right')], linhas)}</div>")
+
+    sla = agrega(lambda r: None if r[5] is None else ("dentro do SLA (≤15 min)" if r[5] <= 15
+                                                      else ("15-60 min" if r[5] <= 60 else "acima de 1h")))
+    tempo = agrega(lambda r: None if r[6] is None else ("qualificou em ≤2 dias" if r[6] <= 2
+                                                        else ("3-7 dias" if r[6] <= 7 else "mais de 7 dias")))
+    origem = agrega(lambda r: r[2][:26])
+    sdr = agrega(lambda r: r[3][:26])
+    closer = agrega(lambda r: r[4][:26])
+    origem = {k: v for k, v in sorted(origem.items(), key=lambda x: -x[1][2])[:8]}
+
+    # leitura automática do gargalo: dispersão das taxas nos segmentos de
+    # QUALIFICAÇÃO (SLA/tempo/origem/SDR, decididas>=10) vs entre closers
+    def taxas(seg):
+        return [g / dec for g, dec, _t in seg.values() if dec >= 10]
+    qual_txs = taxas(sla) + taxas(tempo) + taxas(origem) + taxas(sdr)
+    clos_txs = taxas(closer)
+    amp_q = (max(qual_txs) - min(qual_txs)) if len(qual_txs) >= 2 else None
+    amp_c = (max(clos_txs) - min(clos_txs)) if len(clos_txs) >= 2 else None
+    if amp_q is None and amp_c is None:
+        leitura = "Amostra ainda pequena para diagnóstico — acumule mais um período."
+    elif (amp_q or 0) >= 0.15 and (amp_q or 0) >= (amp_c or 0):
+        leitura = (f"O gargalo tem cara de HERANÇA DA QUALIFICAÇÃO: a taxa de fechamento varia "
+                   f"{amp_q * 100:.0f} p.p. conforme a qualidade da qualificação recebida (SLA/tempo/origem/SDR), "
+                   f"mais do que entre closers ({(amp_c or 0) * 100:.0f} p.p.). Caminho: devolver critérios de "
+                   "qualificação à Pré-vendas — priorizar os segmentos que fecham e endurecer o filtro nos que não fecham.")
+    elif (amp_c or 0) >= 0.15:
+        leitura = (f"O gargalo tem cara de FECHAMENTO: a taxa varia pouco com a qualificação recebida "
+                   f"({(amp_q or 0) * 100:.0f} p.p.), mas {amp_c * 100:.0f} p.p. entre closers. Caminho: abordagem/"
+                   "ancoragem em Vendas — role-play com quem está acima e revisão de proposta.")
+    else:
+        leitura = (f"Taxas relativamente UNIFORMES ({(amp_q or 0) * 100:.0f} p.p. por qualificação, "
+                   f"{(amp_c or 0) * 100:.0f} p.p. por closer) — o gargalo não está na triagem nem em pessoas "
+                   "específicas; olhe preço/proposta (Win/Loss) e volume de topo.")
+    tot_g = sum(1 for r in rows if r[1] == "won")
+    tot_d = sum(1 for r in rows if r[1] in ("won", "lost"))
+    kpis = ("<div class=kpis>"
+            f"<div class=kpi><div class=n>{len(rows)}</div><div class=l>oportunidades no período</div></div>"
+            f"<div class=kpi><div class=n>{_fmt(tot_g / tot_d if tot_d else None, 'pct')}</div><div class=l>taxa de fechamento</div><div class=s>{tot_g} ÷ {tot_d} decididas</div></div>"
+            f"<div class=kpi><div class=n>{len(rows) - tot_d}</div><div class=l>ainda em aberto</div></div></div>")
+    return ("<h1>Ponte Pré-vendas → Vendas</h1>"
+            "<div class=sub>a pergunta estratégica: a conversão fraca é herdada da qualificação ou é do fechamento? · "
+            "oportunidades do período (Dia Oportunidade) × desfecho · taxa sobre decididas</div>"
+            f"<form method=get action=/vendas><input type=hidden name=view value=ponte>{form}</form>"
+            + kpis +
+            "<section><h2>Leitura do especialista</h2>"
+            f"<div class=card><div class=sug-item>→ {escape(leitura)}</div>"
+            "<style>.sug-item{padding:7px 0;font-size:var(--fs-sm);line-height:1.6;color:var(--text-2)}</style></div></section>"
+            "<section><h2>Por SLA do 1º contato</h2><p class=secsub>a tese do speed-to-lead, agora medida no CAIXA: oportunidade que nasceu de lead atendido rápido fecha mais?</p>"
+            + tabela(sla, "1º contato", ["dentro do SLA (≤15 min)", "15-60 min", "acima de 1h"]) + "</section>"
+            "<section><h2>Por tempo de qualificação</h2><p class=secsub>dias entre o lead entrar e virar oportunidade</p>"
+            + tabela(tempo, "Lead → oportunidade", ["qualificou em ≤2 dias", "3-7 dias", "mais de 7 dias"]) + "</section>"
+            "<section><h2>Por origem do lead</h2>" + tabela(origem, "Origem") + "</section>"
+            "<section><h2>Por SDR que qualificou</h2><p class=secsub>separa 'quem qualifica mal'…</p>" + tabela(sdr, "SDR") + "</section>"
+            "<section><h2>Por closer</h2><p class=secsub>…de 'quem fecha mal'</p>" + tabela(closer, "Closer") + "</section>")
+
+
 def _vd_horarios(conn, request: Request) -> str:
     """Melhor Horário de VENDAS (pedido 14/07): existe hora melhor p/ a
     REUNIÃO acontecer? Base: 1ª entrada do deal em Negociação (7) — o card é
@@ -1632,8 +1743,8 @@ def vendas(request: Request, view: str = Query("funil")):
         with c.cursor() as cur:
             cur.execute("INSERT INTO audit_log (actor, action, scope) VALUES (%s,'view',%s)",
                         (user, f"vendas/{view}"))
-        fn = {"funil": _vd_funil, "winloss": _vd_winloss, "ciclo": _vd_ciclo,
-              "horarios": _vd_horarios, "closers": _vd_closers,
+        fn = {"funil": _vd_funil, "ponte": _vd_ponte, "winloss": _vd_winloss,
+              "ciclo": _vd_ciclo, "horarios": _vd_horarios, "closers": _vd_closers,
               "forecast": _vd_forecast}[view]
         content = fn(c, request) + "<p class=foot>Fonte: Pipedrive (cache local, coleta diária). A decisão é sempre do gestor — o especialista sinaliza.</p>"
     return HTMLResponse(_shell(A, "vendas", _VD_VIEWS, view, content, user))
