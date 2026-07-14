@@ -91,6 +91,13 @@ HELP: dict[str, list[tuple[str, str]]] = {
         ("Histórico de testes", "Testes de criativo×público já rodados com resultado. Insight: antes de aprovar um teste novo, confira se já não foi feito — orçamento de teste é finito."),
         ("Ideias", "Sugestões heurísticas a partir dos padrões vencedores. Insight: use como brief inicial para a produção, não como peça final."),
     ],
+    "marketing/ciclo": [
+        ("_intro", "A visão cross-área que fecha o loop Aquisição→Retenção: cada cliente FECHADO é seguido da origem (canal/campanha/criativo) ao desfecho atual — ativo, churn precoce (≤3 meses) ou tardio. O vínculo booking↔cancelamento é por NOME (cobertura reportada no rodapé); cancelamentos de clientes anteriores a 2025 ficam fora. A ação corretiva é de Marketing: cortar/ajustar criativo que promete demais, rever segmentação do canal que traz cliente que sai."),
+        ("Desfecho por canal de origem", "Quantos clientes cada canal trouxe e quantos FICARAM, com MRR retido vs perdido. CAC aj. = CAC ÷ taxa de retenção — o custo real por cliente que fica. Insights: (1) canal com CAC baixo e CAC aj. alto é a ilusão do canal barato; (2) compare o MRR retido, não só o volume."),
+        ("Criativos que trazem churn precoce", "Dentro da mídia paga, quais criativos trazem clientes que cancelam cedo — se concentra num criativo, o problema é a PROMESSA da venda, não a entrega. Amostra <8 mostra o dado sem diagnóstico."),
+        ("Churn precoce por canal × plano", "O fechamento da descoberta do B2 (69% saem cedo): de qual canal vêm os B2 que saem. Insight: precoce alto num canal×bundle específico = ajustar a oferta desse plano nesse canal."),
+        ("Safras por mês de fechamento", "Coortes precisam maturar: quem fechou há 1 mês ainda não teve tempo de churnar tardio — '(em maturação)' marca as safras parciais. Compare safras FECHADAS entre si."),
+    ],
     # ============================= PRÉ-VENDAS ===========================
     "prevendas/funil": [
         ("_intro", "Funil COMPLETO (Lead → Booking) com a régua OFICIAL do dashboard do time (a que a gestão confere no Pipedrive) — os mesmos números das abas de Marketing e Vendas. O trabalho de Pré-vendas vai do Lead ao SQL (lead na mão de closer = agendou); Oportunidade e Booking mostram o destino final do que a área gerou. Responde: os leads estão virando reunião? Onde morrem os que não viram?"),

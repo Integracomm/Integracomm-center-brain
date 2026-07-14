@@ -21,7 +21,8 @@ _VIEWS = [("visao", "Visão Geral"), ("metas", "Metas do Semestre"),
           ("funil", "Funil de Prospecção"),
           ("canais", "Ranking de Canais"), ("origens", "Origem de Leads"),
           ("midia", "Mídia Paga"), ("lag", "Tempo até Resultado"),
-          ("planejador", "Planejador"), ("criativos", "Criativos e Públicos")]
+          ("planejador", "Planejador"), ("criativos", "Criativos e Públicos"),
+          ("ciclo", "Ciclo de Vida")]
 
 
 def _deps():
@@ -947,6 +948,169 @@ def _funil(conn, request: Request) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Aba — Ciclo de Vida: Aquisição → Retenção (cross-área, 14/07)
+# Liga Marketing (origem do lead) a Growth (churn): de qual canal/criativo
+# vêm os clientes que CANCELAM CEDO? Vínculo booking↔cancelamento por NOME
+# (deal.titulo = pessoa; grw_cancelamentos.cliente = 'EMPRESA | PESSOA') —
+# casamento por inclusão sem acento; cobertura reportada na tela.
+# ---------------------------------------------------------------------------
+def _ciclo_vida(conn) -> str:
+    import unicodedata
+
+    def nrm(s):
+        return "".join(ch for ch in unicodedata.normalize("NFD", (s or "").lower())
+                       if unicodedata.category(ch) != "Mn").strip()
+    hoje = dt.date.today()
+    with conn.cursor() as cur:
+        cur.execute("""SELECT deal_id, titulo, COALESCE(origem, ''), COALESCE(utm_content, ''),
+                              COALESCE(substring(produto FROM 'B[1-5]'), 'outros'),
+                              won_time::date,
+                              CASE WHEN substring(produto FROM 'B[1-5]') = 'B1'
+                                   THEN COALESCE(valor_custom, valor) / 6.0
+                                   ELSE COALESCE(valor_custom, valor) END
+                         FROM mkt_deals_attribution WHERE status='won' AND won_time IS NOT NULL""")
+        wons = cur.fetchall()
+        cur.execute("""SELECT cliente, COALESCE(data_saida, mes) FROM grw_cancelamentos
+                        WHERE tipo='cancelamento' AND cliente IS NOT NULL""")
+        cancs = [((nrm(cl.split("|")[-1]) if "|" in cl else ""), nrm(cl.split("|")[0]), ds)
+                 for cl, ds in cur.fetchall()]
+    sem_origem = sum(1 for w in wons if not w[2])
+    coorte = []
+    canc_casados = set()
+    for did, tit, og, cont, bnd, won, mrr in wons:
+        t = nrm(tit)
+        saida = None
+        for ci, (pessoa, empresa, ds) in enumerate(cancs):
+            if (pessoa and len(pessoa) >= 5 and (pessoa in t or t in pessoa)) or \
+               (empresa and len(empresa) >= 6 and empresa in t):
+                saida = ds
+                canc_casados.add(ci)
+                break
+        meses_casa = None if saida is None else max(0, (saida - won).days) / 30.4
+        desfecho = ("ativo" if saida is None else ("precoce" if meses_casa <= 3 else "tardio"))
+        parcial = (hoje - won).days < 92  # safra jovem: churn tardio impossível
+        coorte.append({"canal": AN.canal_de(og), "og": og, "criativo": cont, "bundle": bnd,
+                       "won": won, "mrr": float(mrr or 0), "desfecho": desfecho, "parcial": parcial})
+    tot = len(coorte)
+    if not tot:
+        return "<h1>Ciclo de Vida</h1><section><div class=warn>sem bookings rastreados ainda</div></section>"
+    with conn.cursor() as cur:
+        cur.execute("SELECT canal, min(date), sum(spend) FROM mkt_insights_daily GROUP BY 1")
+        gasto = {("Meta Ads" if cn == "meta" else "Google Ads"): (d0, float(g)) for cn, d0, g in cur.fetchall()}
+
+    _td = "padding:7px 9px;border-bottom:1px solid var(--border);font-size:var(--fs-sm);font-variant-numeric:tabular-nums"
+
+    def seg(chave):
+        m: dict[str, dict] = {}
+        for r in coorte:
+            k = chave(r)
+            if k is None:
+                continue
+            d = m.setdefault(k, {"n": 0, "ativo": 0, "precoce": 0, "tardio": 0, "mrr_ret": 0.0, "mrr_perd": 0.0})
+            d["n"] += 1
+            d[r["desfecho"]] = d.get(r["desfecho"], 0) + 1
+            if r["desfecho"] == "ativo":
+                d["mrr_ret"] += r["mrr"]
+            else:
+                d["mrr_perd"] += r["mrr"]
+        return m
+
+    # 1) desfecho por CANAL + CAC ajustado por retenção
+    por_canal = seg(lambda r: r["canal"])
+    rows_c = ""
+    for canal, d in sorted(por_canal.items(), key=lambda x: -x[1]["n"]):
+        ret = d["ativo"] / d["n"]
+        cac = cac_aj = None
+        if canal in gasto:
+            d0, g = gasto[canal]
+            n_per = sum(1 for r in coorte if r["canal"] == canal and r["won"] >= d0)
+            if n_per:
+                cac = g / n_per
+                cac_aj = cac / ret if ret else None
+        rows_c += (f"<tr><td style='{_td}'><b>{escape(canal)}</b></td>"
+                   f"<td style='{_td};text-align:right'>{d['n']}</td>"
+                   f"<td style='{_td};text-align:right'>{_fmt(ret, 'pct')}</td>"
+                   f"<td style='{_td};text-align:right;color:var(--status-critico)'>{_fmt(d['precoce'] / d['n'], 'pct')}</td>"
+                   f"<td style='{_td};text-align:right'>{_fmt(d['tardio'] / d['n'], 'pct')}</td>"
+                   f"<td style='{_td};text-align:right'>{_fmt(d['mrr_ret'], 'brl')}</td>"
+                   f"<td style='{_td};text-align:right'>{_fmt(d['mrr_perd'], 'brl')}</td>"
+                   f"<td style='{_td};text-align:right'>{_fmt(cac, 'brl')}</td>"
+                   f"<td style='{_td};text-align:right'><b>{_fmt(cac_aj, 'brl')}</b></td></tr>")
+
+    # 2) criativos pagos com churn precoce (N>=8 p/ diagnóstico)
+    por_cria = seg(lambda r: r["criativo"][:40] if r["canal"] in ("Meta Ads", "Google Ads") and r["criativo"] else None)
+    rows_k = ""
+    for k, d in sorted(por_cria.items(), key=lambda x: (-(x[1]["precoce"] / x[1]["n"]), -x[1]["n"]))[:10]:
+        peq = d["n"] < 8
+        rows_k += (f"<tr><td style='{_td}'>{escape(k)}</td>"
+                   f"<td style='{_td};text-align:right'>{d['n']}</td>"
+                   f"<td style='{_td};text-align:right'>{_fmt(d['ativo'] / d['n'], 'pct')}</td>"
+                   f"<td style='{_td};text-align:right;color:var(--status-critico)'>{_fmt(d['precoce'] / d['n'], 'pct')}</td>"
+                   f"<td style='{_td};text-align:right'>{'<span class=note>amostra pequena — sem diagnóstico</span>' if peq else ''}</td></tr>")
+
+    # 3) canal × bundle: % churn precoce (fecha o loop do B2)
+    bundles = ["B1", "B2", "B3", "B4", "B5", "outros"]
+    rows_cb = ""
+    for canal, _d in sorted(por_canal.items(), key=lambda x: -x[1]["n"])[:7]:
+        tds = ""
+        for b in bundles:
+            grupo = [r for r in coorte if r["canal"] == canal and r["bundle"] == b]
+            if not grupo:
+                tds += f"<td style='{_td};text-align:center;color:var(--text-faint)'>—</td>"
+            else:
+                pc = sum(1 for r in grupo if r["desfecho"] == "precoce") / len(grupo)
+                cor = ";color:var(--status-critico)" if pc >= 0.4 and len(grupo) >= 5 else ""
+                tds += (f"<td style='{_td};text-align:center{cor}'>{_fmt(pc, 'pct')}"
+                        f"<span style='color:var(--text-faint);font-size:var(--fs-2xs)'> ({len(grupo)})</span></td>")
+        rows_cb += f"<tr><td style='{_td}'><b>{escape(canal)}</b></td>{tds}</tr>"
+
+    # 4) safras por mês de fechamento (maturação explícita)
+    por_safra = seg(lambda r: r["won"].strftime("%m/%y"))
+    ordem_s = sorted(por_safra, key=lambda k: (k[3:], k[:2]))[-8:]
+    rows_s = ""
+    for s in ordem_s:
+        d = por_safra[s]
+        jovem = any(r["parcial"] for r in coorte if r["won"].strftime("%m/%y") == s)
+        rows_s += (f"<tr><td style='{_td}'><b>{s}</b>{' <span class=note>(em maturação)</span>' if jovem else ''}</td>"
+                   f"<td style='{_td};text-align:right'>{d['n']}</td>"
+                   f"<td style='{_td};text-align:right'>{_fmt(d['ativo'] / d['n'], 'pct')}</td>"
+                   f"<td style='{_td};text-align:right'>{_fmt(d['precoce'] / d['n'], 'pct')}</td>"
+                   f"<td style='{_td};text-align:right'>{_fmt(d['tardio'] / d['n'], 'pct')}</td></tr>")
+
+    # 5) leitura automática (N>=8)
+    elegiveis = {k: d for k, d in por_canal.items() if d["n"] >= 8}
+    leitura = "Amostra ainda pequena por canal para leitura automática."
+    if elegiveis:
+        pior = max(elegiveis.items(), key=lambda x: x[1]["precoce"] / x[1]["n"])
+        melhor = max(elegiveis.items(), key=lambda x: x[1]["ativo"] / x[1]["n"])
+        cria_ruim = next((k for k, d in sorted(por_cria.items(), key=lambda x: -(x[1]["precoce"] / x[1]["n"]))
+                          if d["n"] >= 8 and d["precoce"] / d["n"] >= 0.4), None)
+        leitura = (f"Pior relação aquisição→retenção: {pior[0]} ({_fmt(pior[1]['precoce'] / pior[1]['n'], 'pct')} de churn precoce em {pior[1]['n']} clientes). "
+                   f"Melhor: {melhor[0]} ({_fmt(melhor[1]['ativo'] / melhor[1]['n'], 'pct')} ainda ativos). "
+                   + (f"Criativo candidato a revisão de PROMESSA: “{cria_ruim}”." if cria_ruim
+                      else "Nenhum criativo com amostra suficiente concentra churn precoce ≥40%."))
+    cob = f"{len(canc_casados)}/{len(cancs)} cancelamentos casados com um booking rastreado · {sem_origem} booking(s) sem origem atribuída"
+    ths = lambda cols: "".join(f"<th style='text-align:{al};padding:7px 9px'>{h}</th>" for h, al in cols)  # noqa: E731
+    return (
+        "<h1>Ciclo de Vida — Aquisição → Retenção</h1>"
+        "<div class=sub>segue cada cliente FECHADO da origem ao desfecho atual (ativo · churn precoce ≤3 meses · tardio) — qual canal traz cliente que FICA? · vínculo por nome booking↔cancelamento</div>"
+        f"<div class=kpis><div class=kpi><div class=n>{tot}</div><div class=l>clientes na coorte</div></div>"
+        f"<div class=kpi><div class=n>{_fmt(sum(1 for r in coorte if r['desfecho'] == 'ativo') / tot, 'pct')}</div><div class=l>ainda ativos</div></div>"
+        f"<div class=kpi><div class=n style='color:var(--status-critico)'>{_fmt(sum(1 for r in coorte if r['desfecho'] == 'precoce') / tot, 'pct')}</div><div class=l>churn precoce (≤3m)</div></div></div>"
+        "<section><h2>Leitura do especialista</h2><div class=card><div class=sug-item>→ "
+        f"{escape(leitura)}</div><style>.sug-item{{padding:7px 0;font-size:var(--fs-sm);line-height:1.6;color:var(--text-2)}}</style></div></section>"
+        "<section><h2>Desfecho por canal de origem</h2><p class=secsub>CAC aj. = CAC ÷ taxa de retenção — o custo REAL por cliente que fica (corrige a ilusão do canal barato); CAC só p/ canais com gasto rastreado</p>"
+        f"<div class=card><table style='width:100%;border-collapse:collapse'><tr>{ths([('Canal', 'left'), ('Clientes', 'right'), ('Ativos', 'right'), ('Precoce', 'right'), ('Tardio', 'right'), ('MRR retido', 'right'), ('MRR perdido', 'right'), ('CAC', 'right'), ('CAC aj.', 'right')])}</tr>{rows_c}</table></div></section>"
+        "<section><h2>Criativos que trazem churn precoce (mídia paga)</h2><p class=secsub>ordenado do pior — criativo que promete demais traz cliente que sai cedo; amostra &lt;8 mostra o dado, sem diagnóstico</p>"
+        f"<div class=card><table style='width:100%;border-collapse:collapse'><tr>{ths([('Criativo', 'left'), ('Clientes', 'right'), ('Ativos', 'right'), ('Precoce', 'right'), ('', 'right')])}</tr>{rows_k or '<tr><td>—</td></tr>'}</table></div></section>"
+        "<section><h2>Churn precoce por canal × plano</h2><p class=secsub>o fechamento do loop do B2: de onde vêm os clientes que saem cedo em cada bundle · vermelho = ≥40% com n≥5</p>"
+        f"<div class=card><table style='width:100%;border-collapse:collapse'><tr>{ths([('Canal', 'left')] + [(b, 'center') for b in bundles])}</tr>{rows_cb}</table></div></section>"
+        "<section><h2>Safras por mês de fechamento</h2><p class=secsub>safra recente ainda não teve tempo de churnar — '(em maturação)' = leitura parcial, mesmo tratamento do mês corrente nos gráficos</p>"
+        f"<div class=card><table style='width:100%;border-collapse:collapse'><tr>{ths([('Safra', 'left'), ('Clientes', 'right'), ('Ativos', 'right'), ('Precoce', 'right'), ('Tardio', 'right')])}</tr>{rows_s}</table>"
+        f"<p class=note style='margin:10px 0 0'>Cobertura do vínculo: {escape(cob)} — cancelamentos de clientes anteriores a 2025 não têm booking rastreado.</p></div></section>")
+
+
+# ---------------------------------------------------------------------------
 # Aba — Metas do Semestre (planilha de metas detalhadas do Marketing, H2)
 # ---------------------------------------------------------------------------
 _MES_ABREV = {7: "Jul", 8: "Ago", 9: "Set", 10: "Out", 11: "Nov", 12: "Dez"}
@@ -1269,6 +1433,7 @@ def marketing(request: Request, view: str = Query("visao")):
               "canais": lambda: _canais(c, request),
               "origens": lambda: _origens(c, request), "midia": lambda: _midia(c, request),
               "lag": lambda: _lag(c), "planejador": lambda: _planejador(c, request),
-              "criativos": lambda: _criativos(c, request)}[view]
+              "criativos": lambda: _criativos(c, request),
+              "ciclo": lambda: _ciclo_vida(c)}[view]
         content = fn() + "<p class=foot>Cache local das fontes (Meta, Google, Pipedrive, planilha de metas, ad-insightify) — coleta diária 06h. A decisão é sempre do gestor.</p>"
     return HTMLResponse(_shell(A, role, view, content, usermail=user))

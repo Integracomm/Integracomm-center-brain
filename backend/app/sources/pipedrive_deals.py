@@ -77,6 +77,7 @@ _DEALS_DDL_EXTRA = """ALTER TABLE mkt_deals_attribution
     ADD COLUMN IF NOT EXISTS lost_reason TEXT,
     ADD COLUMN IF NOT EXISTS valor_custom NUMERIC,
     ADD COLUMN IF NOT EXISTS sdr TEXT,
+    ADD COLUMN IF NOT EXISTS titulo TEXT,
     ADD COLUMN IF NOT EXISTS owner_active BOOLEAN"""
 
 
@@ -139,8 +140,8 @@ def _upsert_deal(cur, d: dict, labels: dict[str, str]) -> None:
                (deal_id, add_time, won_time, lost_time, status, valor, origem,
                 utm_medium, utm_campaign, utm_term, utm_content, produto,
                 stage_id, owner_id, owner_name, lost_reason, oport_time, sdr,
-                owner_active, updated_at)
-           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now())
+                owner_active, titulo, updated_at)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now())
            ON CONFLICT (deal_id) DO UPDATE SET
                 add_time=EXCLUDED.add_time,
                 won_time=EXCLUDED.won_time, lost_time=EXCLUDED.lost_time,
@@ -150,7 +151,7 @@ def _upsert_deal(cur, d: dict, labels: dict[str, str]) -> None:
                 produto=EXCLUDED.produto, stage_id=EXCLUDED.stage_id,
                 owner_id=EXCLUDED.owner_id, owner_name=EXCLUDED.owner_name,
                 lost_reason=EXCLUDED.lost_reason, oport_time=EXCLUDED.oport_time,
-                sdr=EXCLUDED.sdr, owner_active=EXCLUDED.owner_active, updated_at=now()
+                sdr=EXCLUDED.sdr, owner_active=EXCLUDED.owner_active, titulo=EXCLUDED.titulo, updated_at=now()
            WHERE (mkt_deals_attribution.status, mkt_deals_attribution.stage_id,
                   mkt_deals_attribution.won_time, mkt_deals_attribution.valor,
                   mkt_deals_attribution.owner_id, mkt_deals_attribution.lost_reason)
@@ -165,7 +166,7 @@ def _upsert_deal(cur, d: dict, labels: dict[str, str]) -> None:
          (d.get("user_id") or {}).get("name") if isinstance(d.get("user_id"), dict)
          else _txt(d.get("owner_name")),
          _txt(d.get("lost_reason")), _opp_ts(d.get(F_DIA_OPP)), _sdr_nome(d.get(F_SDR)),
-         _uid_active(d.get("user_id"))))
+         _uid_active(d.get("user_id")), _txt(d.get("title"))))
 
 
 def sync_deals(conn: Any, since: dt.date = dt.date(2025, 1, 1)) -> int:
@@ -263,7 +264,7 @@ def _deal_tuplas(d: dict, labels: dict[str, str]) -> tuple[tuple, tuple]:
             _txt(d.get(F_TERM)), _txt(d.get(F_CAMPAIGN)), _txt(d.get(F_CONTENT)),
             prod, (uid or {}).get("name") if isinstance(uid, dict) else _txt(d.get("owner_name")),
             _num_br(d.get(F_VALOR)), _opp_ts(d.get(F_DIA_OPP)), _sdr_nome(d.get(F_SDR)),
-            _uid_active(uid),
+            _uid_active(uid), _txt(d.get("title")),
             # add_time no diff QUIETO (14/07): a fonte corrigiu um desvio de
             # +3h de uma era antiga — congelado no INSERT, precisa se auto-
             # curar sem avançar updated_at (senão 19k deals re-entram no /flow)
@@ -328,13 +329,13 @@ def sync_deals_from_cache(conn: Any, since: dt.date = dt.date(2025, 1, 1)) -> in
         cur.execute("""SELECT deal_id, status, stage_id, won_time, valor, owner_id, lost_reason,
                               origem, utm_medium, utm_term, utm_campaign, utm_content,
                               produto, owner_name, valor_custom, oport_time, sdr, owner_active,
-                              add_time
+                              titulo, add_time
                          FROM mkt_deals_attribution""")
         db: dict[int, tuple[tuple, tuple]] = {}
         for row in cur.fetchall():
             db[row[0]] = ((row[1], row[2], _norm_ts(row[3]), _norm_val(row[4]), row[5], row[6]),
                           tuple(row[7:14]) + (_norm_val(row[14]), _norm_ts(row[15]), row[16], row[17],
-                                              _norm_ts(row[18])))
+                                              row[18], _norm_ts(row[19])))
     novos = mudou_core = mudou_meta = 0
     ids_cache: list[int] = []
     with conn.cursor() as cur:
@@ -354,7 +355,7 @@ def sync_deals_from_cache(conn: Any, since: dt.date = dt.date(2025, 1, 1)) -> in
                 cur.execute("""UPDATE mkt_deals_attribution SET origem=%s, utm_medium=%s,
                                    utm_term=%s, utm_campaign=%s, utm_content=%s,
                                    produto=%s, owner_name=%s, valor_custom=%s, oport_time=%s,
-                                   sdr=%s, owner_active=%s, add_time=%s
+                                   sdr=%s, owner_active=%s, titulo=%s, add_time=%s
                                  WHERE deal_id=%s""",
                             (*meta, did))
                 mudou_meta += 1
