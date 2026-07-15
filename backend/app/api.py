@@ -2176,8 +2176,14 @@ def _render(role: str, scores: list[dict], alerts: list[dict],
             ultima = str(a["notes"]).strip().splitlines()[-1]
             nota = f"<div class='mot'>{escape(ultima[:120])}</div>"
         aid = a.get("id")
+        # nome clicável -> abre a conta na aba Contas (filtro pré-aplicado);
+        # validação do gestor sem trocar de aba na mão (pedido Otávio 15/07)
+        from urllib.parse import quote_plus
+        conta_url = f"/growth?view=contas&conta={quote_plus(a['name'])}"
         return (
-            f"<div class='row arow'><div class='c-name'><div class='nm'>{escape(a['name'][:60])}</div>{nota}</div>"
+            f"<div class='row arow'><div class='c-name'><div class='nm'>"
+            f"<a class='alnk' href='{conta_url}' title='abrir a conta na aba Contas'>{escape(a['name'][:60])}</a>"
+            f"</div>{nota}</div>"
             f"<div>{_chip(a['severity'], _SEV_VAR.get(a['severity'], '--status-semdados'), dot=True)}</div>"
             f"<div class='c-stage'>{escape(_STAGE_LABEL.get(a['stage'], a['stage']))}</div>"
             f"<div class='c-status'>{escape(str(a['status']))}</div>"
@@ -2255,6 +2261,8 @@ section{margin-top:var(--space-8)}
 .pager button:disabled{opacity:.4;cursor:default}
 .pager .pginfo{font-size:var(--fs-sm);color:var(--text-muted)}
 .nm{font-weight:var(--fw-semibold);font-size:var(--fs-md);line-height:1.3}
+.nm .alnk{color:inherit;text-decoration:none;border-bottom:1px dashed var(--border-strong)}
+.nm .alnk:hover{color:var(--brand);border-bottom-color:var(--brand)}
 .mot{font-size:var(--fs-2xs);color:var(--text-muted);margin-top:3px;line-height:1.4}
 .score{font-family:var(--font-display);font-weight:700;font-size:15px}
 .c-mrr{color:var(--text-2);font-variant-numeric:tabular-nums}
@@ -2406,7 +2414,11 @@ function renderRows(){
 function applyF(){page=1;renderRows();}
 function pgGo(d){page+=d;renderRows();window.scrollTo({top:document.querySelector('.tbl-acct').offsetTop-80,behavior:'smooth'});}
 function clearF(){['f-name','f-band','f-alert','f-stage','f-squad','f-mrr'].forEach(function(i){document.getElementById(i).value='';});applyF();}
-if(document.getElementById('f-name'))applyF();
+if(document.getElementById('f-name')){
+  var _q=new URLSearchParams(location.search).get('conta');   // veio da aba Alertas
+  if(_q)document.getElementById('f-name').value=_q;
+  applyF();
+}
 </script>"""
 
 _ALERTS_JS = """<script>
