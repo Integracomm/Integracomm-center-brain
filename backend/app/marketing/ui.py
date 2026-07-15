@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+import threading
+import time
 from html import escape
 
 from fastapi import APIRouter, Query, Request
@@ -1493,6 +1495,43 @@ async def salvar_funil_metas(request: Request):
 
 
 # ---------------------------------------------------------------------------
+# Serve-stale dos DEALS (15/07, Otávio: "os números precisam bater sempre"):
+# o cron horário deixava o funil até 1h atrás do Pipedrive/Lovable (deltas de
+# ±2-3 por etapa). Ao abrir a área, se o último disparo tem >10min, re-sincroniza
+# em background via cache do Lovable (ZERO requisição ao Pipedrive — não toca o
+# orçamento compartilhado). A página atual serve o que há; a próxima carga já
+# vem fresca. Eventos de etapa (/flow) seguem no cron (esses custam API).
+_DEALS_KICK = {"t": 0.0, "running": False, "lock": threading.Lock()}
+
+
+def _kick_deals_sync() -> None:
+    now = time.monotonic()
+    with _DEALS_KICK["lock"]:
+        if _DEALS_KICK["running"] or now - _DEALS_KICK["t"] < 600:
+            return
+        _DEALS_KICK["t"] = now
+        _DEALS_KICK["running"] = True
+
+    def run():
+        try:
+            import psycopg
+
+            from ..config import get_settings
+            from ..sources import pipedrive_deals as P
+            conn = psycopg.connect(get_settings().app_database_url)
+            conn.autocommit = True
+            try:
+                P.sync_deals_from_cache(conn)
+            finally:
+                conn.close()
+        except Exception:  # noqa: BLE001 — melhor-esforço; o cron horário cobre
+            pass
+        finally:
+            _DEALS_KICK["running"] = False
+
+    threading.Thread(target=run, daemon=True, name="mkt-deals-kick").start()
+
+
 @router.get("/marketing", response_class=HTMLResponse)
 def marketing(request: Request, view: str = Query("visao")):
     A = _deps()
@@ -1502,6 +1541,7 @@ def marketing(request: Request, view: str = Query("visao")):
     user, role = s
     if view not in {v for v, _ in _VIEWS}:
         view = "visao"
+    _kick_deals_sync()  # espelho de deals fresco a ≤10min do Pipedrive (via Lovable)
     with A._conn() as c:
         with c.cursor() as cur:
             cur.execute("INSERT INTO audit_log (actor, action, scope) VALUES (%s,'view',%s)",
@@ -1513,5 +1553,7 @@ def marketing(request: Request, view: str = Query("visao")):
               "lag": lambda: _lag(c), "planejador": lambda: _planejador(c, request),
               "criativos": lambda: _criativos(c, request),
               "ciclo": lambda: _ciclo_vida(c)}[view]
-        content = fn() + "<p class=foot>Cache local das fontes (Meta, Google, Pipedrive, planilha de metas, ad-insightify) — coleta diária 06h. A decisão é sempre do gestor.</p>"
+        content = fn() + ("<p class=foot>Cache local das fontes — deals do Pipedrive re-sincronizam ao abrir a área "
+                          "(defasagem ≤10 min; recarregue para ver o fresco); mudanças de etapa a cada hora; "
+                          "Meta/Google/planilhas na coleta diária 06h. A decisão é sempre do gestor.</p>")
     return HTMLResponse(_shell(A, role, view, content, usermail=user))
