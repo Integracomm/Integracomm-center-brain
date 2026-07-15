@@ -1869,6 +1869,9 @@ def prevendas(request: Request, view: str = Query("funil")):
     user, _role = s
     if view not in {v for v, _ in _PV_VIEWS}:
         view = "funil"
+    # mesmo serve-stale do Marketing (15/07): funil sempre a ≤10min do Pipedrive
+    from ..marketing.ui import _kick_deals_sync
+    _kick_deals_sync()
     with A._conn() as c:
         with c.cursor() as cur:
             cur.execute("INSERT INTO audit_log (actor, action, scope) VALUES (%s,'view',%s)",
@@ -1876,7 +1879,9 @@ def prevendas(request: Request, view: str = Query("funil")):
         fn = {"funil": _pv_funil, "speed": _pv_speed, "horarios": _pv_horarios,
               "sdrs": _pv_sdrs,
               "ponte": lambda cc, rr: _vd_ponte(cc, rr, area="prevendas")}[view]
-        content = fn(c, request) + "<p class=foot>Fonte: Pipedrive (cache local, coleta diária). A decisão é sempre do gestor — o especialista sinaliza.</p>"
+        content = fn(c, request) + ("<p class=foot>Fonte: Pipedrive — deals re-sincronizam ao abrir a área (defasagem ≤10 min; "
+                          "recarregue para ver o fresco); mudanças de etapa a cada hora. "
+                          "A decisão é sempre do gestor — o especialista sinaliza.</p>")
     return HTMLResponse(_shell(A, "prevendas", _PV_VIEWS, view, content, user))
 
 
@@ -1889,6 +1894,9 @@ def vendas(request: Request, view: str = Query("funil")):
     user, _role = s
     if view not in {v for v, _ in _VD_VIEWS}:
         view = "funil"
+    # mesmo serve-stale do Marketing (15/07): funil sempre a ≤10min do Pipedrive
+    from ..marketing.ui import _kick_deals_sync
+    _kick_deals_sync()
     with A._conn() as c:
         with c.cursor() as cur:
             cur.execute("INSERT INTO audit_log (actor, action, scope) VALUES (%s,'view',%s)",
@@ -1896,5 +1904,7 @@ def vendas(request: Request, view: str = Query("funil")):
         fn = {"funil": _vd_funil, "ponte": _vd_ponte, "winloss": _vd_winloss,
               "ciclo": _vd_ciclo, "horarios": _vd_horarios, "closers": _vd_closers,
               "forecast": _vd_forecast}[view]
-        content = fn(c, request) + "<p class=foot>Fonte: Pipedrive (cache local, coleta diária). A decisão é sempre do gestor — o especialista sinaliza.</p>"
+        content = fn(c, request) + ("<p class=foot>Fonte: Pipedrive — deals re-sincronizam ao abrir a área (defasagem ≤10 min; "
+                          "recarregue para ver o fresco); mudanças de etapa a cada hora. "
+                          "A decisão é sempre do gestor — o especialista sinaliza.</p>")
     return HTMLResponse(_shell(A, "vendas", _VD_VIEWS, view, content, user))
