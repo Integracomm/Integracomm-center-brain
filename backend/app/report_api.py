@@ -261,7 +261,8 @@ tr.total td{font-weight:700;border-top:1px solid var(--border-strong)}
 </style></head><body>
 <div class=wrap>
   <div class=topbar>
-    <a class=back href="/growth?view=relatorios">← voltar aos relatórios</a>
+    <a class=back href="/growth?view=relatorios"
+       onclick="if(history.length>1&&document.referrer){history.back();return false;}">← voltar</a>
     <div class=actions>
       <button class="btn ghost" id=btn-reg onclick="location.reload()" title="gera o relatório de novo com os dados e atualizações mais recentes">Regerar</button>
       <button class=btn onclick="window.print()">Exportar / Imprimir</button>
