@@ -145,7 +145,18 @@ class WhatsAppReader:
             if extra_params:
                 params.update(extra_params)
 
-            resp = self._get_with_retry(endpoint, params)
+            try:
+                resp = self._get_with_retry(endpoint, params)
+            except httpx.HTTPStatusError as e:
+                # 546/500 PERSISTENTE (retries esgotados) em grupos específicos =
+                # payload da página estourou o limite da edge function (grupos com
+                # áudios/mensagens longas — BABY GU, ÍNDIA, MARCIO 15/07). Reduzir
+                # a página pela metade e repetir a MESMA página resolve; desistir
+                # deixava a conta eternamente ilegível.
+                if e.response.status_code >= 500 and page_limit > 25:
+                    page_limit = max(25, page_limit // 2)
+                    continue
+                raise
             body = resp.json()
             items = body.get("data") or body.get("items") or body.get("rows") or []
 
