@@ -14,7 +14,10 @@ import re
 
 from .nps_sheets import _fetch_csv, _get_cached, _norm_label
 
-SQUADS_SHEET_ID = "1g7Sgcg1uYf3C85lwF-QiFaxBuNlTX3lUXic2QClduzU"
+# 15/07: a planilha original do time ficou restrita (401) e derrubava o
+# /growth; o Otávio fez uma CÓPIA no drive dele — precisa estar compartilhada
+# como 'qualquer pessoa com o link: leitor' p/ o export funcionar
+SQUADS_SHEET_ID = "1mt676ES7rM6caO6vx4tqoVTbqt9wElkiQeAR2fl4ToI"
 SQUADS_GID = "241964574"
 
 _SQUAD_RE = re.compile(r"B(\d)\D*S(\d)")
