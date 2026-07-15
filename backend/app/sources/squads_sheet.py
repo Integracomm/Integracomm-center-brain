@@ -61,11 +61,31 @@ def parse_squads_csv(rows: list[list[str]]) -> dict[str, list[dict]]:
     return {k: v for k, v in out.items() if v}
 
 
+_ULTIMO_BOM: dict[str, list[dict]] = {}
+_FALHA_ATE = {"t": 0.0}
+
+
 def squad_teams() -> dict[str, list[dict]]:
+    """NUNCA levanta exceção (15/07: um 401 do Google no export derrubou o
+    /growth com 500 em plena preparação de reunião). Falhou → devolve o último
+    dado BOM em memória (ou vazio) e faz cache negativo de 5 min para não
+    pagar 1 request lento por conta na montagem da página."""
+    import time as _t
+    if _t.monotonic() < _FALHA_ATE["t"]:
+        return _ULTIMO_BOM
+
     def load():
         url = f"https://docs.google.com/spreadsheets/d/{SQUADS_SHEET_ID}/export"
         return parse_squads_csv(_fetch_csv(url, {"format": "csv", "gid": SQUADS_GID}))
-    return _get_cached("squads", load)
+    try:
+        out = _get_cached("squads", load)
+        if out:
+            _ULTIMO_BOM.clear()
+            _ULTIMO_BOM.update(out)
+        return out
+    except Exception:  # noqa: BLE001 — planilha fora/restrita não derruba página
+        _FALHA_ATE["t"] = _t.monotonic() + 300
+        return _ULTIMO_BOM
 
 
 def team_for_key(key: str | None) -> tuple[str, list[dict]] | None:
