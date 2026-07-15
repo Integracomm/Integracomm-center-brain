@@ -52,3 +52,34 @@ def test_postergacoes_penalizam():
     r = compute_execution_score(Cliente(servico="B1 - START"), subs, postergacoes_2_semanas=3, now=NOW)
     assert r.score is not None and r.score < 100
     assert "postergando" in r.motivo
+
+
+def test_vence_hoje_ainda_no_prazo():
+    """Regra do Otávio (14/07/26, caso GH IMPORTS): atividade que vence HOJE
+    está DENTRO do prazo — atrasada só a partir do dia seguinte. O carimbo do
+    ClickUp costuma ser madrugada/manhã do dia do vencimento; comparar por
+    instante marcava tudo de hoje como atrasado à tarde."""
+    hoje_madrugada = NOW.replace(hour=3, minute=0)   # vence hoje, carimbo 03:00Z
+    subs = [Subtarefa(data_vencimento=hoje_madrugada) for _ in range(4)]
+    # 4+ atividades no período evita a penalidade 'pouco trabalhado'
+    r = compute_execution_score(Cliente(servico="B4 - SCALE"), subs, 0,
+                                now=NOW.replace(hour=18))  # tarde do MESMO dia
+    # o que importa: NENHUMA penalidade de atraso (outras penalidades, como
+    # 'sem entregas recentes', podem existir e não são o alvo deste teste)
+    assert "atrasada" not in r.motivo, r.motivo
+
+
+def test_vencida_ontem_conta_atrasada():
+    subs = [Subtarefa(data_vencimento=_d(1)) for _ in range(4)]  # venceu ontem
+    r = compute_execution_score(Cliente(servico="B4 - SCALE"), subs, 0, now=NOW)
+    assert r.score is not None and r.score < 100
+    assert "atrasada" in r.motivo
+
+
+def test_concluida_no_mesmo_dia_do_vencimento_e_no_prazo():
+    """Concluir à tarde uma tarefa que vencia de madrugada NO MESMO DIA não é
+    atraso — comparação por dia BRT, dos dois lados."""
+    subs = [Subtarefa(data_vencimento=_d(d).replace(hour=3),
+                      data_conclusao=_d(d).replace(hour=20)) for d in (1, 3, 5, 7, 9)]
+    r = compute_execution_score(Cliente(servico="B2 - TRACTION"), subs, 0, now=NOW)
+    assert r.score == 100, r.motivo

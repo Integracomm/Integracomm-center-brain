@@ -13,6 +13,12 @@ da série de snapshots por conta — é o que torna o modelo preditivo, não a f
 Mudanças vs. o original TS: tradução idiomática para Python e tipagem; a regra
 de negócio (penalidades, limites, casos Implantação/ADS) é preservada
 fielmente para manter a compatibilidade com o que o time já valida.
+
+DIVERGÊNCIA INTENCIONAL do TS (regra do Otávio, 14/07/26): prazo é comparado
+por DIA (BRT), não por instante — atividade que vence HOJE está DENTRO do
+prazo; só conta atrasada a partir do dia seguinte. O original comparava
+timestamps e marcava como atrasada, à tarde, tudo que vencia no próprio dia
+(caso GH IMPORTS). Vale para abertas, recorrentes e conclusões no mesmo dia.
 """
 from __future__ import annotations
 
@@ -23,6 +29,15 @@ from dataclasses import dataclass
 _DAY = dt.timedelta(days=1)
 _TWO_WEEKS = dt.timedelta(days=14)
 _MONTH_DAYS = 30.4375  # média usada no original
+_BRT = dt.timezone(dt.timedelta(hours=-3))
+
+
+def _dia(d: dt.datetime) -> dt.date:
+    """Dia BRT do carimbo (naive = UTC). Prazo se compara por DIA: vence hoje
+    ainda está no prazo — atrasada só a partir de amanhã."""
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=dt.timezone.utc)
+    return d.astimezone(_BRT).date()
 
 
 @dataclass
@@ -48,11 +63,11 @@ class ExecutionResult:
 
 
 def _is_recorrente_aberta(s: Subtarefa, now: dt.datetime) -> bool:
-    return bool(s.recorrente and s.proximo_vencimento and s.proximo_vencimento >= now)
+    return bool(s.recorrente and s.proximo_vencimento and _dia(s.proximo_vencimento) >= _dia(now))
 
 
 def _is_recorrente_vencida(s: Subtarefa, now: dt.datetime) -> bool:
-    return bool(s.recorrente and s.proximo_vencimento and s.proximo_vencimento < now)
+    return bool(s.recorrente and s.proximo_vencimento and _dia(s.proximo_vencimento) < _dia(now))
 
 
 def _dias_uteis_entre(inicio: dt.datetime, fim: dt.datetime) -> int:
@@ -90,7 +105,7 @@ def compute_execution_score(
     no_prazo = sum(
         1
         for s in concluidas_reais
-        if s.data_vencimento and s.data_conclusao and s.data_conclusao <= s.data_vencimento
+        if s.data_vencimento and s.data_conclusao and _dia(s.data_conclusao) <= _dia(s.data_vencimento)
     )
 
     def _aberta_atrasada(s: Subtarefa) -> bool:
@@ -100,7 +115,7 @@ def compute_execution_score(
             return False
         if _is_recorrente_vencida(s, now):
             return True
-        return bool(s.data_vencimento and s.data_vencimento < now)
+        return bool(s.data_vencimento and _dia(s.data_vencimento) < _dia(now))
 
     abertas_atrasadas = sum(1 for s in subs if _aberta_atrasada(s))
     atrasadas = (len(concluidas_reais) - no_prazo) + abertas_atrasadas
@@ -143,7 +158,7 @@ def compute_execution_score(
         if s.data_conclusao
         and s.data_vencimento
         and s.data_conclusao >= duas_semanas_atras
-        and s.data_conclusao > s.data_vencimento
+        and _dia(s.data_conclusao) > _dia(s.data_vencimento)
     )
     if concluidas_com_atraso_2sem > 0:
         pen = min(20, concluidas_com_atraso_2sem * 5)

@@ -69,11 +69,23 @@ def _dossie(data: dict, updates: list[dict]) -> str:
 _MODEL = "claude-sonnet-5"
 
 
-def _via_claude(dossie: str) -> str | None:
+_PLAN_CACHE_DDL = """CREATE TABLE IF NOT EXISTS growth_plan_cache (
+    account_id TEXT NOT NULL,
+    ref_month  TEXT NOT NULL,
+    texto      TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (account_id, ref_month)
+)"""
+
+
+def _via_claude(dossie: str, cache_key: tuple[str, str] | None = None) -> str | None:
     # Só tenta o LLM quando explicitamente ligado (GROWTH_LLM_PLANS=1) E com
     # chave — evita pagar ~1s (e retries) numa chamada que hoje falha sem créditos.
     # Passa pelo guarda de orçamento mensal (llm_budget): teto atingido -> None
     # (o plano sai pelo motor determinístico, sem custo).
+    # CACHE 20h por conta+mês (14/07: com créditos ativos, cada regeração do
+    # relatório pagava ~10-25s de Claude — era a lentidão relatada; mesmo
+    # padrão do tom, que pula contas analisadas <20h).
     s = get_settings()
     if not (s.growth_llm_plans and s.anthropic_api_key):
         return None
@@ -83,6 +95,15 @@ def _via_claude(dossie: str) -> str | None:
 
         from ...llm_budget import ensure_budget, record_usage
         with psycopg.connect(s.app_database_url) as bconn:
+            if cache_key:
+                with bconn.cursor() as cur:
+                    cur.execute(_PLAN_CACHE_DDL)
+                    cur.execute("""SELECT texto FROM growth_plan_cache
+                                    WHERE account_id=%s AND ref_month=%s
+                                      AND created_at > now() - interval '20 hours'""", cache_key)
+                    hit = cur.fetchone()
+                if hit:
+                    return hit[0]
             ensure_budget(bconn)
             cli = anthropic.Anthropic(api_key=s.anthropic_api_key, max_retries=0, timeout=30.0)
             msg = cli.messages.create(
@@ -94,7 +115,14 @@ def _via_claude(dossie: str) -> str | None:
             tin = (msg.usage.input_tokens + (msg.usage.cache_read_input_tokens or 0)
                    + (msg.usage.cache_creation_input_tokens or 0))
             record_usage(bconn, "growth:plano_acao", _MODEL, tin, msg.usage.output_tokens)
-        return next(b.text for b in msg.content if b.type == "text").strip()
+            texto = next(b.text for b in msg.content if b.type == "text").strip()
+            if cache_key and texto:
+                with bconn.cursor() as cur:
+                    cur.execute("""INSERT INTO growth_plan_cache (account_id, ref_month, texto)
+                                   VALUES (%s, %s, %s)
+                                   ON CONFLICT (account_id, ref_month) DO UPDATE
+                                       SET texto=EXCLUDED.texto, created_at=now()""", (*cache_key, texto))
+        return texto
     except Exception:  # noqa: BLE001 — sem créditos/rede/orçamento -> fallback determinístico
         return None
 
@@ -198,9 +226,13 @@ def _plan_deterministico(data: dict, updates: list[dict], acc: dict) -> str:
 
 
 def generate_plan(data: dict, updates: list[dict], acc: dict) -> dict:
-    """{texto (markdown), gerado_por, gerado_em}. Tenta Claude; senão determinístico."""
+    """{texto (markdown), gerado_por, gerado_em}. Tenta Claude (com cache 20h
+    por conta+mês — regerar o relatório não paga nem espera de novo); senão
+    determinístico."""
     dossie = _dossie(data, updates)
-    texto = _via_claude(dossie)
+    ref = str((data.get("header") or {}).get("reference_month") or "")
+    aid = str(acc.get("id") or (data.get("header") or {}).get("account_id") or "")
+    texto = _via_claude(dossie, cache_key=(aid, ref) if aid and ref else None)
     motor = "Claude (gestor de CS sênior)" if texto else \
         "regras determinísticas (Claude assume quando os créditos de API forem liberados)"
     if not texto:

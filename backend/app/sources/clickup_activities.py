@@ -374,7 +374,9 @@ def _upcoming_from_clickup(account_name: str, now: dt.datetime, limit: int = 20)
         if due < now - dt.timedelta(days=1):  # vencidas antigas ficam de fora
             continue
         assg = ", ".join(a.get("username", "") for a in (t.get("assignees") or [])) or None
-        out.append({"nome": t.get("name"), "vence_em": due.date().isoformat(),
+        # dia exibido em BRT (vencimento à noite caía no dia seguinte em UTC)
+        out.append({"nome": t.get("name"),
+                    "vence_em": due.astimezone(dt.timezone(dt.timedelta(hours=-3))).date().isoformat(),
                     "responsavel": assg, "status": (t.get("status") or {}).get("status")})
     return sorted(out, key=lambda x: x["vence_em"])[:limit]
 
