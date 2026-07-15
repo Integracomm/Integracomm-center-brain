@@ -28,6 +28,7 @@ from .auth import (AREA_HOME, AREAS, COOKIE, ROLE_HOME, USERS, authenticate_db,
                    login_blocked, make_token, record_login_fail, set_user_areas,
                    set_user_status, user_areas, verify_token)
 from .db import persistence as P
+from .help_texts import _hint
 
 app = FastAPI(title="Integracomm IA — Growth", docs_url="/api/docs")
 
@@ -1159,7 +1160,11 @@ def _integracoes_html(rows: list[dict]) -> str:
     return ("<section><h2>Saúde das integrações</h2>"
             "<p class=secsub>última sincronização por fonte · verde = dentro do esperado, amarelo = atrasada, vermelho = parada/falhou — "
             "fonte quebrada em silêncio = gestor decidindo com dado velho</p>"
-            "<div class=central style='padding:6px 14px 12px'><table style='width:100%;border-collapse:collapse'>"
+            + _hint("Saúde das integrações",
+                    "Cada linha é uma fonte que alimenta o painel, com a última sincronização e a janela esperada dela (o sync de deals roda de hora em hora 8-21h; mídia e rodada são diárias; a planilha de cancelamentos é mensal). "
+                    "Insights: (1) VERMELHO = os números daquela área podem estar velhos — a central mostra um aviso e o link para cá; (2) amarelo persistente = investigar antes que vire vermelho (token expirando, formato de cache mudado); "
+                    "(3) a cobertura no rodapé mede QUALIDADE (ex.: % de deals com origem) — sync verde com cobertura baixa ainda é problema, só que de preenchimento na fonte.")
+            + "<div class=central style='padding:6px 14px 12px'><table style='width:100%;border-collapse:collapse'>"
             "<tr><th style='text-align:left;padding:7px 9px'>Fonte</th><th style='text-align:right;padding:7px 9px'>Última sync</th>"
             "<th style='text-align:left;padding:7px 9px'>Detalhe</th></tr>"
             + linhas + "</table>"
@@ -1213,7 +1218,11 @@ def _teams_html(conn) -> str:
     return ("<section><h2>Times por área</h2>"
             "<p class=secsub>quem compõe cada time e a função de cada um · o ponto indica a situação do usuário no Pipedrive · "
             "✎ editar libera: trocar função (promoção), desligar (com confirmação; some das telas, números preservados nas réguas) e adicionar colaborador</p>"
-            "<div class=central>"
+            + _hint("Times por área",
+                    "Quem compõe cada time e a função (o ponto colorido = situação do usuário no Pipedrive). "
+                    "Insights: (1) a lista de VENDAS é a régua do SQL do funil — por isso desligar nunca apaga: o histórico dos meses em que a pessoa atuou continua batendo com o Pipedrive; "
+                    "(2) re-adicionar um desligado manual funciona como recontratação; (3) coordenação/gerência ficam fora de planos e medianas dos rankings.")
+            + "<div class=central>"
             "<div style='display:flex;gap:26px;flex-wrap:wrap'>" + blocos + "</div></div>"
             "<script>"
             "function tmEditar(on){[].slice.call(document.querySelectorAll('.tm-edit')).forEach(function(e){e.style.display=on?'':'none';});"
@@ -1386,7 +1395,12 @@ def _receita_recorrente_html() -> str:
         "<section><h2>Saúde da Receita Recorrente</h2>"
         "<p class=secsub>ISR = base recorrente ÷ mês anterior ×100 (≥100 = crescendo) · Quick Ratio = nova ÷ perdida (≥1 = ganha mais do que perde) · "
         "duas visões que NÃO se misturam: <b>B2-B5</b> = o sinal do modelo novo · <b>Consolidado</b> = caixa com antigos em runoff · fonte: planilha de planejamento (migra ao Omie quando o Financeiro abrir)</p>"
-        f"<div class=kpis>"
+        + _hint("Saúde da Receita Recorrente",
+                "ISR ≥100 = a base recorrente cresceu vs o mês anterior; Quick Ratio ≥1 = entrou mais receita recorrente nova do que saiu por cancelamento. "
+                "Insights: (1) leia SEMPRE a visão B2-B5 para julgar o modelo novo — o Consolidado carrega o runoff planejado dos planos antigos e esconde o sinal; "
+                "(2) meses marcados 'base pequena, alta variância' saltam por efeito de base baixa, não por crescimento real — não superinterprete; "
+                "(3) ★ = crossover: o mês em que o B2-B5 passa a sustentar a receita sozinho; (4) ISR<100 ou QR<1 por 2 meses seguidos dispara alerta — aí a conversa é cancelamento por bundle, não venda nova.")
+        + f"<div class=kpis>"
         f"<div class=kpi><div class=n>{f_(d['base_b2b5'][i])}</div><div class=l>base recorrente B2-B5 ({d['meses'][i]})</div></div>"
         f"<div class=kpi><div class=n{' style=color:var(--status-baixo)' if (d['isr_b2b5'][i] or 0) >= 100 else ' style=color:var(--status-critico)'}>{f_(d['isr_b2b5'][i], 0)}</div><div class=l>ISR B2-B5</div><div class=s>≥100 = base crescendo</div></div>"
         f"<div class=kpi><div class=n>{f_(d['qr'][i], 1)}</div><div class=l>Quick Ratio B2-B5</div><div class=s>nova ÷ perdida</div></div>"
@@ -1461,7 +1475,11 @@ def _hub_mudancas(conn: Any) -> str:
                   f"text-decoration:none'><span>→</span><span>{txt}</span></a>" for txt, href in itens)
     return ("<section><h2>O que mudou desde ontem</h2>"
             "<p class=secsub>deltas das últimas 24h / última rodada — clique para abrir a área</p>"
-            f"<div class=central>{lis}</div></section>")
+            + _hint("O que mudou desde ontem",
+                    "A rotina diária de 30 segundos: contas que entraram/saíram de crítico (comparação das duas últimas rodadas de score), bookings e oportunidades das últimas 24h, "
+                    "CPL de ontem vs a média dos 7 dias anteriores (só aparece se variar ±30%) e iniciativas que viraram atrasadas. "
+                    "Insights: (1) conta que ENTROU em crítico é a primeira ligação do dia; (2) nada listado = nada relevante mudou — dias sem itens são normais; (3) cada linha leva direto à área para agir.")
+            + f"<div class=central>{lis}</div></section>")
 
 
 def _render_hub(role: str, st: dict, users: list[dict] | None = None,
@@ -1990,15 +2008,7 @@ def _carga_content(scores: list[dict], mirror: dict | None) -> str:
                 d["exec_atr"] += 1
         return m
 
-    def gc_de(s):
-        if mirror:
-            from .sources.nps_sheets import norm_account
-            info = mirror.get(norm_account(s["name"] or ""))
-            if info and info.get("gerente_de_contas"):
-                return info["gerente_de_contas"][:28]
-        return "(sem responsável no espelho)"
     por_squad = agrega(lambda s: _resolve_squad(s["name"], mirror) or "(sem squad na planilha)")
-    por_gc = agrega(gc_de)
     tot_risco = sum(d["mrr_risco"] for d in por_squad.values()) or 1.0
     _td = "padding:7px 9px;border-bottom:1px solid var(--border);text-align:right;font-variant-numeric:tabular-nums;font-size:var(--fs-sm)"
     _tdl = _td.replace("text-align:right", "text-align:left")
@@ -2028,18 +2038,71 @@ def _carga_content(scores: list[dict], mirror: dict | None) -> str:
                        ("Alto", "right"), ("Aten.", "right"), ("MRR em risco", "right"),
                        ("Exec. atras.", "right"), ("Faixas 🟢🟡🟠🔴", "center")))
         return f"<div class=central style='padding:6px 14px 12px;overflow-x:auto'><table style='width:100%;border-collapse:collapse'><tr>{ths}</tr>{linhas}</table></div>"
-    com_gc = sum(d["n"] for k, d in por_gc.items() if not k.startswith("(sem"))
+    # ---- capacidade de atendimento: carteira ÷ tamanho do time (14/07 —
+    # substitui 'Por responsável': não existe UM responsável, é o squad; o
+    # Growth é o líder. Pergunta: o time dá conta? Redistribuir clientes?
+    try:
+        from .sources.squads_sheet import squad_teams
+        times = squad_teams()
+    except Exception:  # noqa: BLE001 — planilha fora não derruba a aba
+        times = {}
+    cap_rows = []
+    for k, d in por_squad.items():
+        if k.startswith("(sem"):
+            continue
+        pessoas = len(times.get(k, []))
+        cap_rows.append((k, pessoas, d))
+    medias = [d["n"] / p for _k, p, d in cap_rows if p]
+    med_cp = (sum(medias) / len(medias)) if medias else None
+    linhas_cap = ""
+    sobre, folga = [], []
+    for k, p, d in sorted(cap_rows, key=lambda x: -(x[2]["n"] / x[1] if x[1] else 0)):
+        cp = d["n"] / p if p else None
+        graves = d["crit"] + d["alto"]
+        chip = ""
+        if cp is not None and med_cp:
+            if cp >= med_cp * 1.3:
+                chip = " <span class=chip style='--c:var(--status-critico)'>sobrecarga</span>"
+                sobre.append((k, cp, graves))
+            elif cp <= med_cp * 0.7:
+                chip = " <span class=chip style='--c:var(--status-baixo)'>folga</span>"
+                folga.append((k, cp))
+        saudaveis = d["bandas"]["baixo"]
+        avaliadas = d["n"] - d["bandas"]["sem"]
+        mrr_p = f"R$ {d['mrr'] / p:,.0f}".replace(",", ".") if p else "—"
+        cp_txt = f"{cp:.1f}" if cp is not None else "—"
+        graves_p = f"{graves / p:.1f}" if p else "—"
+        saud_txt = f"{saudaveis / avaliadas * 100:.0f}%" if avaliadas else "—"
+        linhas_cap += (f"<tr><td style='{_tdl}'><b>{escape(k)}</b>{chip}</td>"
+                       f"<td style='{_td}'>{p or '—'}</td>"
+                       f"<td style='{_td}'>{d['n']}</td>"
+                       f"<td style='{_td}'><b>{cp_txt}</b></td>"
+                       f"<td style='{_td}'>{mrr_p}</td>"
+                       f"<td style='{_td}'>{graves_p}</td>"
+                       f"<td style='{_td}'>{saud_txt}</td></tr>")
+    leitura_cap = "Cargas relativamente equilibradas entre os squads — sem caso claro de redistribuição agora."
+    if sobre:
+        pior = sobre[0]
+        alvo = f" O squad {folga[0][0]} tem folga ({folga[0][1]:.1f} contas/pessoa) e é o candidato natural a absorver contas do mesmo bundle." if folga else ""
+        leitura_cap = (f"{pior[0]} está com {pior[1]:.1f} contas por pessoa (média: {med_cp:.1f}) e {pior[2]} alerta(s) grave(s) — "
+                       f"candidato a redistribuição de clientes ou reforço.{alvo}")
+    ths_cap = "".join(f"<th style='text-align:{al};padding:7px 9px;font-size:var(--fs-2xs)'>{h}</th>" for h, al in
+                      (("Squad", "left"), ("Pessoas", "right"), ("Contas", "right"), ("Contas/pessoa", "right"),
+                       ("MRR/pessoa", "right"), ("Graves/pessoa", "right"), ("% saudável", "right")))
     return (
         "<div class=page-head><h1>Carga por Squad</h1>"
         "<span class=role-chip>alocação e suporte — não é ranking</span></div>"
-        "<p class=sub>o risco da carteira visto por TIME e por responsável: onde há carga desproporcional de contas críticas e MRR em risco — "
+        "<p class=sub>o risco da carteira visto por TIME: onde há carga desproporcional de contas críticas e MRR em risco — "
         "decidir realocação/reforço ANTES de a sobrecarga virar churn · chip = concentração (≥3 críticos ou ≥30% do MRR em risco)</p>"
-        "<section><h2>Por squad</h2><p class=secsub>squads REAIS da planilha de composição (S1…S8) — o líder do squad é o Growth</p>"
+        "<section><h2>Por squad</h2><p class=secsub>squads REAIS da planilha de composição (Bx-Sy) — o líder do squad é o Growth</p>"
         + tabela(por_squad, "Squad") + "</section>"
-        "<section><h2>Por responsável da conta</h2>"
-        f"<p class=secsub>campo “gerente de contas” do espelho da Operação — hoje mistura pessoas do Growth e GCs, e está preenchido "
-        f"para {com_gc} de {len(scores)} contas; completar (e padronizar) o campo no ClickUp deixa esta visão fiel</p>"
-        + tabela(por_gc, "Responsável") + "</section>")
+        "<section><h2>Capacidade de atendimento</h2>"
+        "<p class=secsub>carteira ÷ tamanho do time (pessoas da planilha de composição) — o squad dá conta das contas que atende? "
+        "sobrecarga = contas/pessoa ≥1,3× a média dos squads · folga = ≤0,7×</p>"
+        f"<div class=card><div class=sug-item>→ {escape(leitura_cap)}</div>"
+        "<style>.sug-item{padding:7px 0 12px;font-size:var(--fs-sm);line-height:1.6;color:var(--text-2)}</style></div>"
+        f"<div class=central style='padding:6px 14px 12px;overflow-x:auto'><table style='width:100%;border-collapse:collapse'>"
+        f"<tr>{ths_cap}</tr>{linhas_cap}</table></div></section>")
 
 
 def _render(role: str, scores: list[dict], alerts: list[dict],
