@@ -2089,12 +2089,22 @@ def _carga_content(scores: list[dict], mirror: dict | None) -> str:
     ths_cap = "".join(f"<th style='text-align:{al};padding:7px 9px;font-size:var(--fs-2xs)'>{h}</th>" for h, al in
                       (("Squad", "left"), ("Pessoas", "right"), ("Contas", "right"), ("Contas/pessoa", "right"),
                        ("MRR/pessoa", "right"), ("Graves/pessoa", "right"), ("% saudável", "right")))
+    # análise/ranking por squad (antes na aba Relatórios — unificação 15/07:
+    # 'Análise dos Squads' = ranking + insights + carga + capacidade num lugar só)
+    _squad_an, _sem_squad = _squad_analysis(scores)
+    squads_html = _squads_html(_squad_an, _sem_squad)
     return (
-        "<div class=page-head><h1>Carga por Squad</h1>"
-        "<span class=role-chip>alocação e suporte — não é ranking</span></div>"
-        "<p class=sub>o risco da carteira visto por TIME: onde há carga desproporcional de contas críticas e MRR em risco — "
-        "decidir realocação/reforço ANTES de a sobrecarga virar churn · chip = concentração (≥3 críticos ou ≥30% do MRR em risco)</p>"
-        "<section><h2>Por squad</h2>"
+        "<div class=page-head><h1>Análise dos Squads</h1>"
+        "<span class=role-chip>ranking, carga e capacidade por time</span></div>"
+        "<p class=sub>tudo do TIME num lugar só: score composto e plano de ação, carga de risco e capacidade de atendimento — "
+        "os pontos fortes/fracos de cada squad consideram todas essas dimensões</p>"
+        "<section><div class=sec-head><h2>Ranking e análise</h2>"
+        "<span class=sub>score composto (50% relacionamento · 25% execução · 25% risco), "
+        "dores dominantes e plano de ação por equipe — fortes/fracos incluem carga e concentração de risco</span></div>"
+        + squads_html + "</section>"
+        "<section><h2>Carga de risco por squad</h2>"
+        "<p class=secsub>onde há carga desproporcional de contas críticas e MRR em risco — decidir realocação/reforço "
+        "ANTES de a sobrecarga virar churn · chip = concentração (≥3 críticos ou ≥30% do MRR em risco)</p>"
         + tabela(por_squad, "Squad") + "</section>"
         "<section><h2>Capacidade de atendimento</h2>"
         "<p class=secsub>carteira ÷ tamanho do time (pessoas da planilha de composição) — o squad dá conta das contas que atende? "
@@ -2297,7 +2307,7 @@ __SCRIPT__
     # ---- navegação (view ativa; sessão define o papel — sem role na URL) ----
     nav = "<a class='nav-item' href='/'>← Início (central)</a>"
     for v, label in (("contas", "Contas"), ("alertas", "Alertas"),
-                     ("carga", "Carga por Squad"), ("cancelamentos", "Cancelamentos"),
+                     ("carga", "Análise dos Squads"), ("cancelamentos", "Cancelamentos"),
                      ("playbooks", "Playbooks"), ("relatorios", "Relatórios")):
         cls = "nav-item active" if v == view else "nav-item"
         nav += f"<a class='{cls}' href='/growth?view={v}'>{label}</a>"
@@ -2694,6 +2704,9 @@ def _resolve_squad(name: str, mirror: dict | None) -> str | None:
 def _squad_analysis(scores: list[dict]) -> tuple[list[dict], int]:
     """Análise por squad: subscores (relacionamento/execução/risco), dores
     dominantes, score composto 0-100 e plano de ação — base do ranking.
+    Fortes/fracos/ações consideram TAMBÉM carga e capacidade (contas/pessoa vs
+    média, concentração de MRR em risco, execução atrasada) — pedido Otávio
+    15/07 ao unificar tudo na aba 'Análise dos Squads'.
     Só entram os squads da PLANILHA de composição; contas sem squad conhecido
     ficam de fora (contadas à parte). Retorna (análise, n_sem_squad)."""
     import statistics as st
@@ -2704,6 +2717,11 @@ def _squad_analysis(scores: list[dict]) -> tuple[list[dict], int]:
         mirror = _mirror_clientes()
     except Exception:  # noqa: BLE001 — sem espelho, resolve só pelo nome
         mirror = None
+    try:
+        from .sources.squads_sheet import squad_teams
+        times = squad_teams()
+    except Exception:  # noqa: BLE001 — planilha de composição fora não derruba
+        times = {}
 
     by: dict[str, list[dict]] = {}
     sem_squad = 0
@@ -2727,31 +2745,55 @@ def _squad_analysis(scores: list[dict]) -> tuple[list[dict], int]:
         base = rel if rel is not None else 50.0
         composto = (0.5 * base + 0.25 * (exe if exe is not None else base)
                     + 0.25 * (100 * (1 - risco_pct)))
-        # pontos fortes/fracos por dimensão
-        fortes, fracos = [], []
+        pessoas = len(times.get(sq, []))
+        out.append({"squad": sq, "n": len(contas), "score": composto, "rel": rel, "exe": exe,
+                    "risco_pct": risco_pct, "n_alert": n_alert, "caindo_pct": caindo_pct,
+                    "dor": dor, "drivers": drivers,
+                    "pessoas": pessoas, "cp": (len(contas) / pessoas if pessoas else None),
+                    "exec_atr": sum(1 for s in contas if (s.get("exec_score") or 100) < 40),
+                    "mrr_risco": sum(_mrr_val(s) for s in contas if s.get("alert_sev") and _mrr_val(s) > 0)})
+
+    # dimensões RELATIVAS à carteira: média de contas/pessoa e total de MRR em risco
+    cps = [a["cp"] for a in out if a["cp"]]
+    med_cp = (sum(cps) / len(cps)) if cps else None
+    tot_risco = sum(a["mrr_risco"] for a in out) or 1.0
+    for a in out:
+        fortes, fracos, acoes = [], [], []
+        rel, exe = a["rel"], a["exe"]
         (fortes if (rel or 0) >= 60 else fracos).append(
             f"relacionamento (score médio {rel:.0f})" if rel is not None else "relacionamento (sem dados)")
         if exe is not None:
             (fortes if exe >= 70 else fracos).append(f"execução (média {exe:.0f}/100)")
-        (fortes if risco_pct <= 0.35 else fracos).append(f"risco ({n_alert} de {len(contas)} contas em alerta)")
-        if caindo_pct > 0.3:
-            fracos.append(f"trajetória ({caindo_pct * 100:.0f}% das contas piorando)")
+        (fortes if a["risco_pct"] <= 0.35 else fracos).append(
+            f"risco ({a['n_alert']} de {a['n']} contas em alerta)")
+        if a["caindo_pct"] > 0.3:
+            fracos.append(f"trajetória ({a['caindo_pct'] * 100:.0f}% das contas piorando)")
+        # carga e capacidade (antes só na tabela; agora entram na análise)
+        if a["cp"] is not None and med_cp:
+            if a["cp"] >= med_cp * 1.3:
+                fracos.append(f"carga ({a['cp']:.1f} contas/pessoa vs média {med_cp:.1f})")
+                acoes.append("Sobrecarga: redistribuir contas (priorizar as saudáveis, que exigem menos "
+                             "contexto) ou reforçar o time — sobrecarga sustentada vira atraso e churn.")
+            elif a["cp"] <= med_cp * 0.7:
+                fortes.append(f"carga com folga ({a['cp']:.1f} contas/pessoa vs média {med_cp:.1f})")
+        conc = a["mrr_risco"] / tot_risco
+        if conc >= 0.3:
+            fracos.append(f"concentração de MRR em risco ({conc * 100:.0f}% da carteira, {_fmt_brl(a['mrr_risco'])})")
+            acoes.append("Concentração de receita em risco: tratar as contas de maior MRR deste squad "
+                         "como prioridade da semana (reunião de retenção com plano de ação individual).")
+        if a["exec_atr"] and a["exec_atr"] / a["n"] > 0.2:
+            fracos.append(f"entregas ({a['exec_atr']} contas com execução atrasada no ClickUp)")
         # plano de ação: das dimensões mais fracas + dor dominante
-        acoes = []
-        if dor and dor in _SQUAD_ACAO:
-            acoes.append(_SQUAD_ACAO[dor])
+        if a["dor"] and a["dor"] in _SQUAD_ACAO:
+            acoes.append(_SQUAD_ACAO[a["dor"]])
         if exe is not None and exe < 70 and _SQUAD_ACAO["execucao"] not in acoes:
             acoes.append(_SQUAD_ACAO["execucao"])
-        if caindo_pct > 0.3:
+        if a["caindo_pct"] > 0.3:
             acoes.append(_SQUAD_ACAO["trajetoria"])
         if not acoes:
             acoes.append("Squad saudável: manter a rotina e documentar as práticas que funcionam — "
                          "elas viram referência de playbook para os squads abaixo no ranking.")
-        out.append({"squad": sq, "n": len(contas), "score": composto, "rel": rel, "exe": exe,
-                    "risco_pct": risco_pct, "n_alert": n_alert, "caindo_pct": caindo_pct,
-                    "dor": dor, "drivers": drivers, "fortes": fortes, "fracos": fracos,
-                    "acoes": acoes,
-                    "mrr_risco": sum(_mrr_val(s) for s in contas if s.get("alert_sev") and _mrr_val(s) > 0)})
+        a.update({"fortes": fortes, "fracos": fracos, "acoes": acoes})
     out.sort(key=lambda x: -x["score"])
     return out, sem_squad
 
@@ -2783,6 +2825,9 @@ def _squads_html(analysis: list[dict], sem_squad: int = 0) -> str:
                   f"<div style='display:flex;gap:10px;align-items:baseline;flex-wrap:wrap'>"
                   f"<span style='font-family:var(--font-display);font-weight:700;font-size:16px'>{i}º · {escape(a['squad'])}</span>"
                   f"<span style='font-family:var(--font-display);font-weight:700;color:var(--brand)'>{a['score']:.0f}/100</span>"
+                  f"<span style='font-size:var(--fs-xs);color:var(--text-muted)'>{a['n']} contas"
+                  + (f" · {a['pessoas']} pessoas ({a['cp']:.1f}/pessoa)" if a.get("cp") else "")
+                  + f"</span>"
                   f"<span style='font-size:var(--fs-xs);color:var(--text-muted)'>{escape(equipe[:120])}</span></div>"
                   f"<div style='font-size:var(--fs-sm);margin-top:8px'><span style='color:var(--status-baixo)'>fortes:</span> {escape(fortes)}</div>"
                   f"<div style='font-size:var(--fs-sm);margin-top:3px'><span style='color:var(--status-critico)'>fracos:</span> {escape(fracos)}</div>"
@@ -3121,8 +3166,6 @@ def _relatorios_content(rep: dict, scores: list[dict]) -> str:
                   + (f" · {_fmt_brl(p['mrr'])}" if p.get("mrr") else ""))
                  for i, p in enumerate(rep["piores"], 1)])
     dists = _dist_html(rep)
-    _squad_an, _sem_squad = _squad_analysis(scores)
-    squads_html = _squads_html(_squad_an, _sem_squad)
 
     return (
         "<div class=page-head><h1>Relatórios</h1>"
@@ -3142,10 +3185,11 @@ def _relatorios_content(rep: dict, scores: list[dict]) -> str:
         + block("Resumo executivo", _fmt_date_br(rep["data"]), resumo)
         + block("Piores contas", "menor score = pior; MRR quando conhecido", piores)
         + block("Distribuições", "faixa · estágio · trajetória", dists)
-        + "<section><div class=sec-head><h2>Análise por squad</h2>"
-          "<span class=sub>score composto (50% relacionamento · 25% execução · 25% risco), "
-          "ranking, dores dominantes e plano de ação por equipe</span></div>"
-        + squads_html + "</section>")
+        # análise por squad MUDOU de aba (unificação 15/07): ranking + insights
+        # + carga + capacidade agora vivem juntos em 'Análise dos Squads'
+        + "<p class=note style='margin-top:14px'>A <b>análise por squad</b> (ranking, pontos fortes/fracos e "
+          "plano de ação por time) agora vive na aba <a href='/growth?view=carga' "
+          "style='color:var(--brand)'>Análise dos Squads</a>, junto com carga e capacidade.</p>")
 
 
 # ---------------------------------------------------------------------------
