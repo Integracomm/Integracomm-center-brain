@@ -8,6 +8,7 @@ Router incluído por ÚLTIMO no api.py (lição da ordem de rotas do FastAPI).
 from __future__ import annotations
 
 import datetime as dt
+import re
 from html import escape
 
 from fastapi import APIRouter, Query, Request
@@ -538,13 +539,88 @@ def _criativos(conn, request: Request) -> str:
              ORDER BY (sum(i.spend) / NULLIF(sum(i.leads),0)) ASC NULLS LAST LIMIT 30""", args)
         rows = cur.fetchall()
     sel = "".join(f"<option {'selected' if p == publico else ''}>{escape(p)}</option>" for p in publicos[:80])
+    # medianas do conjunto = régua dos vereditos (14/07: de registro p/ decisão)
+    import statistics as _st
+    cpls = [float(g) / l for _a, _p, g, l, _o, _b in rows if l]
+    convs = [o / l for _a, _p, _g, l, o, _b in rows if l]
+    med_cpl = _st.median(cpls) if cpls else None
+    med_conv = _st.median(convs) if convs else None
+
+    def veredito(cpl, conv, books, gasto):
+        if cpl is None or med_cpl is None:
+            return ""
+        if books and conv is not None and med_conv and conv >= med_conv:
+            return "<span class=chip style='--c:var(--status-baixo)'>escalar</span>"
+        if cpl <= med_cpl and conv is not None and med_conv and conv >= med_conv:
+            return "<span class=chip style='--c:var(--status-baixo)'>escalar</span>"
+        if cpl > med_cpl * 1.5 and (conv or 0) < (med_conv or 0) * 0.7:
+            return "<span class=chip style='--c:var(--status-critico)'>pausar</span>"
+        if (conv or 0) < (med_conv or 0) * 0.7 and float(gasto) > 500:
+            return "<span class=chip style='--c:var(--status-alto)'>revisar</span>"
+        return "<span class=chip style='--c:var(--status-semdados)'>manter</span>"
     trs = ""
     for ad, pub, gasto, leads, oport, books in rows:
         cpl = float(gasto) / leads if leads else None
         conv = oport / leads if leads else None
-        trs += (f"<tr><td>{escape((ad or '')[:46])}</td><td>{escape((pub or '')[:30])}</td>"
+        trs += (f"<tr><td>{escape((ad or '')[:42])} {veredito(cpl, conv, books, gasto)}</td><td>{escape((pub or '')[:30])}</td>"
                 f"<td class=num>{_fmt(float(gasto), 'brl')}</td><td class=num>{leads}</td>"
                 f"<td class=num>{_fmt(cpl, 'brl')}</td><td class=num>{_fmt(conv, 'pct')}</td><td class=num>{books}</td></tr>")
+
+    # --- ELEMENTOS que funcionam: agrega performance por token do NOME do
+    # criativo (vídeo, ugc, depoimento, oferta…) — o insumo p/ o próximo brief
+    tok_agg: dict[str, list[float]] = {}
+    for ad, _p, g, l, o, _b in rows:
+        # só palavras "de brief" (sem dígito — códigos tipo ad116/v3 são ruído)
+        for tk in {t for t in re.split(r"[^a-zà-ú0-9]+", (ad or "").lower())
+                   if len(t) >= 4 and not any(ch.isdigit() for ch in t)}:
+            d = tok_agg.setdefault(tk, [0.0, 0, 0, 0])
+            d[0] += float(g); d[1] += l; d[2] += o; d[3] += 1
+    elems = [(tk, g / l, o / l, n, l) for tk, (g, l, o, n) in tok_agg.items() if n >= 2 and l >= 30]
+    el_rows = ""
+    for tk, cpl_t, conv_t, n, l in sorted(elems, key=lambda x: -x[2])[:10]:
+        cls = " class=pos" if med_conv and conv_t >= med_conv * 1.2 else (" class=neg" if med_conv and conv_t <= med_conv * 0.6 else "")
+        el_rows += (f"<tr><td><b>{escape(tk)}</b> <span style='color:var(--text-faint)'>({n} criativos)</span></td>"
+                    f"<td class=num>{l}</td><td class=num>{_fmt(cpl_t, 'brl')}</td><td class=num{cls}>{_fmt(conv_t, 'pct')}</td></tr>")
+    sec_elem = (f"<section><h2>Elementos que funcionam</h2><p class=secsub>performance agregada por PALAVRA no nome do criativo (mín. 2 criativos e 30 leads) — o padrão vencedor vira brief; verde = conversão bem acima da mediana</p>"
+                f"<div class=card><table><tr><th>Elemento</th><th class=num>Leads</th><th class=num>CPL</th><th class=num>Lead→Oport</th></tr>{el_rows}</table></div></section>") if el_rows else ""
+
+    # --- CRIATIVO × PLANO fechado: que criativo traz cliente de qual bundle
+    with conn.cursor() as cur:
+        cur.execute("""SELECT utm_content, COALESCE(substring(produto FROM 'B[1-5]'), 'outros'), count(*)
+                         FROM mkt_deals_attribution
+                        WHERE status='won' AND utm_content IS NOT NULL GROUP BY 1, 2""")
+        cb: dict[str, dict[str, int]] = {}
+        for cr, bd, n in cur.fetchall():
+            cb.setdefault(cr[:42], {})[bd] = n
+    bundles_c = ["B1", "B2", "B3", "B4", "B5", "outros"]
+    cb_rows = ""
+    for cr, d in sorted(cb.items(), key=lambda x: -sum(x[1].values()))[:10]:
+        tot_cr = sum(d.values())
+        b25 = sum(v for k, v in d.items() if k in ("B2", "B3", "B4", "B5"))
+        tds = "".join(f"<td class=num>{d.get(b, '') or '—'}</td>" for b in bundles_c)
+        chip_b = (" <span class=chip style='--c:var(--status-baixo)'>traz B2-B5</span>"
+                  if tot_cr >= 3 and b25 / tot_cr >= 0.5 else "")
+        cb_rows += f"<tr><td>{escape(cr)}{chip_b}</td>{tds}<td class=num><b>{tot_cr}</b></td></tr>"
+    sec_cb = (f"<section><h2>Criativo × plano fechado</h2><p class=secsub>bookings por criativo e bundle (todo o histórico atribuído) — qual promessa traz o cliente que a empresa QUER (B2-B5) · cruze com a aba Ciclo de Vida p/ ver se esse cliente também FICA</p>"
+              f"<div class=card><table><tr><th>Criativo</th>" + "".join(f"<th class=num>{b}</th>" for b in bundles_c)
+              + f"<th class=num>Total</th></tr>{cb_rows}</table></div></section>") if cb_rows else ""
+
+    # --- leitura automática do especialista
+    leitura = []
+    escalaveis = [(ad, o / l) for ad, _p, g, l, o, b in rows if l >= 20 and med_conv and o / l >= med_conv * 1.3]
+    if escalaveis:
+        top = max(escalaveis, key=lambda x: x[1])
+        leitura.append(f"Melhor criativo com volume: “{top[0][:40]}” converte {top[1] * 100:.1f}% (mediana {med_conv * 100:.1f}%) — candidato a mais verba.")
+    ralos = [(ad, float(g)) for ad, _p, g, l, o, _b in rows if l >= 20 and med_conv and (o / l) <= med_conv * 0.5 and float(g) > 800]
+    if ralos:
+        pior = max(ralos, key=lambda x: x[1])
+        leitura.append(f"Maior ralo: “{pior[0][:40]}” já gastou {_fmt(pior[1], 'brl')} convertendo metade da mediana — pausar ou trocar a promessa.")
+    if elems:
+        melhor_el = max(elems, key=lambda x: x[2])
+        leitura.append(f"Elemento vencedor nos nomes: “{melhor_el[0]}” ({melhor_el[2] * 100:.1f}% de conversão em {melhor_el[3]} criativos) — leve para o próximo brief.")
+    sec_leitura = ("<section><h2>Leitura do especialista</h2><div class=card>"
+                   + "".join(f"<div class=sug-item>→ {escape(t)}</div>" for t in (leitura or ["Sem volume suficiente para leitura automática neste filtro."]))
+                   + "<style>.sug-item{padding:7px 0;border-top:1px solid var(--border);font-size:var(--fs-sm);line-height:1.6;color:var(--text-2)}.sug-item:first-child{border-top:none}</style></div></section>")
 
     # histórico de testes (ad-insightify) + ideias heurísticas
     testes, ideias = "", ""
@@ -571,13 +647,15 @@ def _criativos(conn, request: Request) -> str:
     except Exception:  # noqa: BLE001 — histórico fora do ar não derruba a aba
         testes = "<section><div class=warn>Histórico do ad-insightify indisponível no momento.</div></section>"
 
-    return (f"<h1>Criativos e Públicos</h1><div class=sub>ranking por CPL (mín. 5 leads), filtrável por público; conversão via atribuição do Pipedrive (utm_content)</div>"
+    return (f"<h1>Criativos e Públicos</h1><div class=sub>o que escalar, revisar ou pausar — e que promessa traz o cliente certo · veredito pela mediana do conjunto · conversão via atribuição do Pipedrive (utm_content)</div>"
             f"<form method=get action=/marketing><input type=hidden name=view value=criativos>"
             f"<div class=filters><div><label>público (adset)</label><select name=publico><option value=''>todos</option>{sel}</select></div>"
             f"<button type=submit>Filtrar</button></div></form>"
-            f"<section><div class=card><table><tr><th>Criativo</th><th>Público</th><th class=num>Gasto</th>"
+            + sec_leitura +
+            f"<section><h2>Desempenho por criativo</h2><p class=secsub>ranking por CPL (mín. 5 leads) com VEREDITO: escalar = conversão acima da mediana · revisar = conversão fraca com gasto relevante · pausar = CPL alto E conversão fraca</p>"
+            f"<div class=card><table><tr><th>Criativo</th><th>Público</th><th class=num>Gasto</th>"
             f"<th class=num>Leads</th><th class=num>CPL</th><th class=num>Lead→Oport</th><th class=num>Bookings</th></tr>{trs}</table></div></section>"
-            + testes + ideias)
+            + sec_elem + sec_cb + testes + ideias)
 
 
 # ---------------------------------------------------------------------------

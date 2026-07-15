@@ -95,7 +95,11 @@ HELP: dict[str, list[tuple[str, str]]] = {
         ("Estratégias e criativos recomendados", "Campanhas e criativos que historicamente FECHARAM o bundle pedido. Insight: começar por eles reduz o risco do plano — é o caminho já pavimentado; o resto é aposta."),
     ],
     "marketing/criativos": [
-        ("_intro", "Desempenho de criativos por público (base ad-insightify) + histórico de testes + ideias. Evita repetir teste que já perdeu e industrializa o que já ganhou."),
+        ("_intro", "Ferramenta de DECISÃO sobre criativos (reformulada 15/07): cada criativo recebe um veredito automático (escalar/manter/revisar/pausar) pela mediana do conjunto; os padrões vencedores no NOME viram brief; e o cruzamento com o plano fechado mostra qual promessa traz o cliente que a empresa quer. Fluxo sugerido: Leitura do especialista → vereditos → Elementos → brief novo."),
+        ("Leitura do especialista", "As 3 decisões prontas: o criativo a escalar (conversão bem acima da mediana com volume), o maior ralo de verba (gasto alto convertendo metade da mediana) e o elemento vencedor para o próximo brief."),
+        ("Desempenho por criativo", "Ranking com veredito: ESCALAR = conversão acima da mediana (mais verba); REVISAR = conversão fraca com gasto relevante (trocar promessa/público antes de matar); PAUSAR = CPL alto E conversão fraca. Insight: o veredito compara com a mediana DO CONJUNTO FILTRADO — filtre por público para decisões dentro do mesmo contexto."),
+        ("Elementos que funcionam", "Performance agregada por palavra no nome do criativo (vídeo, ugc, oferta, depoimento…). Insights: (1) elemento verde repetido em vários criativos = padrão comprovado, industrialize; (2) exige nomenclatura disciplinada dos anúncios — nomes crípticos deixam esta análise cega."),
+        ("Criativo × plano fechado", "Quais criativos geram bookings de cada bundle — a promessa certa atrai o cliente certo. Insights: (1) chip 'traz B2-B5' = criativo alinhado à meta da empresa, priorize; (2) criativo que só fecha B1 pode estar prometendo preço em vez de valor; (3) cruze com a aba Ciclo de Vida: trazer B2-B5 que cancela cedo não é vitória."),
         ("Histórico de testes", "Testes de criativo×público já rodados com resultado. Insight: antes de aprovar um teste novo, confira se já não foi feito — orçamento de teste é finito."),
         ("Ideias", "Sugestões heurísticas a partir dos padrões vencedores. Insight: use como brief inicial para a produção, não como peça final."),
     ],

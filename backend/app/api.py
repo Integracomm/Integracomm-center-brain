@@ -2094,7 +2094,7 @@ def _carga_content(scores: list[dict], mirror: dict | None) -> str:
         "<span class=role-chip>alocação e suporte — não é ranking</span></div>"
         "<p class=sub>o risco da carteira visto por TIME: onde há carga desproporcional de contas críticas e MRR em risco — "
         "decidir realocação/reforço ANTES de a sobrecarga virar churn · chip = concentração (≥3 críticos ou ≥30% do MRR em risco)</p>"
-        "<section><h2>Por squad</h2><p class=secsub>squads REAIS da planilha de composição (Bx-Sy) — o líder do squad é o Growth</p>"
+        "<section><h2>Por squad</h2>"
         + tabela(por_squad, "Squad") + "</section>"
         "<section><h2>Capacidade de atendimento</h2>"
         "<p class=secsub>carteira ÷ tamanho do time (pessoas da planilha de composição) — o squad dá conta das contas que atende? "
