@@ -61,19 +61,29 @@ class GrowthAgent(Agent):
                 # RESILIÊNCIA: uma conta que falha na leitura (timeout persistente,
                 # grupo inacessível) é PULADA — não pode derrubar a rodada inteira.
                 try:
+                    # PAUSADO (regra Otávio 15/07): contrato pausado = silêncio
+                    # INEVITÁVEL (serviço suspenso) — não é sinal de churn. A
+                    # análise ancora na ÚLTIMA CONVERSA real (asof efetivo =
+                    # retrato pré-pausa, que pode revelar pausa por ineficiência).
+                    asof = item["asof"]
+                    if item.get("is_paused"):
+                        ultima = next(iter(reader.iter_messages(group_id=gid, order="desc")), None)
+                        if ultima is not None and ultima.received_at is not None:
+                            asof = min(asof, collectors._brt_day(ultima.received_at))
                     # analyses AO VIVO por grupo (nunca de cache — senão perde CRÍTICO recente)
                     analyses_live = {gid: [(a.analysis_date, a.classification)
                                            for a in reader.iter_analyses(group_id=gid)]}
                     eventos: dict = {}
                     sigs = collectors.build_account_signals(
-                        reader, group_internal_id=gid, asof=item["asof"],
+                        reader, group_internal_id=gid, asof=asof,
                         analyses_by_group=analyses_live, events_out=eventos,
                         cancel_confirmer=confirmer,
                     )
                     # EXECUÇÃO no score (bloco 15%): risco direto pré-computado pelo
                     # runner (mirror ClickUp as-of, porte fiel). Ausente -> bloco fora,
-                    # renormaliza (comportamento validado).
-                    if item.get("execution_risk") is not None:
+                    # renormaliza (comportamento validado). PAUSADO fica FORA: sem
+                    # serviço prestado, atraso de tarefa não é atrito real.
+                    if item.get("execution_risk") is not None and not item.get("is_paused"):
                         sigs.append(scoring.SignalInput(
                             "execucao", "execution", [], higher_is_worse=True,
                             source="clickup", direct_risk=float(item["execution_risk"]),
@@ -83,7 +93,6 @@ class GrowthAgent(Agent):
                     # Filtra à janela do score; sem análise -> sinal fora (renormaliza
                     # dentro do bloco tone, que segue com tom_negativo/comprimento).
                     tone = item.get("tone_series") or []
-                    asof = item["asof"]
                     tone_pts = [(d, r) for d, r in tone
                                 if asof - dt.timedelta(days=90) <= d <= asof]
                     if tone_pts:

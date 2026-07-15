@@ -37,6 +37,7 @@ _FINALIZED = re.compile(r"final\w*z|encerrad", re.I)  # tolera typo (FINALZADO) 
 _HAS_ID = re.compile(r"id\s*:\s*[a-z0-9_-]+", re.I)
 _CLIENT_TAG = re.compile(r"^\s*\[")  # nome de cliente começa com [tag de plano/serviço]
 _BUNDLE = re.compile(r"\bB\d\b", re.I)
+_PAUSED = re.compile(r"pausad", re.I)  # [PAUSADO ...] = contrato pausado (serviço suspenso)
 
 
 def load_env() -> None:
@@ -252,6 +253,11 @@ def main() -> None:
             "name": name, "group_id": gid, "asof": TODAY,
             "plan_category": (_BUNDLE.search(name) or [None])[0] if _BUNDLE.search(name) else None,
             "is_legacy": False, "recurring_revenue": mrr.get(norm(name)),
+            # PAUSADO (regra Otávio 15/07): serviço suspenso -> silêncio inevitável
+            # NÃO pode derrubar o score; o agente ancora a análise na última
+            # conversa real (retrato PRÉ-PAUSA, que é o que interessa: cliente
+            # pode ter pausado por ineficiência do serviço)
+            "is_paused": bool(_PAUSED.search(name)),
         })
         if args.limit and len(sample) >= args.limit:
             break
