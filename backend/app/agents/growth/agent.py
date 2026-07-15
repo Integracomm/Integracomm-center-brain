@@ -45,6 +45,13 @@ class GrowthAgent(Agent):
         reader = WhatsAppReader(os.environ["WHATSAPP_READ_API_URL"], os.environ["WHATSAPP_READ_API_KEY"],
                                 audit=ctx.audit, run_id=ctx.run_id)
 
+        # confirmador semântico de fala de cancelamento (Claude + cache por msg;
+        # None = sem chave/desligado -> regex-only, comportamento anterior)
+        from .cancel_confirm import build_confirmer
+        confirmer = build_confirmer(self._conn_factory)
+        if confirmer is not None:
+            print("  [cancel-llm] confirmador semântico ATIVO (Haiku + cache)", file=sys.stderr)
+
         raw: dict[str, list[scoring.SignalInput]] = {}
         meta: dict[str, dict] = {}
         skipped: list[tuple[str, str]] = []  # (conta, motivo) — resiliência por conta
@@ -61,6 +68,7 @@ class GrowthAgent(Agent):
                     sigs = collectors.build_account_signals(
                         reader, group_internal_id=gid, asof=item["asof"],
                         analyses_by_group=analyses_live, events_out=eventos,
+                        cancel_confirmer=confirmer,
                     )
                     # EXECUÇÃO no score (bloco 15%): risco direto pré-computado pelo
                     # runner (mirror ClickUp as-of, porte fiel). Ausente -> bloco fora,

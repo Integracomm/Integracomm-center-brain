@@ -226,6 +226,8 @@ def load_tone_series(conn_factory) -> dict[str, list[tuple[dt.date, float]]]:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=0, help="máx. de contas (0 = todas)")
+    ap.add_argument("--only", default="", help="re-roda SÓ contas cujo nome contém um dos termos "
+                    "(separados por vírgula, sem acento; ex.: --only '18814,arenastoree')")
     ap.add_argument("--from-cache", action="store_true", help="universo do cache CSV (sem rede)")
     ap.add_argument("--dry-list", action="store_true", help="só lista o universo, não roda/persiste")
     ap.add_argument("--no-exec", action="store_true", help="pula o contexto de execução/MRR do mirror")
@@ -240,8 +242,11 @@ def main() -> None:
 
     mrr = mrr_index()
     src = universe_cache() if args.from_cache else universe_live()
+    only = [norm(t) or t.strip().lower() for t in args.only.split(",") if t.strip()]
     sample = []
     for gid, name in src:
+        if only and not any(t in norm(name) or t in (name or "").lower() for t in only):
+            continue
         sample.append({
             "account_id": (exid(name) or gid),  # id interno estável p/ dedup
             "name": name, "group_id": gid, "asof": TODAY,

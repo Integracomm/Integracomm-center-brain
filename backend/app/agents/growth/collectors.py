@@ -20,6 +20,7 @@ import re
 import unicodedata
 from collections import defaultdict
 from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -34,9 +35,19 @@ _CANCEL_RE = re.compile(
     r"|cancel\w*\s+(o\s+|nosso\s+|esse\s+)?(contrato|servico|plano)"
     r"|encerr\w+\s+(a\s+|o\s+|essa\s+|nossa\s+|com\s+)?(contrato|parceria|assessoria)"
     r"|rescis\w+|rescindir"
-    r"|(quero|vou|decidi)\s+sair"
+    # "vou sair" SOZINHO nao basta — casos reais 15/07/26: "as 4 vou sair para
+    # faculdade" (OUTLET DA CONSTRUCAO) e "nao vou sair prejudicada" (ARENASTOREE)
+    # viraram alerta falso. "vou sair" exige objeto de relacionamento; "quero/
+    # decidi sair" segue valendo sozinho (intencao, caso real DMC 13/05).
+    r"|(quero|decidi)\s+sair"
+    r"|vou\s+sair\s+(d[oa]s?\s+|de\s+|desse\s+|dessa\s+)(grupo|contrato|parceria|assessoria|integracomm|servico|plano)"
     r"|nao\s+vou\s+(continuar|renovar|investir)"
-    r"|nao\s+quero\s+(mais|continuar|renovar)"
+    # "nao quero mais" SOZINHO nao basta — caso real INTEEL 02/07/26 (audio):
+    # "ele esta tamanho casal, solteiro e Queen. Eu nao quero mais." (falava do
+    # ANUNCIO, nao do servico) virou alerta falso de cancelamento. Exige objeto
+    # de relacionamento/continuidade apos o "mais".
+    r"|nao\s+quero\s+(continuar|renovar)"
+    r"|nao\s+quero\s+mais\s+(o\s+|a\s+|os\s+|as\s+)?(servico|contrato|plano|assessoria|parceria|integracomm|continuar|seguir|renovar|trabalhar)"
     # frases de saída que escapavam (ex.: SOLUTION STORE "pensando seriamente em parar")
     r"|pens\w+\s+(seriamente\s+)?em\s+(parar|sair|cancelar|desistir)"
     r"|(vou|quero|penso)\s+(parar|desistir)"
@@ -51,6 +62,16 @@ _CANCEL_RE = re.compile(
     r"|distrato",
     re.IGNORECASE,
 )
+
+
+# Dia BRT: mensagem das 21h+ (BRT) cai no dia SEGUINTE em UTC — a data do
+# episódio no alerta não batia com o dia que o gestor vê no WhatsApp (mesma
+# classe do ajuste de prazo por dia BRT no ClickUp, 14/07).
+_BRT = dt.timezone(dt.timedelta(hours=-3))
+
+
+def _brt_day(ts: dt.datetime) -> dt.date:
+    return ts.astimezone(_BRT).date() if ts.tzinfo else ts.date()
 
 
 def _norm_txt(s: str) -> str:
@@ -106,6 +127,7 @@ def build_account_signals(
     analyses_by_group: dict[str, list[tuple[str, str]]],
     window_days: int = 90,
     events_out: dict | None = None,
+    cancel_confirmer: Any = None,
 ) -> list[SignalInput]:
     """Constrói os SignalInput de WhatsApp de UMA conta na janela pré-asof.
 
@@ -114,6 +136,11 @@ def build_account_signals(
     mensagem da EQUIPE tocando no tema após cada início (data, remetente).
     Vira a linha do tempo do caso (case_updates); só datas/derivados, sem
     conteúdo bruto (LGPD).
+
+    `cancel_confirmer` (opcional, ver cancel_confirm.build_confirmer): julga
+    SEMANTICAMENTE cada mensagem candidata da regex ([(msg_id, texto)] ->
+    {msg_id: bool}) — só dias com candidato CONFIRMADO viram fala de
+    cancelamento (episódio + gatilho de intenção de saída). None = regex-only.
     """
     end_dt = dt.datetime.combine(asof, dt.time.max, tzinfo=dt.timezone.utc)
     start_default = asof - dt.timedelta(days=window_days)
@@ -125,6 +152,7 @@ def build_account_signals(
     cancel_phrase = False  # "fala em cancelar" (texto) nas últimas 3 semanas
     cancel_cut = asof - dt.timedelta(days=21)
     cancel_days: set[dt.date] = set()            # dias c/ fala do cliente (janela toda)
+    cancel_cand: list[tuple[dt.date, str, str]] = []  # candidatos da regex p/ o confirmador
     team_cancel: list[tuple[dt.date, str]] = []  # equipe tocando no tema (data, quem)
     start_dt = dt.datetime.combine(start_default, dt.time.min, tzinfo=dt.timezone.utc)
     # Paginação por group_id habilitada no gateway (índice + keyset).
@@ -137,7 +165,7 @@ def build_account_signals(
             n_lidas += 1
             if not m.received_at:
                 continue
-            d = m.received_at.date()
+            d = _brt_day(m.received_at)
             if d < start_default or d > asof:
                 continue
             first_data = d if first_data is None else min(first_data, d)
@@ -147,14 +175,21 @@ def build_account_signals(
                 cli_count[wk] += 1
                 cli_len[wk].append(len(txt))
                 if txt and _CANCEL_RE.search(_norm_txt(txt)):
-                    cancel_days.add(d)
-                    if d >= cancel_cut:
-                        cancel_phrase = True
+                    cancel_cand.append((d, m.id, txt))
             elif events_out is not None and txt and _CANCEL_RE.search(_norm_txt(txt)):
                 team_cancel.append((d, (m.sender_name or "equipe").strip()))
     except httpx.HTTPError:
         if n_lidas == 0:
             raise  # nada lido = sem base; o chamador pula a conta (não é "silêncio")
+    # candidatos da regex passam pelo confirmador semântico (Claude), se houver;
+    # sem confirmador (ou msg fora do veredito) mantém o comportamento regex-only
+    veredito = cancel_confirmer([(mid, t) for _, mid, t in cancel_cand]) \
+        if (cancel_cand and cancel_confirmer is not None) else None
+    for d, mid, _ in cancel_cand:
+        if veredito is None or veredito.get(mid, True):
+            cancel_days.add(d)
+            if d >= cancel_cut:
+                cancel_phrase = True
     if events_out is not None:
         events_out["episodios"] = [
             {"inicio": ini, "fim": fim,
