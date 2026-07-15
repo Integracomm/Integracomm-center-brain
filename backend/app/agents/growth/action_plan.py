@@ -50,6 +50,11 @@ def _dossie(data: dict, updates: list[dict]) -> str:
         lines.append(f"EXECUÇÃO (ClickUp): {s['exec_score']:.0f}/100")
     if f.get("available") and f.get("comparativo"):
         for b in f["comparativo"]:
+            if b.get("prev_antes_inicio"):
+                lines.append(f"FATURAMENTO CNPJ {b.get('cnpj') or 'único'}: {h['reference_month_label']} "
+                             + (f"R$ {b['total_ref']:,.0f}" if b.get("ref_lancado") else "(não lançado)")
+                             + " (cliente novo — sem base no mês anterior)")
+                continue
             lines.append(f"FATURAMENTO CNPJ {b.get('cnpj') or 'único'}: "
                          f"{h['prev_month_label']} R$ {b['total_prev']:,.0f} → {h['reference_month_label']} "
                          + (f"R$ {b['total_ref']:,.0f}" if b.get("ref_lancado") else "(não lançado)"))

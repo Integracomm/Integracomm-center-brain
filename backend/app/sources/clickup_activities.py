@@ -98,8 +98,10 @@ def _refresh_list(token: str, list_id: str) -> None:
     o índice derivado). Usado só pelo prewarm."""
     fresh = _download_list(token, list_id)
     _cache[f"cu:{list_id}"] = (time.monotonic(), fresh)
-    _cache.pop(f"cu-idx:{list_id}", None)  # força reconstrução do índice na próxima leitura
-    _subs_by_norm_raw(token, list_id)      # ...e já reconstrói agora (fora do caminho do usuário)
+    _cache.pop(f"cu-idx:{list_id}", None)    # força reconstrução dos índices na próxima leitura
+    _cache.pop(f"cu-roots:{list_id}", None)
+    _subs_by_norm_raw(token, list_id)        # ...e já reconstrói agora (fora do caminho do usuário)
+    _roots_by_norm(token, list_id)
 
 
 def _warm_aux() -> None:
@@ -132,7 +134,8 @@ def prewarm_clickup() -> None:
             return
         while True:
             try:
-                _refresh_list(s.clickup_api_token, s.clickup_list_assessoria)
+                for lst in _report_lists(s):
+                    _refresh_list(s.clickup_api_token, lst)
                 _warm_aux()  # mirror de clientes, planilha mestre de NPS, squads
             except Exception:  # noqa: BLE001 — best-effort; próxima volta tenta de novo
                 time.sleep(120)
@@ -181,6 +184,28 @@ def _subs_by_norm_raw(token: str, list_id: str) -> dict[str, list[dict]]:
     return _cached(f"cu-idx:{list_id}", build, ttl=_LIST_TTL)
 
 
+def _roots_by_norm(token: str, list_id: str) -> dict[str, set[str]]:
+    """Índice derivado (cacheado): nome-base → ids dos CARDS-raiz da lista.
+    Usado p/ pular o BFS quando o card do mirror já está numa lista indexada
+    (o BFS pagava 1 GET por subtarefa — 97s no caso RADIADORES)."""
+    def build():
+        tasks = _clickup_list_tasks(token, list_id)
+        out: dict[str, set[str]] = {}
+        for t in tasks:
+            if not t.get("parent"):
+                n = norm_account(t.get("name") or "")
+                if n:
+                    out.setdefault(n, set()).add(t["id"])
+        return out
+    return _cached(f"cu-roots:{list_id}", build, ttl=_LIST_TTL)
+
+
+def _report_lists(s) -> list[str]:
+    """Listas indexadas p/ relatório: assessoria + clientes ativos (cards de
+    cliente podem viver em qualquer uma — caso SOLUTION STORE/RADIADORES)."""
+    return [lst for lst in (s.clickup_list_assessoria, s.clickup_list_clientes_ativos) if lst]
+
+
 def api_subs_by_norm() -> dict[str, list[dict]]:
     """Subtarefas por nome-base no MESMO formato do mirror — fonte preferida do
     score de EXECUÇÃO p/ clientes ativos (o mirror cobre só ~51%). Levanta
@@ -213,34 +238,48 @@ def _mk_item(t: dict, start: dt.datetime, end: dt.datetime) -> dict | None:
             "categoria": (tags[0] if tags else None)}
 
 
+def _bfs_nodes(token: str, root_id: str, max_nodes: int = 200) -> list[tuple[str, dict]]:
+    """Varre a ÁRVORE de subtarefas de um card via /task/{id}?include_subtasks=true
+    e devolve os nós CRUS [(id, task)]. É a rota cara (1 GET por nó, sob rate
+    limit do ClickUp — 97s no caso RADIADORES), então o resultado é CACHEADO
+    por 30min; o filtro por período fica no chamador."""
+    def scan():
+        nodes: list[tuple[str, dict]] = []
+        visited = {root_id}
+        frontier = [root_id]
+        with httpx.Client(timeout=60.0) as cli:
+            while frontier and len(visited) <= max_nodes:
+                tid = frontier.pop(0)
+                r = cli.get(f"{_CLICKUP_BASE}/task/{tid}",
+                            params={"include_subtasks": "true"},
+                            headers={"Authorization": token})
+                if r.status_code == 401:
+                    r.raise_for_status()  # token inválido -> aviso específico no chamador
+                if r.status_code != 200:
+                    continue
+                t = r.json()
+                if tid != root_id:
+                    nodes.append((tid, t))
+                for s2 in (t.get("subtasks") or []):
+                    sid = s2.get("id")
+                    if sid and sid not in visited:
+                        visited.add(sid)
+                        frontier.append(sid)
+        return nodes
+    return _cached(f"cu-bfs:{root_id}", scan, ttl=_LIST_TTL)
+
+
 def _bfs_completed(token: str, root_id: str, start: dt.datetime, end: dt.datetime,
                    skip_ids: set[str], max_nodes: int = 200) -> list[dict]:
-    """Varre a ÁRVORE de subtarefas de um card via /task/{id}?include_subtasks=true
-    — cobre cards que não estão na lista configurada (ex.: card apontado pelo
-    mirror, ou card de assessoria vivendo em outra lista). O root não vira item."""
+    """Itens concluídos no período dentro da árvore do card (nós via _bfs_nodes,
+    cacheado). O root não vira item."""
     out: list[dict] = []
-    visited = {root_id}
-    frontier = [root_id]
-    with httpx.Client(timeout=60.0) as cli:
-        while frontier and len(visited) <= max_nodes:
-            tid = frontier.pop(0)
-            r = cli.get(f"{_CLICKUP_BASE}/task/{tid}",
-                        params={"include_subtasks": "true"},
-                        headers={"Authorization": token})
-            if r.status_code == 401:
-                r.raise_for_status()  # token inválido -> aviso específico no chamador
-            if r.status_code != 200:
-                continue
-            t = r.json()
-            if tid != root_id and tid not in skip_ids:
-                item = _mk_item(t, start, end)
-                if item:
-                    out.append(item)
-            for s2 in (t.get("subtasks") or []):
-                sid = s2.get("id")
-                if sid and sid not in visited:
-                    visited.add(sid)
-                    frontier.append(sid)
+    for tid, t in _bfs_nodes(token, root_id, max_nodes):
+        if tid in skip_ids:
+            continue
+        item = _mk_item(t, start, end)
+        if item:
+            out.append(item)
     return out
 
 
@@ -256,18 +295,24 @@ def _from_clickup_api(account_name: str, start: dt.datetime, end: dt.datetime) -
     token = s.clickup_api_token
     out: list[dict] = []
     known_ids: set[str] = set()
+    known_roots: set[str] = set()
 
-    if s.clickup_list_assessoria:
-        # índice derivado (cacheado): subtarefas da conta já atribuídas ao card
-        idx = _subs_by_norm_raw(token, s.clickup_list_assessoria)
-        subs = idx.get(norm_account(account_name), [])
-        known_ids = {t["id"] for lst in idx.values() for t in lst}
-        for t in subs:
+    # rota 1: listas INDEXADAS (assessoria + clientes ativos) — cards de cliente
+    # por nome + subtarefas retornadas pela própria lista, tudo cacheado/prewarm
+    for lst in _report_lists(s):
+        idx = _subs_by_norm_raw(token, lst)
+        known_ids |= {t["id"] for sub in idx.values() for t in sub}
+        for roots in _roots_by_norm(token, lst).values():
+            known_roots |= roots
+        for t in idx.get(norm_account(account_name), []):
+            if any(i["id"] == t["id"] for i in out):
+                continue  # card presente nas duas listas
             item = _mk_item(t, start, end)
             if item:
                 out.append(item)
 
-    # rota 2: cards fora da lista configurada (mirror; cards homônimos idem)
+    # rota 2 (último recurso): card do mirror FORA das listas indexadas — BFS
+    # nó a nó (1 GET/subtarefa, caro: rate limit do ClickUp), com cache de 30min
     extra_roots: set[str] = set()
     try:
         info = _mirror_clientes().get(norm_account(account_name)) or {}
@@ -277,8 +322,8 @@ def _from_clickup_api(account_name: str, start: dt.datetime, end: dt.datetime) -
         pass
     seen_ids = known_ids | {i["id"] for i in out}
     for root in extra_roots:
-        if root in known_ids:
-            continue  # já coberto pela lista de assessoria
+        if root in known_ids or root in known_roots:
+            continue  # já coberto por lista indexada
         for item in _bfs_completed(token, root, start, end, skip_ids=seen_ids):
             if item["id"] not in seen_ids:
                 seen_ids.add(item["id"])
@@ -364,8 +409,12 @@ def _upcoming_from_clickup(account_name: str, now: dt.datetime, limit: int = 20)
     s = get_settings()
     if not (s.clickup_api_token and s.clickup_list_assessoria):
         return None
-    subs = _subs_by_norm_raw(s.clickup_api_token, s.clickup_list_assessoria).get(
-        norm_account(account_name), [])
+    subs, vistos = [], set()
+    for lst in _report_lists(s):
+        for t in _subs_by_norm_raw(s.clickup_api_token, lst).get(norm_account(account_name), []):
+            if t["id"] not in vistos:
+                vistos.add(t["id"])
+                subs.append(t)
     out = []
     for t in subs:
         if t.get("date_done") or t.get("date_closed") or not t.get("due_date"):

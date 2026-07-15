@@ -340,10 +340,15 @@ function render(d){
       b.rows.forEach(function(r){
         html+='<tr><td>'+esc(r.marketplace)+'</td><td class=num>'+brl(r.prev)+'</td><td class=num>'+brl(r.ref)+'</td><td class=num>'+delta(r)+'</td></tr>';
       });
+      // sem BASE no mês anterior (cliente novo / nada lançado) a variação não
+      // faz sentido — antes o total_prev=0 inflava um "crescimento" irreal
+      var temBase=b.rows.some(function(r){return r.prev!=null;});
       var td=b.total_ref-b.total_prev, tp=b.total_prev?td/b.total_prev*100:null;
       var totRef=b.ref_lancado?brl(b.total_ref):brl(null);
-      var totVar=b.ref_lancado?delta({delta_abs:td,delta_pct:tp}):'—';
-      html+='<tr class=total><td>Total</td><td class=num>'+brl(b.total_prev)+'</td><td class=num>'+totRef+'</td><td class=num>'+totVar+'</td></tr></table>';
+      var totVar=(b.ref_lancado&&temBase)?delta({delta_abs:td,delta_pct:tp}):'—';
+      var totPrev=temBase?brl(b.total_prev):brl(null);
+      html+='<tr class=total><td>Total</td><td class=num>'+totPrev+'</td><td class=num>'+totRef+'</td><td class=num>'+totVar+'</td></tr></table>';
+      if(b.prev_antes_inicio) html+='<div class=meta>cliente iniciou depois de '+esc(h.prev_month_label)+' — mês anterior não é base de comparação</div>';
     });
     if(f.aviso) html+='<div class=warn style="margin-top:10px">'+esc(f.aviso)+'</div>';
   }

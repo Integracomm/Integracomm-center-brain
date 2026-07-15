@@ -105,3 +105,48 @@ def test_norm_match_banco_vs_mestre():
     assert norm_account("[A-B2-S1] 3DBR TECNOLOGIA | INTEGRACOMM | ID: 110") == "3dbr tecnologia"
     # norm_full preserva o responsável p/ desempatar homônimos
     assert norm_full("LIDER 3D DESING | IVAN") != norm_full("LIDER 3D DESING | JOSE")
+
+
+def test_parse_brl_tolerante_a_formatacao_manual():
+    # caso real Garciquimica jun/26: "R$11,166,00" (vírgula milhar E decimal)
+    # era descartado e o mês sumia do app
+    from app.sources.nps_sheets import _parse_brl
+    assert _parse_brl("R$11,166,00") == 11166.0
+    assert _parse_brl("R$ 1.234,56") == 1234.56
+    assert _parse_brl("R$ 2565,00") == 2565.0
+    assert _parse_brl("1234.56") == 1234.56
+    assert _parse_brl("R$ 11.166") == 11166.0
+    assert _parse_brl("") is None and _parse_brl("-") is None
+
+
+def test_inicio_iso_formatos():
+    from app.sources.nps_sheets import inicio_iso
+    assert inicio_iso({"inicio": "7/2/2025"}) == "2025-02"      # M/D? não: D/M — 2º campo é mês
+    assert inicio_iso({"inicio": "01/06/2026"}) == "2026-06"
+    assert inicio_iso({"inicio": "06/2026"}) == "2026-06"
+    assert inicio_iso({"inicio": "junho de 2026"}) == "2026-06"
+    assert inicio_iso({"inicio": None}) is None
+    assert inicio_iso({}) is None
+
+
+def test_cliente_novo_nao_gera_variacao_irreal():
+    # caso real GH IMPORTS: entrou em jun/26; maio "zerado" inflava o crescimento
+    sheet = (
+        "Cliente,Equipe,GC Responsável,Plano,Início\n"
+        "GH IMPORTS | INTEGRACOMM,B4-S1,Ana,Master,01/06/2026\n"
+        ",2026,,,\n"
+        "Mês,Jan,Fev,Mar,Abr,Mai,Jun\n"
+        "CNPJ 1,,,,,,\n"
+        "Faturamento,,,,,,\n"
+        'Mercado Livre,,,,,,"R$ 50.000,00"\n'
+    )
+    p = parse_individual_csv(_rows(sheet))
+    cmpr = faturamento_compare(p, "2026-06", "2026-05")
+    assert len(cmpr) == 1
+    b = cmpr[0]
+    assert b["prev_antes_inicio"] is True
+    assert all(r["prev"] is None and r["delta_abs"] is None for r in b["rows"])
+    assert b["total_ref"] == 50000.0
+    # mês seguinte (jul vs jun) volta a comparar normalmente
+    cmpr2 = faturamento_compare(p, "2026-07", "2026-06")
+    assert not cmpr2 or cmpr2[0]["prev_antes_inicio"] is False

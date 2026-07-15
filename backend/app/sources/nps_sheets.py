@@ -138,12 +138,21 @@ def find_master_row(account_name: str) -> tuple[dict | None, str]:
 
 
 def _parse_brl(v: str | None) -> float | None:
+    """Tolerante a formatação manual: 'R$ 1.234,56', 'R$11,166,00' (vírgula como
+    milhar E decimal — caso real Garciquimica jun/26, valor era descartado e o
+    mês sumia do app), '1234.56'. Regra: o ÚLTIMO separador com 1-2 dígitos à
+    direita é o decimal; os demais são milhar."""
     if not v:
         return None
     x = re.sub(r"[^\d,.\-]", "", str(v))
     if not x or x in ("-", ".", ","):
         return None
-    x = x.replace(".", "").replace(",", ".")
+    m = re.search(r"[.,](\d{1,2})$", x)
+    if m:
+        inteiro = re.sub(r"[.,]", "", x[:m.start()])
+        x = f"{inteiro}.{m.group(1)}"
+    else:
+        x = re.sub(r"[.,]", "", x)
     try:
         return float(x)
     except ValueError:
@@ -266,16 +275,44 @@ def fetch_individual(sheet_id: str, gid: str | None = None) -> dict:
     return _get_cached(f"indiv:{sheet_id}:{gid}", load)
 
 
+def inicio_iso(info: dict | None) -> str | None:
+    """'Início' da planilha individual → 'YYYY-MM' (aceita 01/06/2026, 06/2026,
+    jun/26, 'junho de 2026'). None se ausente/ilegível."""
+    raw = _norm_label((info or {}).get("inicio") or "")
+    if not raw:
+        return None
+    y4 = re.search(r"20\d\d", raw)
+    y2 = re.search(r"/(\d\d)$", raw)
+    year = int(y4.group(0)) if y4 else (2000 + int(y2.group(1)) if y2 else None)
+    if year is None:
+        return None
+    m = re.search(r"^(\d{1,2})/(\d{1,2})/", raw) or re.search(r"^(\d{1,2})/(?:20)?\d\d$", raw)
+    if m:
+        mes = int(m.group(2) if m.lastindex and m.lastindex >= 2 else m.group(1))
+    else:
+        mes = next((v for k, v in _MONTHS.items() if k in raw), None)
+    if not mes or not 1 <= mes <= 12:
+        return None
+    return f"{year:04d}-{mes:02d}"
+
+
 def faturamento_compare(parsed: dict, ref_month: str, prev_month: str) -> list[dict]:
     """Comparativo mês de referência × anterior, por CNPJ e marketplace.
     [{cnpj, rows: [{marketplace, ref, prev, delta_abs, delta_pct}], total_ref,
-    total_prev, ref_lancado}]. `ref_lancado=False` = célula VAZIA no mês de
-    referência (planilha ainda não atualizada) — diferente de R$ 0,00 lançado."""
+    total_prev, ref_lancado, prev_antes_inicio}]. `ref_lancado=False` = célula
+    VAZIA no mês de referência (planilha ainda não atualizada) — diferente de
+    R$ 0,00 lançado. `prev_antes_inicio=True` = o mês anterior é ANTERIOR ao
+    Início do cliente (cliente novo) — variação não faz sentido e é suprimida
+    (regra Otávio 15/07, caso GH IMPORTS: prev zerado inflava o 'crescimento')."""
+    inicio = inicio_iso(parsed.get("info"))
+    cliente_novo = bool(inicio and prev_month < inicio)
     out = []
     for b in parsed.get("cnpjs", []):
         rows, t_ref, t_prev = [], 0.0, 0.0
         for mkt, vals in b["marketplaces"].items():
             ref, prev = vals.get(ref_month), vals.get(prev_month)
+            if cliente_novo:
+                prev = None  # antes do Início não é base de comparação
             if ref is None and prev is None:
                 continue
             d_abs = (ref - prev) if (ref is not None and prev is not None) else None
@@ -287,5 +324,6 @@ def faturamento_compare(parsed: dict, ref_month: str, prev_month: str) -> list[d
         if rows:
             out.append({"cnpj": b["cnpj"], "rows": rows,
                         "total_ref": t_ref, "total_prev": t_prev,
-                        "ref_lancado": any(r["ref"] is not None for r in rows)})
+                        "ref_lancado": any(r["ref"] is not None for r in rows),
+                        "prev_antes_inicio": cliente_novo})
     return out
