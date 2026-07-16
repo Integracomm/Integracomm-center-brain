@@ -1720,13 +1720,12 @@ def _render_hub(role: str, st: dict, users: list[dict] | None = None,
                 _i = _fin["meses"].index(_iso)
                 _mb = _PF.linha(_fin, "Meta Bookings [R$]")[_i]
                 _mr = _PF.linha(_fin, "Recebimento TOTAL [R$]")[_i]
-                _pr = (_PF.parcial(_fin, "Recebimento TOTAL [R$]")
-                       if _fin["parcial_mes"] == _iso else None)
+                _bk = am(_num(mkt["book"]), "bookings até agora") if mkt else ""
                 fin_card = ("<a class='area' href='/financeiro'><div class=ahead>"
                             f"<div class=an>Financeiro</div>{_chip('ativa', '--status-baixo')}</div>"
                             "<div class=agrid>"
                             + am(_fmt_brl(_mb) if _mb else "—", "meta de bookings do mês")
-                            + am(_fmt_brl(_pr) if _pr is not None else "—", "recebido até agora (planilha)")
+                            + _bk
                             + am(_fmt_brl(_mr) if _mr else "—", "recebimento projetado do mês")
                             + "</div><div class=ad>planejamento × realizado em tempo real — histórico, metas e saúde da receita recorrente</div></a>")
     except Exception:  # noqa: BLE001 — planilha fora não derruba a central

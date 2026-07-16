@@ -119,18 +119,10 @@ def _visao(conn, request: Request) -> str:
         + _card_meta("SQLs", passou[3], meta("SQLs [Qtde]"), frac, "num", "Pipedrive ao vivo")
         + _card_meta("Oportunidades", passou[4], meta("Oportunidades [Qtde]"), frac, "num", "Pipedrive ao vivo")
     )
-    # recebimento/inadimplência: coluna (Parcial) da planilha — manual até o Omie
-    parc = ""
-    if dados["parcial_mes"] == mes_iso:
-        parc = (
-            _card_meta("Recebimento total", PF.parcial(dados, "Recebimento TOTAL [R$]"),
-                       meta("Recebimento TOTAL [R$]"), frac, "brl", "planilha (parcial, manual)")
-            + _card_meta("Recebimento recorrente", PF.parcial(dados, "Recebimento RECORRENTE [R$]"),
-                         meta("Recebimento RECORRENTE [R$]"), frac, "brl", "planilha (parcial, manual)")
-            + _card_meta("Inadimplência", PF.parcial(dados, "Inadimplência [R$]"),
-                         meta("Inadimplência [R$]"), frac, "brl", "planilha (parcial, manual)")
-        )
-
+    # coluna "(Parcial)" da planilha: IGNORADA por ora (Otávio 15/07 — ele a criou
+    # só p/ validar nossas fontes; bateu ao centavo: bookings 17/R$139.890 e todas
+    # as taxas). Recebimento/inadimplência do mês corrente ficam sem tempo real
+    # até o Omie abrir — acompanhados no histórico mensal.
     mes_nome = _mes_lbl(mes_iso)
     html = (
         "<div class=page-head><h1>Financeiro</h1>"
@@ -139,11 +131,9 @@ def _visao(conn, request: Request) -> str:
         f"Hoje é dia {hoje.day} — {frac * 100:.0f}% de {mes_nome} decorrido (o verde/vermelho dos cards compara com esse ritmo).</p>"
         f"<section><h2>{mes_nome} em tempo real × meta</h2>"
         "<p class=secsub>funil e bookings ao vivo do espelho do Pipedrive (regra oficial do funil, defasagem ≤10 min); "
-        "recebimento e inadimplência vêm da coluna (Parcial) da planilha — atualização manual do time até o Omie entrar</p>"
+        "recebimento e inadimplência não têm fonte em tempo real até o Omie entrar — ver histórico abaixo</p>"
         f"<div class=kpis>{cards}</div>"
-        + (f"<div class=kpis style='margin-top:10px'>{parc}</div>" if parc else
-           "<p class=note>coluna (Parcial) do mês não encontrada na planilha — recebimento/inadimplência parciais indisponíveis.</p>")
-        + "</section>"
+        "</section>"
     )
 
     # --- histórico realizado ---
@@ -215,8 +205,8 @@ def _visao(conn, request: Request) -> str:
              + "</section>")
 
     html += ("<p class=foot>Fonte: planilha Planejamento_Receita_2026 (cache 10 min) + espelho do Pipedrive "
-             "(re-sincroniza ao abrir, defasagem ≤10 min). Recebimento/inadimplência do mês corrente dependem "
-             "da atualização manual da coluna (Parcial) — migram ao Omie quando o Financeiro abrir os dados.</p>")
+             "(re-sincroniza ao abrir, defasagem ≤10 min). Recebimento/inadimplência em tempo real entram "
+             "quando os dados do Omie abrirem — por ora, acompanhados no histórico mensal.</p>")
     return html
 
 
