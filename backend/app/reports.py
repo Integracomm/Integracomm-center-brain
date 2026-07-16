@@ -328,6 +328,11 @@ def build_report(conn: Any, account_id: str, ref_month: str, generated_by: str |
     # próximas previstas: sempre relativas a HOJE (insumo p/ a reunião do GC),
     # independente do mês de referência do relatório
     proximas = CU.upcoming_activities(acc["name"])
+    # em ATRASO: abertas com vencimento vencido — a fila de cobrança do gestor
+    # (tarefa vencida não é 'próxima' nem 'concluída' e ficava invisível)
+    atrasadas = CU.overdue_activities(acc["name"])
+    atv["atrasadas"] = atrasadas
+    clickup_url = CU.card_url(acc["name"])
 
     # --- saúde do relacionamento ---
     sig = _signals(conn, str(acc["id"]), start, end)
@@ -369,11 +374,14 @@ def build_report(conn: Any, account_id: str, ref_month: str, generated_by: str |
                    or (equipe_squad and equipe_squad["squad"])),
         "reference_month": ref_month, "reference_month_label": month_label(ref_month),
         "prev_month": prev_month, "prev_month_label": month_label(prev_month),
+        "clickup_url": clickup_url,
     }
 
     data = {"header": header, "equipe_squad": equipe_squad, "faturamento": fat,
             "atividades": {"source": atv["source"], "aviso": atv["aviso"],
                            "total": len(atv["tasks"]), "grupos": atv["grupos"],
+                           "atrasadas": {"source": atrasadas["source"], "aviso": atrasadas["aviso"],
+                                         "tasks": atrasadas["tasks"]},
                            "proximas": {"source": proximas["source"], "aviso": proximas["aviso"],
                                         "tasks": proximas["tasks"],
                                         "geradas_em": dt.date.today().isoformat()}},

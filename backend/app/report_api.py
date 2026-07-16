@@ -356,7 +356,8 @@ function render(d){
   html+='</div></section>';
 
   // --- atividades ---
-  html+='<section><h2>Atividades realizadas</h2><p class=secsub>'+a.total+' tarefas concluídas no período (fonte: '+esc(a.source)+')</p><div class=card>';
+  var cuLink=h.clickup_url?' <a href="'+esc(h.clickup_url)+'" target=_blank rel=noopener style="font-size:var(--fs-xs);color:var(--brand);text-decoration:none;font-weight:400">abrir card no ClickUp ↗</a>':'';
+  html+='<section><h2>Atividades realizadas'+cuLink+'</h2><p class=secsub>'+a.total+' tarefas concluídas no período (fonte: '+esc(a.source)+')</p><div class=card>';
   if(a.aviso) html+='<div class=warn style="margin-bottom:10px">'+esc(a.aviso)+'</div>';
   if(!a.grupos.length) html+='<div style="color:var(--text-muted);font-size:var(--fs-sm)">Nenhuma atividade concluída registrada no período.</div>';
   a.grupos.forEach(function(g){
@@ -366,6 +367,20 @@ function render(d){
     });
   });
   html+='</div></section>';
+
+  // --- atividades em ATRASO (abertas, vencidas) — a fila de cobrança ---
+  var atr=a.atrasadas||{tasks:[]};
+  if(atr.tasks.length||atr.aviso){
+    html+='<section><h2 style="color:var(--status-critico)">Atividades em atraso</h2>'
+        +'<p class=secsub>em aberto com vencimento VENCIDO no ClickUp — cobrar os responsáveis</p><div class=card>';
+    if(atr.aviso) html+='<div class=warn style="margin-bottom:10px">'+esc(atr.aviso)+'</div>';
+    atr.tasks.forEach(function(t){
+      html+='<div class=task><span>'+esc(t.nome)+(t.responsavel?' <span style="color:var(--text-faint)">· '+esc(t.responsavel)+'</span>':'')
+          +(t.status?' <span style="color:var(--text-faint)">· '+esc(t.status)+'</span>':'')
+          +'</span><span class=d style="color:var(--status-critico)">venceu '+fmtD(t.vence_em)+' ('+t.dias_atraso+'d)</span></div>';
+    });
+    html+='</div></section>';
+  }
 
   // --- próximas atividades previstas ---
   var px=a.proximas||{tasks:[]};

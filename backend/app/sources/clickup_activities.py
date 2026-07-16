@@ -430,6 +430,71 @@ def _upcoming_from_clickup(account_name: str, now: dt.datetime, limit: int = 20)
     return sorted(out, key=lambda x: x["vence_em"])[:limit]
 
 
+def card_url(account_name: str) -> str | None:
+    """URL do card-raiz do cliente no ClickUp (conferência rápida da execução —
+    pedido Otávio 15/07). Preferência: card na lista de assessoria (é o card de
+    execução); fallback: card apontado pelo mirror. None = não localizado."""
+    s = get_settings()
+    n = norm_account(account_name)
+    try:
+        if s.clickup_api_token:
+            for lst in _report_lists(s):
+                roots = _roots_by_norm(s.clickup_api_token, lst).get(n)
+                if roots:
+                    return f"https://app.clickup.com/t/{sorted(roots)[0]}"
+    except Exception:  # noqa: BLE001 — link é conveniência, nunca derruba a página
+        pass
+    try:
+        cli = _mirror_clientes().get(n) or {}
+        if cli.get("clickup_task_id"):
+            return f"https://app.clickup.com/t/{cli['clickup_task_id']}"
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def _overdue_from_clickup(account_name: str, now: dt.datetime, limit: int = 20) -> list[dict] | None:
+    """Atividades ABERTAS com vencimento JÁ VENCIDO (a cobrança do gestor) —
+    complementa as 'próximas': tarefa vencida não é próxima nem concluída e
+    ficava invisível no relatório (caso D LA BELLA 15/07: 'Configuração de
+    Sistema' urgente vencida em 30/06 não aparecia). None = API não configurada."""
+    s = get_settings()
+    if not (s.clickup_api_token and s.clickup_list_assessoria):
+        return None
+    subs, vistos = [], set()
+    for lst in _report_lists(s):
+        for t in _subs_by_norm_raw(s.clickup_api_token, lst).get(norm_account(account_name), []):
+            if t["id"] not in vistos:
+                vistos.add(t["id"])
+                subs.append(t)
+    out = []
+    for t in subs:
+        if t.get("date_done") or t.get("date_closed") or not t.get("due_date"):
+            continue
+        due = dt.datetime.fromtimestamp(int(t["due_date"]) / 1000, tz=dt.timezone.utc)
+        if due >= now - dt.timedelta(days=1):
+            continue  # futuras/de hoje ficam nas 'próximas'
+        assg = ", ".join(a.get("username", "") for a in (t.get("assignees") or [])) or None
+        out.append({"nome": t.get("name"),
+                    "vence_em": due.astimezone(dt.timezone(dt.timedelta(hours=-3))).date().isoformat(),
+                    "dias_atraso": (now - due).days,
+                    "responsavel": assg, "status": (t.get("status") or {}).get("status")})
+    return sorted(out, key=lambda x: -x["dias_atraso"])[:limit]
+
+
+def overdue_activities(account_name: str, now: dt.datetime | None = None) -> dict:
+    """Mesmo contrato de completed/upcoming: {source, aviso|None, tasks}."""
+    now = now or dt.datetime.now(dt.timezone.utc)
+    try:
+        tasks = _overdue_from_clickup(account_name, now)
+        if tasks is not None:
+            return {"source": "clickup_api", "aviso": None, "tasks": tasks}
+        aviso = "token/lista ClickUp não configurados"
+    except Exception as e:  # noqa: BLE001
+        aviso = f"API ClickUp indisponível ({type(e).__name__})"
+    return {"source": "nenhuma", "aviso": aviso, "tasks": []}
+
+
 def _upcoming_from_mirror(account_name: str, now: dt.datetime, limit: int = 20) -> list[dict] | None:
     cli = _mirror_clientes().get(norm_account(account_name))
     if not cli:

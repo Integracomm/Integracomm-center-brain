@@ -2142,6 +2142,10 @@ def _render(role: str, scores: list[dict], alerts: list[dict],
         _mirror = _mirror_clientes()
     except Exception:  # noqa: BLE001 — sem espelho, resolve só pelo nome
         _mirror = None
+    try:
+        from .sources.clickup_activities import card_url as _cu_card_url
+    except Exception:  # noqa: BLE001
+        _cu_card_url = None
     squads = sorted({_squad_label(s["name"], _mirror) for s in ordered})
 
     def reason_txt(s):
@@ -2158,6 +2162,13 @@ def _render(role: str, scores: list[dict], alerts: list[dict],
         xs = s.get("exec_score")
         exec_key = ("sem" if xs is None else
                     "em_dia" if xs >= 70 else "atencao" if xs >= 40 else "atrasada")
+        # selo de execução clicável -> card do cliente no ClickUp (conferência
+        # rápida das entregas; pedido Otávio 15/07)
+        exec_cell = _exec_badge(s)
+        cu_url = _cu_card_url(s["name"]) if _cu_card_url else None
+        if cu_url and exec_cell != _DASH:
+            exec_cell = (f"<a href='{cu_url}' target=_blank rel=noopener "
+                         f"style='text-decoration:none' title='abrir o card no ClickUp'>{exec_cell}</a>")
         score_cell = (f"<span class='score'>{float(s['score']):.1f}</span>" if ev
                       else "<span style='color:var(--text-faint)'>s/ dados</span>")
         mot = reason_txt(s)
@@ -2182,7 +2193,7 @@ def _render(role: str, scores: list[dict], alerts: list[dict],
             f"<div class='c-stage'>{stage_dot}{escape(_STAGE_LABEL.get(stage_key, stage_key))}</div>"
             f"<div class='c-squad' title=\"{escape(_tag(s['name']))}\">{escape(sq)}</div>"
             f"<div class='c-mrr'>{_mrr_txt(s)}</div>"
-            f"<div>{_exec_badge(s)}</div>"
+            f"<div>{exec_cell}</div>"
             f"<div class='guide c-full'>{escape(_guide(s, practices))}</div>"
             f"</div>"
         )
