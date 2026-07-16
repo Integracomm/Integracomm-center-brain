@@ -1953,13 +1953,14 @@ def _mrr_txt(s) -> str:
 
 def _exec_badge(s) -> str:
     """Selo de execução (ClickUp): situação das ENTREGAS da conta. Só o rótulo
-    (em dia / atenção / crítica — CRÍTICA ≠ tarefa atrasada: pode vir de
-    implantação estourada etc.; a CAUSA fica no motivo/hover)."""
+    (saudável / atenção / crítica — rótulos de SAÚDE, não de pontualidade:
+    nota 72 pode conviver com tarefa vencida ontem, caso LOJA REIS 16/07;
+    CRÍTICA ≠ tarefa atrasada; a CAUSA fica no motivo/hover)."""
     v = s.get("exec_score")
     if v is None:
         return _DASH
     if v >= 70:
-        var, txt = "--status-baixo", "em dia"
+        var, txt = "--status-baixo", "saudável"
     elif v >= 40:
         var, txt = "--status-medio", "atenção"
     else:
@@ -2200,14 +2201,14 @@ def _render(role: str, scores: list[dict], alerts: list[dict],
         from .sources.clickup_activities import _overdue_from_clickup
         _agora_atr = dt.datetime.now(dt.timezone.utc)
 
-        def _tem_atrasada(nm: str) -> bool:
+        def _n_atrasadas(nm: str) -> int:
             try:
-                return bool(_overdue_from_clickup(nm, _agora_atr, limit=1))
+                return len(_overdue_from_clickup(nm, _agora_atr) or [])
             except Exception:  # noqa: BLE001
-                return False
+                return 0
     except Exception:  # noqa: BLE001
-        def _tem_atrasada(nm: str) -> bool:
-            return False
+        def _n_atrasadas(nm: str) -> int:
+            return 0
     squads = sorted({_squad_label(s["name"], _mirror) for s in ordered})
 
     def reason_txt(s):
@@ -2227,11 +2228,15 @@ def _render(role: str, scores: list[dict], alerts: list[dict],
         # selo de execução clicável -> card do cliente no ClickUp (conferência
         # rápida das entregas; pedido Otávio 15/07)
         exec_cell = _exec_badge(s)
+        n_atr = _n_atrasadas(s["name"])
+        if n_atr and exec_cell != _DASH:
+            exec_cell += (f"<div style='font-size:var(--fs-2xs);color:var(--status-critico);"
+                          f"margin-top:3px'>{n_atr} tarefa(s) atrasada(s)</div>")
         cu_url = _cu_card_url(s["name"]) if _cu_card_url else None
         if cu_url and exec_cell != _DASH:
             exec_cell = (f"<a href='{cu_url}' target=_blank rel=noopener "
-                         f"style='text-decoration:none' title='abrir o card no ClickUp'>{exec_cell}</a>")
-        atr = "1" if _tem_atrasada(s["name"]) else "0"
+                         f"style='text-decoration:none;display:block' title='abrir o card no ClickUp'>{exec_cell}</a>")
+        atr = "1" if n_atr else "0"
         score_cell = (f"<span class='score'>{float(s['score']):.1f}</span>" if ev
                       else "<span style='color:var(--text-faint)'>s/ dados</span>")
         mot = reason_txt(s)
@@ -2448,7 +2453,7 @@ __SCRIPT__
             "<b>Serviço-Squad</b> = tipo de serviço + time responsável (ex.: ADS-B3-S2); o squad é "
             "o real da planilha de composição, resolvido pelo nome ou pelo espelho da Operação "
             "(tag completa no hover). "
-            "<b>Execução</b> = saúde das entregas no ClickUp — em dia / atenção / crítica "
+            "<b>Execução</b> = saúde das entregas no ClickUp — saudável / atenção / crítica "
             "(nota e motivo no hover). A <b>diretriz de ação</b> aparece destacada sob cada conta.</p>"
             "<div class=filters>"
             "<div class=grp><label>buscar nome</label><input id=f-name placeholder='cliente…' oninput='applyF()'></div>"
@@ -2456,7 +2461,7 @@ __SCRIPT__
             "<div class=grp><label>alerta</label><select id=f-alert onchange='applyF()'><option value=''>todos</option><option value='critico'>crítico</option><option value='alto'>alto</option><option value='atencao'>atenção</option><option value='sem'>sem alerta</option></select></div>"
             "<div class=grp><label>estágio</label><select id=f-stage onchange='applyF()'><option value=''>todos</option><option value='saudavel'>saudável</option><option value='desengajamento_inicial'>desengajamento</option><option value='insatisfacao_latente'>insatisfação latente</option><option value='insatisfacao_ativa'>insatisfação ativa</option><option value='intencao_de_saida'>intenção de saída</option><option value='nao_avaliavel'>não avaliável</option></select></div>"
             f"<div class=grp><label>squad</label><select id=f-squad onchange='applyF()'><option value=''>todos</option>{squad_opts}</select></div>"
-            "<div class=grp><label>execução</label><select id=f-exec onchange='applyF()'><option value=''>todas</option><option value='em_dia'>em dia</option><option value='atencao'>atenção</option><option value='critica'>crítica</option><option value='atrasadas'>com tarefa atrasada</option><option value='sem'>sem dado</option></select></div>"
+            "<div class=grp><label>execução</label><select id=f-exec onchange='applyF()'><option value=''>todas</option><option value='em_dia'>saudável</option><option value='atencao'>atenção</option><option value='critica'>crítica</option><option value='atrasadas'>com tarefa atrasada</option><option value='sem'>sem dado</option></select></div>"
             "<div class=grp><label>MRR mínimo (R$)</label><input id=f-mrr type=number min=0 step=100 placeholder='ex.: 3000' oninput='applyF()'></div>"
             "<button id=clearf onclick='clearF()'>limpar</button>"
             f"<span class=count>mostrando <b id=vis>0</b> de {len(ordered)}</span>"
