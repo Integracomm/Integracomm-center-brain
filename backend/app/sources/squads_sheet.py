@@ -111,9 +111,12 @@ def team_for_key(key: str | None) -> tuple[str, list[dict]] | None:
 
 
 def team_for_account(account_name: str | None, fallback_key: str | None = None) -> tuple[str, list[dict]] | None:
-    """(squad, membros) da conta pelo tag do nome; `fallback_key` cobre contas
-    sem Bx-Sy no tag (ex.: [ADS-GU]) cujo squad vem de outra fonte (mirror)."""
-    return team_for_key(squad_of(account_name)) or team_for_key(fallback_key)
+    """(squad, membros) da conta. PRIORIDADE: `fallback_key` (campo equipe do
+    espelho da Operação, atualizado pelo HUB) sobre o tag Bx-Sy do nome do
+    grupo — o tag fica DESATUALIZADO quando o cliente troca de squad e ninguém
+    renomeia o grupo (Otávio 15/07: CEREJA CHIC tag B3-S1 mas equipe real
+    B3-S2; DNEZA tag B3-S1 mas B1-S2). Tag do nome = fallback."""
+    return team_for_key(fallback_key) or team_for_key(squad_of(account_name))
 
 
 def gc_of_team(members: list[dict]) -> str | None:

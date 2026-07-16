@@ -404,7 +404,8 @@ function render(d){
   html+='<div><div class=grp-h style="margin:0 0 4px">Estágio</div><div style="font-size:var(--fs-md)">'+esc(s.estagio||'—')+'</div></div>';
   html+='<div><div class=grp-h style="margin:0 0 4px">Trajetória</div><div style="font-size:var(--fs-md)">'+esc(s.trajetoria||'—')+'</div></div>';
   html+='<div><div class=grp-h style="margin:0 0 6px">Tom das conversas</div>'+chip(s.tom.rotulo,TOM[s.tom.rotulo]||'--status-semdados')+'</div>';
-  if(s.exec_score!=null) html+='<div><div class=grp-h style="margin:0 0 4px">Execução (ClickUp)</div><div style="font-size:var(--fs-md)">'+s.exec_score.toFixed(0)+'/100</div></div>';
+  if(s.exec_score!=null) html+='<div><div class=grp-h style="margin:0 0 4px">Execução (ClickUp)</div><div style="font-size:var(--fs-md)">'+s.exec_score.toFixed(0)+'/100</div>'
+      +(s.exec_motivo?'<div style="font-size:var(--fs-2xs);color:var(--text-muted);max-width:240px">'+esc(s.exec_motivo)+'</div>':'')+'</div>';
   html+='</div>';
   if(s.motivos.length){ html+='<div class=grp-h style="margin-top:16px">Principais motivos do score</div><ul class=motivos style="margin:4px 0 0;padding-left:18px">';
     s.motivos.forEach(function(m){html+='<li>'+esc(m)+'</li>';}); html+='</ul>'; }

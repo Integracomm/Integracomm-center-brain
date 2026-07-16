@@ -369,6 +369,10 @@ def build_report(conn: Any, account_id: str, ref_month: str, generated_by: str |
         "motivos": [r["text"] for r in acc.get("reasons", [])[:5]],
         "tom": {"rotulo": tone[0], "detalhe": tone[1]},
         "exec_score": acc["exec_score"],
+        # motivo da nota de execução (ex.: 'Implantação crítica: 11 meses desde a
+        # venda') — sem ele, 'atrasada' sem tarefa vencida parecia inconsistente
+        # (caso DNEZA 15/07)
+        "exec_motivo": sig.get("exec_score", {}).get("text"),
         "sinais_do_mes": all(v.get("in_month") for v in sig.values()) if sig else False,
         "score_computado_em": (acc["computed_at"].date().isoformat() if acc.get("computed_at") else None),
     }
