@@ -88,10 +88,11 @@ def _svg_meses(labels: list[str], barras: list[dict], i_atual: int,
                marcas: list[float | None] | None = None,
                sublabels: list[str] | None = None, H: int = 200) -> str:
     """Gráfico de BARRAS por mês (SVG, mesma linguagem do _grafico_kpi de
-    Operações). barras = [{vals, cor, rotulo, frente?}] — a série 'frente'
-    desenha mais estreita por cima (ex.: recorrente dentro do total). Meses
-    após i_atual = projeção (barra vazada tracejada). marcas = tique de meta
-    por mês; sublabels = linha extra sob o rótulo do mês."""
+    Operações). barras = [{vals, cor, rotulo, frente?, proj_de?}] — 'frente'
+    desenha mais estreita por cima (ex.: recorrente dentro do total); 'proj_de'
+    = índice a partir do qual a série é PROJEÇÃO (vazada tracejada; padrão =
+    i_atual+1 — passar i_atual quando nem o mês corrente tem realizado).
+    marcas = tique de meta por mês; sublabels = linha extra sob o mês."""
     n = len(labels)
     W, PAD, BASE = max(720, 66 * n), 30, H - 34
     todos = [v for b in barras for v in b["vals"] if v is not None] + [m for m in (marcas or []) if m is not None]
@@ -104,12 +105,13 @@ def _svg_meses(labels: list[str], barras: list[dict], i_atual: int,
     svg = []
     for b in barras:
         largura = slot * (0.34 if b.get("frente") else 0.58)
+        proj_de = b.get("proj_de", i_atual + 1)
         for i, v in enumerate(b["vals"]):
             if v is None:
                 continue
             h = max(2, v / vmax * (BASE - 26))
             x = x0(i) + (slot - largura) / 2
-            futuro = i > i_atual
+            futuro = i >= proj_de
             estilo = (f"fill:none;stroke:{b['cor']};stroke-width:1.6;stroke-dasharray:4 3;opacity:.75"
                       if futuro else f"fill:{b['cor']};opacity:{.95 if b.get('frente') else .82}")
             titulo = f"{labels[i]} — {b['rotulo']}: {_fmt_k(v)}" + (" (projeção)" if futuro else "")
@@ -227,10 +229,12 @@ def _visao(conn, request: Request) -> str:
     recor = PF.linha(dados, "Recebimento RECORRENTE [R$]")
     html += ("<section><h2>Recebimento mês a mês</h2>"
              "<p class=secsub>barra clara = recebimento total · barra escura = parte recorrente · "
-             "tracejado = projeção da planilha (mês em negrito = atual)</p><div class=card>"
+             f"tracejado = projeção da planilha — <b>{mes_nome} (atual) ainda é projeção</b>: "
+             "recebimento não tem fonte em tempo real até o Omie entrar</p><div class=card>"
              + _svg_meses(lbls, [
-                 {"vals": receb, "cor": "var(--brand)", "rotulo": "recebimento total"},
-                 {"vals": recor, "cor": "var(--status-baixo)", "rotulo": "recorrente", "frente": True},
+                 {"vals": receb, "cor": "var(--brand)", "rotulo": "recebimento total", "proj_de": i_atual},
+                 {"vals": recor, "cor": "var(--status-baixo)", "rotulo": "recorrente", "frente": True,
+                  "proj_de": i_atual},
              ], i_atual,
                  sublabels=[(f"{v * 100:.0f}% rec." if v is not None else "")
                             for v in PF.linha(dados, "Recebimento RECORRENTE [%]")])
@@ -239,36 +243,43 @@ def _visao(conn, request: Request) -> str:
     rb_real = PF.linha(dados, "Receita Bookings [R$]")
     rb_meta = PF.linha(dados, "Meta Bookings [R$]")
     rb_qtd = PF.linha(dados, "Bookings [Qtde]")
-    cores_rb = []
+    # mês CORRENTE = realizado AO VIVO (Pipedrive), meses passados = planilha,
+    # futuros = meta tracejada (feedback Otávio 15/07: a coluna do mês na
+    # planilha é META e parecia realizado). Cor do mês corrente = ritmo.
+    ok_vals: list = [None] * len(meses)
+    ruim_vals: list = [None] * len(meses)
     for i in todos_idx:
-        if i > i_atual or rb_real[i] is None or rb_meta[i] is None:
-            cores_rb.append(None)
-        else:
-            cores_rb.append(rb_real[i] >= rb_meta[i])
-    # uma série por cor (bateu/não bateu) p/ o SVG pintar barra a barra
-    ok_vals = [rb_real[i] if cores_rb[i] else None for i in todos_idx]
-    ruim_vals = [rb_real[i] if cores_rb[i] is False else None for i in todos_idx]
+        if i < i_atual and rb_real[i] is not None and rb_meta[i] is not None:
+            (ok_vals if rb_real[i] >= rb_meta[i] else ruim_vals)[i] = rb_real[i]
+    if rb_meta[i_atual]:
+        no_ritmo = receita >= rb_meta[i_atual] * frac
+        (ok_vals if no_ritmo else ruim_vals)[i_atual] = receita
+    else:
+        ok_vals[i_atual] = receita
     proj_vals = [rb_meta[i] if i > i_atual else None for i in todos_idx]
+    subl = [(f"{v:.0f} bk" if v is not None else "") for v in rb_qtd]
+    subl[i_atual] = f"{booked} bk até hoje"
     html += ("<section><h2>Bookings × meta mês a mês</h2>"
-             "<p class=secsub>verde = meta batida · vermelho = abaixo · tique = meta do mês · "
-             "tracejado = meta futura · nº de bookings sob o mês</p><div class=card>"
+             "<p class=secsub>meses fechados: verde = meta batida · vermelho = abaixo (planilha) — "
+             f"<b>{mes_nome} (atual) = realizado AO VIVO do Pipedrive</b>, cor pelo ritmo do mês, "
+             "tique = meta do mês · tracejado = meta futura · nº de bookings sob o mês</p><div class=card>"
              + _svg_meses(lbls, [
                  {"vals": ok_vals, "cor": "var(--status-baixo)", "rotulo": "receita de bookings"},
                  {"vals": ruim_vals, "cor": "var(--status-critico)", "rotulo": "receita de bookings"},
                  {"vals": proj_vals, "cor": "var(--text-muted)", "rotulo": "meta"},
              ], i_atual, marcas=[rb_meta[i] if i <= i_atual else None for i in todos_idx],
-                 sublabels=[(f"{v:.0f} bk" if v is not None else "") for v in rb_qtd])
+                 sublabels=subl)
              + "</div></section>")
 
     inad = PF.linha(dados, "Inadimplência [%]")
     churn = PF.linha(dados, "Taxa de cancelamento - TOTAL")
     html += ("<section><h2>Inadimplência e churn</h2>"
              "<p class=secsub>inadimplência: verde ≤4% · amarelo ≤8% — churn: verde ≤5% · amarelo ≤9% "
-             "(meses após o atual = alvo, esmaecidos)</p>"
+             f"(<b>{mes_nome} e seguintes = alvo</b>, esmaecidos — sem fonte em tempo real até o Omie)</p>"
              "<div class=card><div style='font-size:var(--fs-2xs);color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px'>Inadimplência [%]</div>"
-             + _chips_meses(lbls, inad, i_atual, 0.04, 0.08)
+             + _chips_meses(lbls, inad, i_atual - 1, 0.04, 0.08)
              + "<div style='font-size:var(--fs-2xs);color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin:14px 0 6px'>Taxa de cancelamento [%]</div>"
-             + _chips_meses(lbls, churn, i_atual, 0.05, 0.09)
+             + _chips_meses(lbls, churn, i_atual - 1, 0.05, 0.09)
              + "</div></section>")
 
     # --- histórico realizado (detalhe em tabela) ---
