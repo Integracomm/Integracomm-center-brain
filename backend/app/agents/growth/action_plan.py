@@ -48,6 +48,10 @@ def _dossie(data: dict, updates: list[dict]) -> str:
         lines.append("MOTIVOS DO SCORE: " + " | ".join(s["motivos"]))
     if s.get("exec_score") is not None:
         lines.append(f"EXECUÇÃO (ClickUp): {s['exec_score']:.0f}/100")
+    if f.get("conf"):
+        lines.append("TIPO DE CONTA: Configuração de Sistema (plano antigo) — SEM acesso aos "
+                     "marketplaces do cliente; faturamento não acompanhado por design (não sugerir "
+                     "ações de faturamento/planilha; foco em entrega da configuração e relacionamento).")
     if f.get("available") and f.get("comparativo"):
         for b in f["comparativo"]:
             if b.get("prev_antes_inicio"):

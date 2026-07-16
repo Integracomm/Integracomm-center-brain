@@ -238,10 +238,15 @@ def _observacoes(acc: dict, fat: dict, atv: dict, tone: tuple[str, str], ref: st
         else:
             partes.append(f"Faturamento registrado no mês: R$ {t_ref:,.0f} (sem base comparável no mês anterior).".replace(",", "."))
     elif not fat.get("available"):
-        partes.append("Sem planilha de faturamento disponível para esta conta no período.")
-        sug.append("Regularizar a planilha de NPS/faturamento do cliente (link ausente ou acesso restrito na mestre).")
+        if fat.get("conf"):
+            partes.append("Cliente de Configuração de Sistema (plano antigo): sem acesso às plataformas "
+                          "de marketplace do cliente — faturamento não acompanhado (esperado, não é pendência).")
+        else:
+            partes.append("Sem planilha de faturamento disponível para esta conta no período.")
+            sug.append("Regularizar a planilha de NPS/faturamento do cliente (link ausente ou acesso restrito na mestre).")
 
-    n_atv = len(atv.get("tasks") or [])
+    # total_mes = régua mensal (a lista atv.tasks é o HISTÓRICO completo desde 15/07)
+    n_atv = atv.get("total_mes", len(atv.get("tasks") or []))
     if n_atv:
         partes.append(f"Foram concluídas {n_atv} atividades de assessoria no período.")
     else:
@@ -278,12 +283,21 @@ def build_report(conn: Any, account_id: str, ref_month: str, generated_by: str |
     start, end, prev_month = _month_bounds(ref_month)
 
     # --- faturamento (planilha individual via mestre) ---
+    # clientes [CONF-...] = Configuração de Sistema (plano antigo): SEM acesso
+    # às plataformas do cliente -> nunca estarão na planilha de NPS (Otávio
+    # 15/07, caso WMA) — o aviso explica em vez de cobrar regularização
+    import re as _re
+    is_conf = bool(_re.match(r"^\s*\[CONF", acc["name"] or "", _re.I))
     fat: dict[str, Any] = {"available": False, "aviso": None, "comparativo": [],
-                           "match_note": None, "sheet_link": None, "months_meta": None}
+                           "match_note": None, "sheet_link": None, "months_meta": None,
+                           "conf": is_conf}
     master, match_note = NPS.find_master_row(acc["name"])
     fat["match_note"] = match_note
     sheet_info: dict = {}
-    if master is None:
+    if master is None and is_conf:
+        fat["aviso"] = ("Cliente de Configuração de Sistema (plano antigo) — sem acesso às plataformas "
+                        "de marketplace do cliente; não consta na planilha de NPS/faturamento (esperado).")
+    elif master is None:
         fat["aviso"] = "Planilha não disponível — conta não encontrada na planilha mestre de NPS."
     elif not master["sheet_id"]:
         fat["aviso"] = (f"Planilha não disponível — na mestre consta: “{master['link_raw'] or 'sem link'}”.")
@@ -328,6 +342,7 @@ def build_report(conn: Any, account_id: str, ref_month: str, generated_by: str |
     atv["tasks"].sort(key=lambda t: t["concluida_em"], reverse=True)
     total_mes = sum(1 for t in atv["tasks"]
                     if start.date().isoformat() <= t["concluida_em"] < end.date().isoformat())
+    atv["total_mes"] = total_mes  # régua mensal p/ observações/plano
     grupos: dict[str, list] = {}
     for t in atv["tasks"]:
         chave = month_label(t["concluida_em"][:7])
