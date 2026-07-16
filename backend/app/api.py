@@ -2228,14 +2228,20 @@ def _render(role: str, scores: list[dict], alerts: list[dict],
         # selo de execução clicável -> card do cliente no ClickUp (conferência
         # rápida das entregas; pedido Otávio 15/07)
         exec_cell = _exec_badge(s)
-        n_atr = _n_atrasadas(s["name"])
-        if n_atr and exec_cell != _DASH:
-            exec_cell += (f"<div style='font-size:var(--fs-2xs);color:var(--status-critico);"
-                          f"margin-top:3px'>{n_atr} tarefa(s) atrasada(s)</div>")
         cu_url = _cu_card_url(s["name"]) if _cu_card_url else None
         if cu_url and exec_cell != _DASH:
             exec_cell = (f"<a href='{cu_url}' target=_blank rel=noopener "
-                         f"style='text-decoration:none;display:block' title='abrir o card no ClickUp'>{exec_cell}</a>")
+                         f"style='text-decoration:none' title='abrir o card no ClickUp'>{exec_cell}</a>")
+        n_atr = _n_atrasadas(s["name"])
+        if exec_cell == _DASH:
+            atr_cell = _DASH
+        elif n_atr:
+            atr_cell = (f"<span class='chip' style='--c:var(--status-critico)' "
+                        f"title='entregas abertas com vencimento estourado — nomes e responsáveis no relatório'>"
+                        f"{n_atr} atrasada(s)</span>")
+        else:
+            atr_cell = (f"<span class='chip' style='--c:var(--status-baixo)' "
+                        f"title='nenhuma entrega aberta vencida no ClickUp'>em dia</span>")
         atr = "1" if n_atr else "0"
         score_cell = (f"<span class='score'>{float(s['score']):.1f}</span>" if ev
                       else "<span style='color:var(--text-faint)'>s/ dados</span>")
@@ -2262,6 +2268,7 @@ def _render(role: str, scores: list[dict], alerts: list[dict],
             f"<div class='c-squad' title=\"{escape(_tag(s['name']))}\">{escape(sq)}</div>"
             f"<div class='c-mrr'>{_mrr_txt(s)}</div>"
             f"<div>{exec_cell}</div>"
+            f"<div>{atr_cell}</div>"
             f"<div class='guide c-full'>{escape(_guide(s, practices))}</div>"
             f"</div>"
         )
@@ -2355,9 +2362,9 @@ section{margin-top:var(--space-8)}
 .abtn:hover{border-color:var(--brand);color:var(--brand)}
 /* contas: 7 colunas que CABEM na página (sem scroll lateral); a diretriz ocupa
    a largura inteira numa 2ª linha da mesma conta */
-.tbl-acct .row{grid-template-columns:minmax(200px,1fr) 66px 96px 150px 78px 96px 100px;row-gap:9px}
+.tbl-acct .row{grid-template-columns:minmax(200px,1fr) 66px 96px 150px 78px 96px 96px 92px;row-gap:9px}
 /* colunas 2–7 (Score..Execução) centralizadas — cabeçalho e linhas */
-.tbl-acct .row>div:nth-child(n+2):nth-child(-n+7){text-align:center}
+.tbl-acct .row>div:nth-child(n+2):nth-child(-n+8){text-align:center}
 .c-full{grid-column:1/-1}
 .pager{display:flex;align-items:center;gap:10px;justify-content:flex-end;margin-top:10px}
 .pager button{cursor:pointer;background:var(--surface-3);border:1px solid var(--border-strong);border-radius:var(--radius-sm);color:var(--text-2);padding:6px 12px;font-size:var(--fs-sm)}
@@ -2453,7 +2460,7 @@ __SCRIPT__
             "<b>Serviço-Squad</b> = tipo de serviço + time responsável (ex.: ADS-B3-S2); o squad é "
             "o real da planilha de composição, resolvido pelo nome ou pelo espelho da Operação "
             "(tag completa no hover). "
-            "<b>Execução</b> = saúde das entregas no ClickUp — saudável / atenção / crítica "
+            "<b>Execução</b> = saúde das entregas no ClickUp (saudável / atenção / crítica); <b>Atrasos</b> = entregas abertas com vencimento estourado — em dia = nenhuma "
             "(nota e motivo no hover). A <b>diretriz de ação</b> aparece destacada sob cada conta.</p>"
             "<div class=filters>"
             "<div class=grp><label>buscar nome</label><input id=f-name placeholder='cliente…' oninput='applyF()'></div>"
@@ -2467,7 +2474,7 @@ __SCRIPT__
             f"<span class=count>mostrando <b id=vis>0</b> de {len(ordered)}</span>"
             "</div>"
             "<div class='tbl tbl-acct'>"
-            "<div class='row thead'><div>Conta / motivos</div><div class=c-score>Score</div><div>Faixa</div><div>Estágio</div><div>Serviço-Squad</div><div class=c-mrr>MRR</div><div>Execução</div></div>"
+            "<div class='row thead'><div>Conta / motivos</div><div class=c-score>Score</div><div>Faixa</div><div>Estágio</div><div>Serviço-Squad</div><div class=c-mrr>MRR</div><div>Execução</div><div>Atrasos</div></div>"
             + rows + "</div>"
             "<div class=pager><button id=pg-prev onclick='pgGo(-1)'>‹ anterior</button>"
             "<span class=pginfo id=pginfo></span>"
