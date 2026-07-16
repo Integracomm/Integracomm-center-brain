@@ -1889,6 +1889,14 @@ __BODY__
         body = (
             "<h1>Visão central</h1>"
             "<p class=sub>Painel de saúde da empresa: Growth, Marketing, Pré-vendas, Vendas, Operações e Financeiro ativas. A pior área do momento aparece primeiro na faixa de saúde.</p>"
+            # botão All Hands (15/07): gera a apresentação mensal no design do
+            # deck oficial — dados automáticos + conteúdo manual do mês
+            "<p class=note style='margin:10px 0 0'><a href='/allhands' style='display:inline-block;"
+            "background:var(--brand);color:var(--brand-ink);border-radius:var(--radius-sm);"
+            "font-weight:600;font-size:var(--fs-sm);padding:8px 14px;text-decoration:none'>"
+            "🎤 Gerar apresentação All Hands</a> "
+            "<span style='color:var(--text-muted);font-size:var(--fs-sm)'>slides do mês fechado com os dados do painel + "
+            "destaques/orientações que você preencher</span></p>"
             f"<div class=kpis>{kpi_html}</div>"
             + mudancas +
             "<section><h2>Saúde por área</h2>"
@@ -3267,6 +3275,7 @@ def _relatorios_content(rep: dict, scores: list[dict]) -> str:
 # capturar as rotas fixas /api/reports/summary e /send-slack definidas acima
 # (FastAPI casa na ordem de registro). Import tardio evita ciclo.
 from .report_api import router as _report_router  # noqa: E402
+from .allhands import router as _allhands_router  # noqa: E402
 from .financeiro.ui import router as _financeiro_router  # noqa: E402
 from .marketing.ui import router as _marketing_router  # noqa: E402
 from .operacoes.ui import router as _operacoes_router  # noqa: E402
@@ -3277,3 +3286,4 @@ app.include_router(_marketing_router)
 app.include_router(_sales_router)
 app.include_router(_operacoes_router)
 app.include_router(_financeiro_router)
+app.include_router(_allhands_router)
