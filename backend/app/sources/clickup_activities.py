@@ -200,6 +200,32 @@ def _roots_by_norm(token: str, list_id: str) -> dict[str, set[str]]:
     return _cached(f"cu-roots:{list_id}", build, ttl=_LIST_TTL)
 
 
+def _subs_lookup(token: str, list_id: str, n: str) -> list[dict]:
+    """Subtarefas da conta no índice, com fallback por INCLUSÃO do nome-base:
+    cards de serviço são nomeados com prefixo ('Configuração de Sistema
+    (UpSeller) - CEREJA CHIC MODAS') e escapavam do match exato — caso real
+    CEREJA CHIC 15/07 (o relatório só via o card da lista Clientes Ativos)."""
+    idx = _subs_by_norm_raw(token, list_id)
+    out = {t["id"]: t for t in idx.get(n, [])}
+    if len(n) >= 6:
+        for k, subs in idx.items():
+            if k != n and n in k:
+                for t in subs:
+                    out.setdefault(t["id"], t)
+    return list(out.values())
+
+
+def _roots_lookup(token: str, list_id: str, n: str) -> set[str]:
+    """Ids dos cards-raiz da conta (exato + inclusão do nome-base)."""
+    idx = _roots_by_norm(token, list_id)
+    out = set(idx.get(n, set()))
+    if len(n) >= 6:
+        for k, roots in idx.items():
+            if k != n and n in k:
+                out |= roots
+    return out
+
+
 def _report_lists(s) -> list[str]:
     """Listas indexadas p/ relatório: assessoria + clientes ativos (cards de
     cliente podem viver em qualquer uma — caso SOLUTION STORE/RADIADORES)."""
@@ -298,15 +324,17 @@ def _from_clickup_api(account_name: str, start: dt.datetime, end: dt.datetime) -
     known_roots: set[str] = set()
 
     # rota 1: listas INDEXADAS (assessoria + clientes ativos) — cards de cliente
-    # por nome + subtarefas retornadas pela própria lista, tudo cacheado/prewarm
+    # por nome (exato + inclusão do nome-base) + subtarefas da própria lista
+    vistos_ids: set[str] = set()
     for lst in _report_lists(s):
         idx = _subs_by_norm_raw(token, lst)
         known_ids |= {t["id"] for sub in idx.values() for t in sub}
         for roots in _roots_by_norm(token, lst).values():
             known_roots |= roots
-        for t in idx.get(norm_account(account_name), []):
-            if any(i["id"] == t["id"] for i in out):
+        for t in _subs_lookup(token, lst, norm_account(account_name)):
+            if t["id"] in vistos_ids:
                 continue  # card presente nas duas listas
+            vistos_ids.add(t["id"])
             item = _mk_item(t, start, end)
             if item:
                 out.append(item)
@@ -411,7 +439,7 @@ def _upcoming_from_clickup(account_name: str, now: dt.datetime, limit: int = 20)
         return None
     subs, vistos = [], set()
     for lst in _report_lists(s):
-        for t in _subs_by_norm_raw(s.clickup_api_token, lst).get(norm_account(account_name), []):
+        for t in _subs_lookup(s.clickup_api_token, lst, norm_account(account_name)):
             if t["id"] not in vistos:
                 vistos.add(t["id"])
                 subs.append(t)
@@ -439,7 +467,7 @@ def card_url(account_name: str) -> str | None:
     try:
         if s.clickup_api_token:
             for lst in _report_lists(s):
-                roots = _roots_by_norm(s.clickup_api_token, lst).get(n)
+                roots = _roots_lookup(s.clickup_api_token, lst, n)
                 if roots:
                     return f"https://app.clickup.com/t/{sorted(roots)[0]}"
     except Exception:  # noqa: BLE001 — link é conveniência, nunca derruba a página
@@ -463,7 +491,7 @@ def _overdue_from_clickup(account_name: str, now: dt.datetime, limit: int = 20) 
         return None
     subs, vistos = [], set()
     for lst in _report_lists(s):
-        for t in _subs_by_norm_raw(s.clickup_api_token, lst).get(norm_account(account_name), []):
+        for t in _subs_lookup(s.clickup_api_token, lst, norm_account(account_name)):
             if t["id"] not in vistos:
                 vistos.add(t["id"])
                 subs.append(t)
