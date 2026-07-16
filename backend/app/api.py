@@ -1889,14 +1889,6 @@ __BODY__
         body = (
             "<h1>Visão central</h1>"
             "<p class=sub>Painel de saúde da empresa: Growth, Marketing, Pré-vendas, Vendas, Operações e Financeiro ativas. A pior área do momento aparece primeiro na faixa de saúde.</p>"
-            # botão All Hands (15/07): gera a apresentação mensal no design do
-            # deck oficial — dados automáticos + conteúdo manual do mês
-            "<p class=note style='margin:10px 0 0'><a href='/allhands' style='display:inline-block;"
-            "background:var(--brand);color:var(--brand-ink);border-radius:var(--radius-sm);"
-            "font-weight:600;font-size:var(--fs-sm);padding:8px 14px;text-decoration:none'>"
-            "🎤 Gerar apresentação All Hands</a> "
-            "<span style='color:var(--text-muted);font-size:var(--fs-sm)'>slides do mês fechado com os dados do painel + "
-            "destaques/orientações que você preencher</span></p>"
             f"<div class=kpis>{kpi_html}</div>"
             + mudancas +
             "<section><h2>Saúde por área</h2>"
@@ -1907,7 +1899,12 @@ __BODY__
             f"<div class=central>{init_html}</div></section>"
             "<section><h2>Áreas</h2>"
             "<p class=secsub>resumo do andamento de cada área — clique para abrir o painel completo; verde = no ritmo/meta, vermelho = atenção</p>"
-            f"<div class=areas>{area_cards}</div></section>")
+            f"<div class=areas>{area_cards}</div></section>"
+            # botão All Hands ao FINAL (Otávio 15/07: uso 1x/mês, sem destaque)
+            "<p class=note style='margin-top:16px'><a href='/allhands' "
+            "style='color:var(--brand);text-decoration:none;font-weight:600'>🎤 Gerar apresentação All Hands</a>"
+            "<span style='color:var(--text-muted)'> — slides do mês fechado com os dados do painel + "
+            "destaques/orientações que você preencher</span></p>")
             # Saúde da Receita Recorrente mudou p/ /financeiro?view=receita (15/07)
     return (head.replace("__TOKENS__", _tokens_css()).replace("__USERMAIL__", escape(role))
             .replace("__HOME_ON__", " active" if page != "admin" else "")
