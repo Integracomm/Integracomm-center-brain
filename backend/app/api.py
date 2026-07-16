@@ -1161,9 +1161,9 @@ def _integracoes_html(rows: list[dict]) -> str:
             "<p class=secsub>última sincronização por fonte · verde = dentro do esperado, amarelo = atrasada, vermelho = parada/falhou — "
             "fonte quebrada em silêncio = gestor decidindo com dado velho</p>"
             + _hint("Saúde das integrações",
-                    "Cada linha é uma fonte que alimenta o painel, com a última sincronização e a janela esperada dela (o sync de deals roda de hora em hora 8-21h; mídia e rodada são diárias; a planilha de cancelamentos é mensal). "
-                    "Insights: (1) VERMELHO = os números daquela área podem estar velhos — a central mostra um aviso e o link para cá; (2) amarelo persistente = investigar antes que vire vermelho (token expirando, formato de cache mudado); "
-                    "(3) a cobertura no rodapé mede QUALIDADE (ex.: % de deals com origem) — sync verde com cobertura baixa ainda é problema, só que de preenchimento na fonte.")
+                    "O que mostra: cada fonte de dados que alimenta o painel, com a última atualização e o prazo esperado dela.\n"
+                    "Como ler: cada fonte tem seu ritmo normal — os negócios do Pipedrive atualizam de hora em hora (8h às 21h); mídia e a rodada de scores são diárias; a planilha de cancelamentos é mensal. Verde = atualizou dentro do esperado; amarelo = atrasada; vermelho = parada ou com falha.\n"
+                    "Fique de olho: (1) VERMELHO = os números daquela área podem estar velhos — a central mostra um aviso com link para cá; (2) amarelo que persiste = investigar antes que vire vermelho (senha de acesso vencendo, formato dos dados mudou); (3) a cobertura no rodapé mede a QUALIDADE do dado (ex.: % de negócios com origem preenchida) — atualização verde com cobertura baixa ainda é problema, só que de preenchimento na fonte.")
             + "<div class=central style='padding:6px 14px 12px'><table style='width:100%;border-collapse:collapse'>"
             "<tr><th style='text-align:left;padding:7px 9px'>Fonte</th><th style='text-align:right;padding:7px 9px'>Última sync</th>"
             "<th style='text-align:left;padding:7px 9px'>Detalhe</th></tr>"
@@ -1219,9 +1219,9 @@ def _teams_html(conn) -> str:
             "<p class=secsub>quem compõe cada time e a função de cada um · o ponto indica a situação do usuário no Pipedrive · "
             "✎ editar libera: trocar função (promoção), desligar (com confirmação; some das telas, números preservados nas réguas) e adicionar colaborador</p>"
             + _hint("Times por área",
-                    "Quem compõe cada time e a função (o ponto colorido = situação do usuário no Pipedrive). "
-                    "Insights: (1) a lista de VENDAS é a régua do SQL do funil — por isso desligar nunca apaga: o histórico dos meses em que a pessoa atuou continua batendo com o Pipedrive; "
-                    "(2) re-adicionar um desligado manual funciona como recontratação; (3) coordenação/gerência ficam fora de planos e medianas dos rankings.")
+                    "O que mostra: quem compõe cada time e a função de cada pessoa.\n"
+                    "Como ler: o ponto colorido indica a situação do usuário no Pipedrive (verde = ativo; vermelho = desativado; cinza = ainda sem negócios no nome). O botão ✎ editar libera trocar função, desligar e adicionar.\n"
+                    "Fique de olho: (1) a lista de VENDAS define o que conta como SQL no funil — por isso desligar alguém nunca apaga nada: o histórico dos meses em que a pessoa atuou continua batendo com o Pipedrive; (2) re-adicionar um desligado funciona como recontratação; (3) coordenação e gerência ficam fora dos planos de ação e das comparações dos rankings — não são closers a treinar.")
             + "<div class=central>"
             "<div style='display:flex;gap:26px;flex-wrap:wrap'>" + blocos + "</div></div>"
             "<script>"
@@ -1396,10 +1396,9 @@ def _receita_recorrente_html() -> str:
         "<p class=secsub>ISR = base recorrente ÷ mês anterior ×100 (≥100 = crescendo) · Quick Ratio = nova ÷ perdida (≥1 = ganha mais do que perde) · "
         "duas visões que NÃO se misturam: <b>B2-B5</b> = o sinal do modelo novo · <b>Consolidado</b> = caixa com antigos em runoff · fonte: planilha de planejamento (migra ao Omie quando o Financeiro abrir)</p>"
         + _hint("Saúde da Receita Recorrente",
-                "ISR ≥100 = a base recorrente cresceu vs o mês anterior; Quick Ratio ≥1 = entrou mais receita recorrente nova do que saiu por cancelamento. "
-                "Insights: (1) leia SEMPRE a visão B2-B5 para julgar o modelo novo — o Consolidado carrega o runoff planejado dos planos antigos e esconde o sinal; "
-                "(2) meses marcados 'base pequena, alta variância' saltam por efeito de base baixa, não por crescimento real — não superinterprete; "
-                "(3) ★ = crossover: o mês em que o B2-B5 passa a sustentar a receita sozinho; (4) ISR<100 ou QR<1 por 2 meses seguidos dispara alerta — aí a conversa é cancelamento por bundle, não venda nova.")
+                "O que mostra: a saúde da receita recorrente — a parte da receita que se repete todo mês.\n"
+                "Como ler: ISR = a base recorrente deste mês dividida pela do mês anterior, vezes 100 — 100 ou mais significa que a base cresceu. Quick Ratio = a receita nova dividida pela perdida — 1 ou mais significa que entrou mais do que saiu por cancelamento. 'B2-B5' mostra só o modelo novo de planos; 'Consolidado' é o caixa total, com os planos antigos em descontinuação.\n"
+                "Fique de olho: (1) para julgar o modelo novo, leia SEMPRE a visão B2-B5 — o Consolidado carrega a saída planejada dos planos antigos e esconde o sinal; (2) meses marcados 'base pequena, alta variância' saltam porque a base é baixa, não por crescimento real — não superinterprete; (3) ★ = o mês projetado em que o B2-B5 passa a sustentar a receita sozinho; (4) ISR abaixo de 100 ou Quick Ratio abaixo de 1 por 2 meses seguidos dispara alerta — aí a conversa é cancelamento por plano, não venda nova.")
         + f"<div class=kpis>"
         f"<div class=kpi><div class=n>{f_(d['base_b2b5'][i])}</div><div class=l>base recorrente B2-B5 ({d['meses'][i]})</div></div>"
         f"<div class=kpi><div class=n{' style=color:var(--status-baixo)' if (d['isr_b2b5'][i] or 0) >= 100 else ' style=color:var(--status-critico)'}>{f_(d['isr_b2b5'][i], 0)}</div><div class=l>ISR B2-B5</div><div class=s>≥100 = base crescendo</div></div>"
@@ -1476,9 +1475,9 @@ def _hub_mudancas(conn: Any) -> str:
     return ("<section><h2>O que mudou desde ontem</h2>"
             "<p class=secsub>deltas das últimas 24h / última rodada — clique para abrir a área</p>"
             + _hint("O que mudou desde ontem",
-                    "A rotina diária de 30 segundos: contas que entraram/saíram de crítico (comparação das duas últimas rodadas de score), bookings e oportunidades das últimas 24h, "
-                    "CPL de ontem vs a média dos 7 dias anteriores (só aparece se variar ±30%) e iniciativas que viraram atrasadas. "
-                    "Insights: (1) conta que ENTROU em crítico é a primeira ligação do dia; (2) nada listado = nada relevante mudou — dias sem itens são normais; (3) cada linha leva direto à área para agir.")
+                    "O que mostra: a rotina diária de 30 segundos — só o que mudou desde a última rodada.\n"
+                    "Como ler: contas que entraram ou saíram da faixa crítica (comparando as duas últimas rodadas de nota), contratos e oportunidades das últimas 24h, o custo por lead de ontem contra a média dos 7 dias anteriores (só aparece se variar mais de 30%) e iniciativas que viraram atrasadas.\n"
+                    "Fique de olho: (1) conta que ENTROU em crítico é a primeira ligação do dia; (2) nada listado = nada relevante mudou — dias sem itens são normais; (3) cada linha leva direto à área para agir.")
             + f"<div class=central>{lis}</div></section>")
 
 
@@ -2148,6 +2147,152 @@ def _carga_content(scores: list[dict], mirror: dict | None) -> str:
     ths_cap = "".join(f"<th style='text-align:{al};padding:7px 9px;font-size:var(--fs-2xs)'>{h}</th>" for h, al in
                       (("Squad", "left"), ("Pessoas", "right"), ("Contas", "right"), ("Contas/pessoa", "right"),
                        ("MRR/pessoa", "right"), ("Graves/pessoa", "right"), ("% saudável", "right")))
+    # ---- atividades em atraso por squad e por responsável (Otávio 16/07): os
+    # atrasos que a aba Contas mostra por conta, agregados aqui por TIME e por
+    # pessoa — e cruzados com contas/pessoa p/ responder se o atraso vem de
+    # SOBRECARGA (capacidade) ou de RITMO/processo (squad sem excesso de carga)
+    from collections import Counter
+    try:
+        from .sources.clickup_activities import _overdue_from_clickup as _atr_fn
+    except Exception:  # noqa: BLE001 — sem ClickUp, a seção reporta indisponível
+        _atr_fn = None
+    atr_sq: dict[str, dict] = {}
+    atr_resp: dict[str, dict] = {}
+    atr_sem_squad = 0
+    if _atr_fn is not None:
+        _agora = dt.datetime.now(dt.timezone.utc)
+        for s in scores:
+            try:
+                tasks = _atr_fn(s["name"], _agora) or []
+            except Exception:  # noqa: BLE001 — conta sem match não derruba a seção
+                tasks = []
+            if not tasks:
+                continue
+            sq = _resolve_squad(s["name"], mirror)
+            if sq is None:
+                atr_sem_squad += len(tasks)
+            else:
+                d = atr_sq.setdefault(sq, {"tarefas": 0, "contas": 0, "pior": 0})
+                d["tarefas"] += len(tasks)
+                d["contas"] += 1
+                d["pior"] = max(d["pior"], max(t["dias_atraso"] for t in tasks))
+            for t in tasks:
+                for nome in (t.get("responsavel") or "(sem responsável)").split(", "):
+                    r = atr_resp.setdefault(nome, {"tarefas": 0, "contas": set(), "squads": Counter(), "pior": 0})
+                    r["tarefas"] += 1
+                    r["contas"].add(s["name"])
+                    if sq:
+                        r["squads"][sq] += 1
+                    r["pior"] = max(r["pior"], t["dias_atraso"])
+    # atrasos/pessoa por squad (mesmo denominador da capacidade) + correlação
+    cp_by = {k: (d["n"] / p if p else None) for k, p, d in cap_rows}
+    pess_by = {k: p for k, p, _d in cap_rows}
+    apps = [atr_sq.get(k, {}).get("tarefas", 0) / p for k, p, _d in cap_rows if p]
+    med_app = (sum(apps) / len(apps)) if apps else None
+
+    def _pearson(pares: list[tuple[float, float]]) -> float | None:
+        n = len(pares)
+        if n < 3:
+            return None
+        mx = sum(x for x, _ in pares) / n
+        my = sum(y for _, y in pares) / n
+        sx = sum((x - mx) ** 2 for x, _ in pares) ** 0.5
+        sy = sum((y - my) ** 2 for _, y in pares) ** 0.5
+        if not sx or not sy:
+            return None
+        return sum((x - mx) * (y - my) for x, y in pares) / (sx * sy)
+
+    _r_atr = _pearson([(cp_by[k], atr_sq.get(k, {}).get("tarefas", 0) / p)
+                       for k, p, _d in cap_rows if p and cp_by.get(k) is not None])
+    linhas_atr, top_atr = "", None
+    for k, _p, d in sorted(cap_rows, key=lambda x: -atr_sq.get(x[0], {}).get("tarefas", 0)):
+        a = atr_sq.get(k, {"tarefas": 0, "contas": 0, "pior": 0})
+        p = pess_by.get(k) or 0
+        app = a["tarefas"] / p if p else None
+        cp = cp_by.get(k)
+        chip = ""
+        # chip só quando o squad atrasa bem acima da média: a CAUSA provável
+        # vem da comparação com a carga (contas/pessoa vs média dos squads)
+        if app is not None and med_app and a["tarefas"] and app >= med_app * 1.3:
+            if cp is not None and med_cp and cp >= med_cp * 1.3:
+                chip = (" <span class=chip style='--c:var(--status-alto)' title='atrasos altos E carga alta: "
+                        "o atraso é coerente com sobrecarga — redistribuir contas ou reforçar o time'>capacidade</span>")
+            else:
+                chip = (" <span class=chip style='--c:var(--status-critico)' title='atrasos altos SEM carga acima da média: "
+                        "o gargalo não é falta de gente — revisar rotina, priorização e disciplina de prazo do squad'>ritmo/processo</span>")
+        if top_atr is None and a["tarefas"]:
+            top_atr = (k, a, chip)
+        pct = f"{a['contas'] / d['n'] * 100:.0f}%" if d["n"] else "—"
+        linhas_atr += (f"<tr><td style='{_tdl}'><b>{escape(k)}</b>{chip}</td>"
+                       f"<td style='{_td};color:var(--status-critico)'><b>{a['tarefas'] or ''}</b></td>"
+                       f"<td style='{_td}'>{a['contas'] or ''}</td>"
+                       f"<td style='{_td}'>{pct}</td>"
+                       f"<td style='{_td}'>{f'{app:.1f}' if app is not None else '—'}</td>"
+                       f"<td style='{_td}'>{f'{cp:.1f}' if cp is not None else '—'}</td>"
+                       f"<td style='{_td}'>{a['pior'] or ''}</td></tr>")
+    ths_atr = "".join(f"<th style='text-align:{al};padding:7px 9px;font-size:var(--fs-2xs)'>{h}</th>" for h, al in
+                      (("Squad", "left"), ("Tarefas atrasadas", "right"), ("Contas com atraso", "right"),
+                       ("% da carteira", "right"), ("Atrasos/pessoa", "right"), ("Contas/pessoa", "right"),
+                       ("Maior atraso (dias)", "right")))
+    linhas_resp = ""
+    resp_ord = sorted(atr_resp.items(), key=lambda x: -x[1]["tarefas"])
+    for nome, r in resp_ord[:15]:
+        sq_txt = ", ".join(f"{s} ({n})" for s, n in r["squads"].most_common(3)) or "—"
+        linhas_resp += (f"<tr><td style='{_tdl}'><b>{escape(nome)}</b></td>"
+                        f"<td style='{_td};color:var(--status-critico)'><b>{r['tarefas']}</b></td>"
+                        f"<td style='{_td}'>{len(r['contas'])}</td>"
+                        f"<td style='{_tdl}'>{escape(sq_txt)}</td>"
+                        f"<td style='{_td}'>{r['pior']}</td></tr>")
+    ths_resp = "".join(f"<th style='text-align:{al};padding:7px 9px;font-size:var(--fs-2xs)'>{h}</th>" for h, al in
+                       (("Responsável", "left"), ("Tarefas atrasadas", "right"), ("Contas", "right"),
+                        ("Squad(s)", "left"), ("Maior atraso (dias)", "right")))
+    # leitura automática: correlação carga × atraso responde a pergunta de
+    # capacidade no agregado; o chip por squad responde caso a caso
+    tot_atr = sum(a["tarefas"] for a in atr_sq.values())
+    if _atr_fn is None:
+        leitura_atr = "ClickUp não configurado — sem dados de atraso nesta visão."
+    elif not tot_atr:
+        leitura_atr = "Nenhuma tarefa aberta com vencimento estourado nos squads da planilha — carteira em dia."
+    else:
+        partes = []
+        if top_atr:
+            k, a, chip_top = top_atr
+            causa = (" — e a carga dele também está acima da média: atraso coerente com SOBRECARGA"
+                     if "capacidade" in chip_top else
+                     " — SEM carga acima da média: aponta para ritmo/processo, não falta de gente"
+                     if "ritmo" in chip_top else "")
+            partes.append(f"{k} concentra mais atrasos ({a['tarefas']} tarefas em {a['contas']} conta(s)){causa}.")
+        if _r_atr is not None:
+            if _r_atr >= 0.5:
+                partes.append(f"No agregado, atrasos ACOMPANHAM a carga (correlação {_r_atr:.2f} entre contas/pessoa e "
+                              "atrasos/pessoa): o quadro geral é de capacidade — redistribuição/reforço tende a resolver.")
+            elif _r_atr <= 0.1:
+                partes.append(f"No agregado, atrasos NÃO acompanham a carga (correlação {_r_atr:.2f}): squads mais "
+                              "carregados não são os que mais atrasam — o problema é de ritmo/processo em squads "
+                              "específicos, não de falta de gente.")
+            else:
+                partes.append(f"Correlação carga × atraso moderada ({_r_atr:.2f}): capacidade explica parte dos atrasos, "
+                              "mas há squads fora do padrão — olhar o chip de cada linha.")
+        sem_resp = atr_resp.get("(sem responsável)", {}).get("tarefas", 0)
+        if sem_resp:
+            partes.append(f"{sem_resp} tarefa(s) vencida(s) SEM responsável atribuído no ClickUp — atraso órfão, "
+                          "ninguém está sendo cobrado por elas.")
+        leitura_atr = " ".join(partes)
+    nota_atr = (f"<p class=note style='margin-top:8px'>{atr_sem_squad} tarefa(s) atrasada(s) em contas sem squad "
+                "identificado ficaram fora da tabela.</p>" if atr_sem_squad else "")
+    resto_resp = (f"<p class=note style='margin-top:8px'>+ {len(resp_ord) - 15} responsável(is) com menos atrasos "
+                  "fora do top 15.</p>" if len(resp_ord) > 15 else "")
+    atrasos_html = (
+        "<section><h2>Atividades em atraso</h2>"
+        "<p class=secsub>tarefas ABERTAS com vencimento estourado no ClickUp (as mesmas da coluna 'Atrasos' da aba Contas), "
+        "agregadas por squad e por responsável — 'atrasos/pessoa' ao lado de 'contas/pessoa' responde se o atraso vem de "
+        "sobrecarga (capacidade) ou de ritmo/processo</p>"
+        f"<div class=card><div class=sug-item>→ {escape(leitura_atr)}</div></div>"
+        f"<div class=central style='padding:6px 14px 12px;overflow-x:auto'><table style='width:100%;border-collapse:collapse'>"
+        f"<tr>{ths_atr}</tr>{linhas_atr}</table></div>{nota_atr}"
+        "<div class=asslbl style='margin:14px 0 6px'>por responsável (assignee das tarefas vencidas no ClickUp)</div>"
+        f"<div class=central style='padding:6px 14px 12px;overflow-x:auto'><table style='width:100%;border-collapse:collapse'>"
+        f"<tr>{ths_resp}</tr>{linhas_resp}</table></div>{resto_resp}</section>")
     # análise/ranking por squad (antes na aba Relatórios — unificação 15/07:
     # 'Análise dos Squads' = ranking + insights + carga + capacidade num lugar só)
     _squad_an, _sem_squad = _squad_analysis(scores)
@@ -2171,7 +2316,8 @@ def _carga_content(scores: list[dict], mirror: dict | None) -> str:
         f"<div class=card><div class=sug-item>→ {escape(leitura_cap)}</div>"
         "<style>.sug-item{padding:7px 0 12px;font-size:var(--fs-sm);line-height:1.6;color:var(--text-2)}</style></div>"
         f"<div class=central style='padding:6px 14px 12px;overflow-x:auto'><table style='width:100%;border-collapse:collapse'>"
-        f"<tr>{ths_cap}</tr>{linhas_cap}</table></div></section>")
+        f"<tr>{ths_cap}</tr>{linhas_cap}</table></div></section>"
+        + atrasos_html)
 
 
 def _render(role: str, scores: list[dict], alerts: list[dict],
@@ -2242,6 +2388,11 @@ def _render(role: str, scores: list[dict], alerts: list[dict],
         else:
             atr_cell = (f"<span class='chip' style='--c:var(--status-baixo)' "
                         f"title='nenhuma entrega aberta vencida no ClickUp'>em dia</span>")
+        # coluna Atrasos também clicável -> card no ClickUp (Otávio 16/07:
+        # 'faria sentido ver QUAIS são as tarefas em atraso ao clicar ali')
+        if cu_url and atr_cell != _DASH:
+            atr_cell = (f"<a href='{cu_url}' target=_blank rel=noopener "
+                        f"style='text-decoration:none' title='abrir o card no ClickUp para ver as tarefas'>{atr_cell}</a>")
         atr = "1" if n_atr else "0"
         score_cell = (f"<span class='score'>{float(s['score']):.1f}</span>" if ev
                       else "<span style='color:var(--text-faint)'>s/ dados</span>")
@@ -2254,14 +2405,13 @@ def _render(role: str, scores: list[dict], alerts: list[dict],
             f"data-alert=\"{sev}\" data-stage=\"{stage_key}\" data-squad=\"{sq}\" data-mrr=\"{mrr:.0f}\" "
             f"data-exec=\"{exec_key}\" data-atr=\"{atr}\">"
             f"<div class='c-name'><div class='nm'>{escape(s['name'][:60])}</div>{mot_line}"
+            f"<div class='acts'>"
             f"<a class='repbtn' href='/growth/report?account_id={s['account_id']}' "
-            f"title='Relatório mensal de assessoria (mês anterior; gerado na hora)'>Relatório</a> "
+            f"title='Relatório mensal de assessoria (mês anterior; gerado na hora)'>📄 Relatório</a>"
             f"<select class='outsel' onchange=\"outc('{s['account_id']}',this)\" "
-            f"style='background:var(--bg-panel);border:1px solid var(--border-strong);border-radius:6px;"
-            f"color:var(--text-muted);font-size:var(--fs-2xs);padding:2px 4px;margin-top:4px' "
             f"title='registrar o DESFECHO real da conta — alimenta a medição de precisão do modelo (aba Alertas)'>"
             f"<option value=''>desfecho…</option><option value='retida'>retida</option>"
-            f"<option value='cancelada'>cancelada</option><option value='em_negociacao'>em negociação</option></select></div>"
+            f"<option value='cancelada'>cancelada</option><option value='em_negociacao'>em negociação</option></select></div></div>"
             f"<div class='c-score'>{score_cell}</div>"
             f"<div>{_chip(band, _BAND_VAR.get(band, '--status-semdados'))}</div>"
             f"<div class='c-stage'>{stage_dot}{escape(_STAGE_LABEL.get(stage_key, stage_key))}</div>"
@@ -2353,8 +2503,16 @@ section{margin-top:var(--space-8)}
 .row{display:grid;align-items:center;gap:12px;padding:10px 16px}
 .thead{background:var(--surface-2);color:var(--text-muted);font-size:var(--fs-2xs);text-transform:uppercase;letter-spacing:var(--tracking-label);font-weight:var(--fw-semibold)}
 .arow{border-top:1px solid var(--border);align-items:start}
-/* cada CLIENTE é um bloco (dados + diretriz) separado por uma linha nítida */
-.acct{border-top:1px solid var(--border-strong);align-items:start;padding:13px 16px}
+/* cada CLIENTE é um CARTÃO próprio (redesign Otávio 16/07: 'muito carregado,
+   informações muito juntas') — respiro entre cartões e borda esquerda na cor
+   da faixa de risco p/ escanear a lista sem ler os chips */
+.acct{align-items:start;padding:16px 16px 14px;background:var(--surface-1);
+  border:1px solid var(--border-mid);border-left:3px solid var(--border-strong);
+  border-radius:var(--radius-md);margin-top:12px}
+.acct[data-band=critico]{border-left-color:var(--status-critico)}
+.acct[data-band=alto]{border-left-color:var(--status-alto)}
+.acct[data-band=medio]{border-left-color:var(--status-medio)}
+.acct[data-band=baixo]{border-left-color:var(--status-baixo)}
 .acct:hover,.arow:hover{background:var(--surface-2)}
 .tbl-alerts .row{grid-template-columns:minmax(260px,1fr) 120px 170px 90px 230px}
 .c-acts{display:flex;gap:6px;flex-wrap:wrap}
@@ -2362,7 +2520,10 @@ section{margin-top:var(--space-8)}
 .abtn:hover{border-color:var(--brand);color:var(--brand)}
 /* contas: 7 colunas que CABEM na página (sem scroll lateral); a diretriz ocupa
    a largura inteira numa 2ª linha da mesma conta */
-.tbl-acct .row{grid-template-columns:minmax(200px,1fr) 66px 96px 150px 78px 96px 96px 92px;row-gap:9px}
+.tbl-acct{background:transparent;border:none}
+.tbl-acct .thead{background:var(--surface-2);border:1px solid var(--border-mid);
+  border-left-width:3px;border-radius:var(--radius-md)}
+.tbl-acct .row{grid-template-columns:minmax(200px,1fr) 66px 96px 150px 78px 96px 96px 92px;row-gap:10px}
 /* colunas 2–7 (Score..Execução) centralizadas — cabeçalho e linhas */
 .tbl-acct .row>div:nth-child(n+2):nth-child(-n+8){text-align:center}
 .c-full{grid-column:1/-1}
@@ -2380,8 +2541,12 @@ section{margin-top:var(--space-8)}
 .c-stage{color:var(--text-2);font-size:var(--fs-sm)} .c-status{color:var(--text-muted);font-size:var(--fs-sm)}
 .sdot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--c);margin-right:6px;vertical-align:middle}
 .guide{font-size:var(--fs-sm);color:var(--text-2);line-height:1.5;background:color-mix(in srgb,var(--brand) 5%,transparent);border-left:2px solid color-mix(in srgb,var(--brand) 35%,transparent);border-radius:var(--radius-xs);padding:7px 10px}
-.repbtn{display:inline-block;margin-top:6px;font-size:var(--fs-2xs);font-weight:var(--fw-semibold);color:var(--text-2);background:var(--surface-3);border:1px solid var(--border-strong);border-radius:var(--radius-sm);padding:3px 9px;text-decoration:none}
+/* ações da conta (Relatório + desfecho): mesma altura, mesmo estilo */
+.acts{display:flex;gap:8px;align-items:stretch;margin-top:10px}
+.repbtn{display:inline-flex;align-items:center;gap:5px;font-size:var(--fs-2xs);font-weight:var(--fw-semibold);color:var(--text-2);background:var(--surface-3);border:1px solid var(--border-strong);border-radius:var(--radius-sm);padding:5px 11px;text-decoration:none;line-height:1.2}
 .repbtn:hover{border-color:var(--brand);color:var(--brand)}
+.outsel{cursor:pointer;background:var(--surface-3);border:1px solid var(--border-strong);border-radius:var(--radius-sm);color:var(--text-muted);font-family:var(--font-body);font-size:var(--fs-2xs);padding:4px 7px;line-height:1.2}
+.outsel:hover,.outsel:focus{border-color:var(--brand);color:var(--text-2);outline:none}
 .empty{color:var(--text-muted);padding:14px 16px}
 /* --- filtros --- */
 .filters{display:flex;flex-wrap:wrap;gap:10px;align-items:end;background:var(--surface-1);border:1px solid var(--border-mid);border-radius:var(--radius-md);padding:12px 14px;margin-bottom:10px}
@@ -2411,7 +2576,9 @@ __SCRIPT__
                      ("playbooks", "Playbooks"), ("relatorios", "Relatórios")):
         cls = "nav-item active" if v == view else "nav-item"
         nav += f"<a class='{cls}' href='/growth?view={v}'>{label}</a>"
-    nav += "<a class='nav-item soon'>Configurações <span class=tag>em breve</span></a>"
+    # 'Configurações (em breve)' removido (Otávio 16/07): tudo que seria config
+    # do Growth ou é calibração do modelo (decisão de gestão, não de tela), ou
+    # já vive no Painel Administrativo (times, integrações) — placeholder morto
 
     foot = ("<p class=foot>Derivados do Postgres próprio (LGPD: sem conteúdo bruto). "
             "O agente calcula, exibe e sinaliza — nunca age.</p>")
@@ -2461,7 +2628,8 @@ __SCRIPT__
             "o real da planilha de composição, resolvido pelo nome ou pelo espelho da Operação "
             "(tag completa no hover). "
             "<b>Execução</b> = saúde das entregas no ClickUp (saudável / atenção / crítica); <b>Atrasos</b> = entregas abertas com vencimento estourado — em dia = nenhuma "
-            "(nota e motivo no hover). A <b>diretriz de ação</b> aparece destacada sob cada conta.</p>"
+            "(nota e motivo no hover; clicar nos selos abre o card do cliente no ClickUp). "
+            "A <b>diretriz de ação</b> aparece destacada sob cada conta; a borda esquerda do cartão segue a cor da faixa de risco.</p>"
             "<div class=filters>"
             "<div class=grp><label>buscar nome</label><input id=f-name placeholder='cliente…' oninput='applyF()'></div>"
             "<div class=grp><label>faixa</label><select id=f-band onchange='applyF()'><option value=''>todas</option><option value='baixo'>verde (baixo)</option><option value='medio'>amarelo (médio)</option><option value='alto'>laranja (alto)</option><option value='critico'>vermelho (crítico)</option><option value='sem_dados'>sem dados</option></select></div>"
