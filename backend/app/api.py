@@ -1900,10 +1900,13 @@ __BODY__
             "<section><h2>Áreas</h2>"
             "<p class=secsub>resumo do andamento de cada área — clique para abrir o painel completo; verde = no ritmo/meta, vermelho = atenção</p>"
             f"<div class=areas>{area_cards}</div></section>"
-            # botão All Hands ao FINAL (Otávio 15/07: uso 1x/mês, sem destaque)
-            "<p class=note style='margin-top:16px'><a href='/allhands' "
-            "style='color:var(--brand);text-decoration:none;font-weight:600'>🎤 Gerar apresentação All Hands</a>"
-            "<span style='color:var(--text-muted)'> — slides do mês fechado com os dados do painel + "
+            # botão All Hands ao FINAL da página (Otávio 15/07: uso 1x/mês —
+            # posição discreta, mas com cara de botão)
+            "<p class=note style='margin-top:18px'><a href='/allhands' style='display:inline-block;"
+            "background:var(--brand);color:var(--brand-ink);border-radius:var(--radius-sm);"
+            "font-weight:600;font-size:var(--fs-sm);padding:8px 14px;text-decoration:none'>"
+            "🎤 Gerar apresentação All Hands</a> "
+            "<span style='color:var(--text-muted);font-size:var(--fs-sm)'>slides do mês fechado com os dados do painel + "
             "destaques/orientações que você preencher</span></p>")
             # Saúde da Receita Recorrente mudou p/ /financeiro?view=receita (15/07)
     return (head.replace("__TOKENS__", _tokens_css()).replace("__USERMAIL__", escape(role))
