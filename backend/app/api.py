@@ -2194,6 +2194,20 @@ def _render(role: str, scores: list[dict], alerts: list[dict],
         from .sources.clickup_activities import card_url as _cu_card_url
     except Exception:  # noqa: BLE001
         _cu_card_url = None
+    # contas com TAREFA ATRASADA de verdade (vencimento estourado) — filtro
+    # próprio, separado da faixa 'crítica' da nota (Otávio 15/07)
+    try:
+        from .sources.clickup_activities import _overdue_from_clickup
+        _agora_atr = dt.datetime.now(dt.timezone.utc)
+
+        def _tem_atrasada(nm: str) -> bool:
+            try:
+                return bool(_overdue_from_clickup(nm, _agora_atr, limit=1))
+            except Exception:  # noqa: BLE001
+                return False
+    except Exception:  # noqa: BLE001
+        def _tem_atrasada(nm: str) -> bool:
+            return False
     squads = sorted({_squad_label(s["name"], _mirror) for s in ordered})
 
     def reason_txt(s):
@@ -2217,6 +2231,7 @@ def _render(role: str, scores: list[dict], alerts: list[dict],
         if cu_url and exec_cell != _DASH:
             exec_cell = (f"<a href='{cu_url}' target=_blank rel=noopener "
                          f"style='text-decoration:none' title='abrir o card no ClickUp'>{exec_cell}</a>")
+        atr = "1" if _tem_atrasada(s["name"]) else "0"
         score_cell = (f"<span class='score'>{float(s['score']):.1f}</span>" if ev
                       else "<span style='color:var(--text-faint)'>s/ dados</span>")
         mot = reason_txt(s)
@@ -2226,7 +2241,7 @@ def _render(role: str, scores: list[dict], alerts: list[dict],
         return (
             f"<div class='row acct' data-name=\"{escape(s['name'].lower())}\" data-band=\"{band}\" "
             f"data-alert=\"{sev}\" data-stage=\"{stage_key}\" data-squad=\"{sq}\" data-mrr=\"{mrr:.0f}\" "
-            f"data-exec=\"{exec_key}\">"
+            f"data-exec=\"{exec_key}\" data-atr=\"{atr}\">"
             f"<div class='c-name'><div class='nm'>{escape(s['name'][:60])}</div>{mot_line}"
             f"<a class='repbtn' href='/growth/report?account_id={s['account_id']}' "
             f"title='Relatório mensal de assessoria (mês anterior; gerado na hora)'>Relatório</a> "
@@ -2441,7 +2456,7 @@ __SCRIPT__
             "<div class=grp><label>alerta</label><select id=f-alert onchange='applyF()'><option value=''>todos</option><option value='critico'>crítico</option><option value='alto'>alto</option><option value='atencao'>atenção</option><option value='sem'>sem alerta</option></select></div>"
             "<div class=grp><label>estágio</label><select id=f-stage onchange='applyF()'><option value=''>todos</option><option value='saudavel'>saudável</option><option value='desengajamento_inicial'>desengajamento</option><option value='insatisfacao_latente'>insatisfação latente</option><option value='insatisfacao_ativa'>insatisfação ativa</option><option value='intencao_de_saida'>intenção de saída</option><option value='nao_avaliavel'>não avaliável</option></select></div>"
             f"<div class=grp><label>squad</label><select id=f-squad onchange='applyF()'><option value=''>todos</option>{squad_opts}</select></div>"
-            "<div class=grp><label>execução</label><select id=f-exec onchange='applyF()'><option value=''>todas</option><option value='em_dia'>em dia</option><option value='atencao'>atenção</option><option value='critica'>crítica</option><option value='sem'>sem dado</option></select></div>"
+            "<div class=grp><label>execução</label><select id=f-exec onchange='applyF()'><option value=''>todas</option><option value='em_dia'>em dia</option><option value='atencao'>atenção</option><option value='critica'>crítica</option><option value='atrasadas'>com tarefa atrasada</option><option value='sem'>sem dado</option></select></div>"
             "<div class=grp><label>MRR mínimo (R$)</label><input id=f-mrr type=number min=0 step=100 placeholder='ex.: 3000' oninput='applyF()'></div>"
             "<button id=clearf onclick='clearF()'>limpar</button>"
             f"<span class=count>mostrando <b id=vis>0</b> de {len(ordered)}</span>"
@@ -2475,8 +2490,9 @@ function outc(id, sel){
 }
 var PAGE=10, page=1;
 function _match(d,f){
+  var execOk=!f.x||(f.x==='atrasadas'?d.atr==='1':d.exec===f.x);
   return (!f.n||d.name.indexOf(f.n)>=0)&&(!f.b||d.band===f.b)&&(!f.a||d.alert===f.a)
-    &&(!f.st||d.stage===f.st)&&(!f.sq||d.squad===f.sq)&&(!f.x||d.exec===f.x)
+    &&(!f.st||d.stage===f.st)&&(!f.sq||d.squad===f.sq)&&execOk
     &&(parseFloat(d.mrr)>=f.mrr);
 }
 function renderRows(){
