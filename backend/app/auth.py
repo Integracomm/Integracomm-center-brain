@@ -51,7 +51,7 @@ AREAS: dict[str, str] = {"growth": "Growth / Assessoria", "marketing": "Marketin
                          "financeiro": "Financeiro", "operacoes": "Operações"}
 AREA_HOME: dict[str, str] = {"growth": "/growth", "marketing": "/marketing",
                              "vendas": "/vendas", "prevendas": "/prevendas",
-                             "operacoes": "/operacoes"}
+                             "operacoes": "/operacoes", "financeiro": "/financeiro"}
 _ROLE_AREAS: dict[str, set[str]] = {"admin": set(AREAS), "gestor_growth": {"growth"},
                                     "gestor_marketing": {"marketing"},
                                     "gestor_prevendas": {"prevendas"},

@@ -1705,13 +1705,33 @@ def _render_hub(role: str, st: dict, users: list[dict] | None = None,
         op_card = ("<a class='area' href='/operacoes'><div class=ahead>"
                    f"<div class=an>Operações</div>{_chip('ativa', '--status-baixo')}</div>"
                    "<div class=ad>iniciativas por área da empresa (Notion) — semáforo de prazo e dependências por trimestre</div></a>")
-    area_cards = growth_card + mkt_card + pv_card + vd_card + op_card + "".join(
-        "<div class='area soon'>"
-        + f"<div class='an'>{escape(nm)}</div>"
-        + f"<div class='ast'>{_chip('em breve', '--status-semdados')}</div>"
-        + f"<div class='ad'>{escape(desc)}</div></div>"
-        for nm, desc in (("Financeiro", "inadimplência e margem"),)
-    )
+    # ---- card Financeiro (planilha de planejamento; cache 10 min)
+    fin_card = ("<a class='area' href='/financeiro'><div class=ahead>"
+                f"<div class=an>Financeiro</div>{_chip('ativa', '--status-baixo')}</div>"
+                "<div class=ad>planejamento × realizado — recebimento, bookings vs meta, "
+                "funil projetado e saúde da receita recorrente</div></a>")
+    try:
+        from .sources import planejamento_financeiro as _PF
+        _fin = _PF.carrega()
+        if _fin:
+            _hj = dt.date.today()
+            _iso = f"{_hj.year:04d}-{_hj.month:02d}"
+            if _iso in _fin["meses"]:
+                _i = _fin["meses"].index(_iso)
+                _mb = _PF.linha(_fin, "Meta Bookings [R$]")[_i]
+                _mr = _PF.linha(_fin, "Recebimento TOTAL [R$]")[_i]
+                _pr = (_PF.parcial(_fin, "Recebimento TOTAL [R$]")
+                       if _fin["parcial_mes"] == _iso else None)
+                fin_card = ("<a class='area' href='/financeiro'><div class=ahead>"
+                            f"<div class=an>Financeiro</div>{_chip('ativa', '--status-baixo')}</div>"
+                            "<div class=agrid>"
+                            + am(_fmt_brl(_mb) if _mb else "—", "meta de bookings do mês")
+                            + am(_fmt_brl(_pr) if _pr is not None else "—", "recebido até agora (planilha)")
+                            + am(_fmt_brl(_mr) if _mr else "—", "recebimento projetado do mês")
+                            + "</div><div class=ad>planejamento × realizado em tempo real — histórico, metas e saúde da receita recorrente</div></a>")
+    except Exception:  # noqa: BLE001 — planilha fora não derruba a central
+        pass
+    area_cards = growth_card + mkt_card + pv_card + vd_card + op_card + fin_card
 
     # ---- KPIs do topo: retenção (Growth) + aquisição (Marketing)
     kpis = [
@@ -1731,7 +1751,7 @@ def _render_hub(role: str, st: dict, users: list[dict] | None = None,
                      ("var(--status-baixo)" if mkt and sales["receita"] / sales["receita_meta"] >= mkt["frac"]
                       else "var(--status-critico)")))
     if len(kpis) == 3:
-        kpis.append(("4<span style='color:var(--text-faint);font-size:18px'>/6</span>",
+        kpis.append(("6<span style='color:var(--text-faint);font-size:18px'>/6</span>",
                      "Áreas ativas", None))
     kpi_html = "".join(
         f"<div class=kpi><div class=n{f' style=\"color:{c}\"' if c else ''}>{v}</div>"
@@ -1826,7 +1846,7 @@ a.init:hover .ig{color:var(--brand)}
      <a class="nav-item" href="/marketing">Marketing</a>
      <a class="nav-item" href="/prevendas">Pré-vendas</a>
      <a class="nav-item" href="/vendas">Vendas</a>
-     <a class="nav-item soon">Financeiro <span class=tag>em breve</span></a>
+     <a class="nav-item" href="/financeiro">Financeiro</a>
      <a class="nav-item" href="/operacoes">Operações</a>
    </nav>
    <div class=rail-foot><b>__USERMAIL__</b> · <a href="/logout" style="color:var(--text-muted);text-decoration:underline">sair</a><br>humano no loop — a IA só sinaliza</div>
@@ -1848,7 +1868,7 @@ __BODY__
     else:
         body = (
             "<h1>Visão central</h1>"
-            "<p class=sub>Painel de saúde da empresa: Growth, Marketing, Pré-vendas, Vendas e Operações ativas (Financeiro em breve). A pior área do momento aparece primeiro na faixa de saúde.</p>"
+            "<p class=sub>Painel de saúde da empresa: Growth, Marketing, Pré-vendas, Vendas, Operações e Financeiro ativas. A pior área do momento aparece primeiro na faixa de saúde.</p>"
             f"<div class=kpis>{kpi_html}</div>"
             + mudancas +
             "<section><h2>Saúde por área</h2>"
@@ -3229,6 +3249,7 @@ def _relatorios_content(rep: dict, scores: list[dict]) -> str:
 # capturar as rotas fixas /api/reports/summary e /send-slack definidas acima
 # (FastAPI casa na ordem de registro). Import tardio evita ciclo.
 from .report_api import router as _report_router  # noqa: E402
+from .financeiro.ui import router as _financeiro_router  # noqa: E402
 from .marketing.ui import router as _marketing_router  # noqa: E402
 from .operacoes.ui import router as _operacoes_router  # noqa: E402
 from .sales.ui import router as _sales_router  # noqa: E402
@@ -3237,3 +3258,4 @@ app.include_router(_report_router)
 app.include_router(_marketing_router)
 app.include_router(_sales_router)
 app.include_router(_operacoes_router)
+app.include_router(_financeiro_router)
