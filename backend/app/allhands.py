@@ -68,6 +68,47 @@ def _mes_fechado_default() -> dt.date:
 # ---------------------------------------------------------------------------
 # dados automáticos
 # ---------------------------------------------------------------------------
+_LISTA_CLIENTES_ATIVOS = "901002253296"  # ADM › Clientes › Clientes Ativos
+# rótulo do deck ← rótulos do campo Serviço, em ordem de PRIORIDADE (cliente com
+# múltiplos serviços conta uma vez, no plano mais alto; ADS/Estratégia só quando
+# não há plano de assessoria)
+_PLANO_DECK = [
+    ("Elite", ("ELITE",)), ("Platinum", ("PLATINUM",)), ("Scale", ("SCALE",)),
+    ("Traction", ("TRACTION",)), ("Start", ("Assessoria Start",)),
+    ("Smart", ("Assessoria Smart",)), ("Master", ("Assessoria Master",)),
+    ("ADS", ("ADS para Marketplace",)), ("Estratégia", ("Estratégia de Vendas",)),
+    ("Antigo/Basic", ("Assessoria Basic", "Assessoria", "Assessoria Potencializar")),
+]
+
+
+def _clientes_ativos_por_plano() -> list[tuple[str, int]]:
+    """Contagem por plano na lista Clientes Ativos (status 'ativo')."""
+    from .config import get_settings
+    from .sources.clickup_activities import _download_list
+    s = get_settings()
+    lista = s.clickup_list_clientes_ativos or _LISTA_CLIENTES_ATIVOS
+    try:
+        tasks = _download_list(s.clickup_api_token, lista)
+    except Exception:  # noqa: BLE001 — ClickUp fora não derruba a geração
+        return []
+    contagem: dict[str, int] = {}
+    for t in tasks:
+        if t.get("parent") or (t.get("status") or {}).get("status") != "ativo":
+            continue
+        rotulos = set()
+        for c in (t.get("custom_fields") or []):
+            if c.get("name") == "Serviço":
+                opts = {o["id"]: (o.get("label") or o.get("name") or "")
+                        for o in (c.get("type_config", {}).get("options") or [])}
+                rotulos = {opts.get(v, "") for v in (c.get("value") or [])}
+                break
+        plano = next((nome for nome, labels in _PLANO_DECK
+                      if any(lb in rotulos for lb in labels)), "Antigo/Basic")
+        contagem[plano] = contagem.get(plano, 0) + 1
+    ordem = [nome for nome, _ in _PLANO_DECK]
+    return sorted(contagem.items(), key=lambda x: ordem.index(x[0]))
+
+
 def _dados_mes(conn, mes: dt.date) -> dict:
     """Todos os números dos slides automáticos, nas réguas oficiais do app."""
     import calendar
@@ -95,19 +136,12 @@ def _dados_mes(conn, mes: dt.date) -> dict:
         saidas_plano = [(p, int(n)) for p, n in cur.fetchall()]
         saidas_total = sum(n for _, n in saidas_plano)
 
-    # clientes ativos por plano (espelho da Operação)
-    clientes_plano: list[tuple[str, int]] = []
-    try:
-        from .sources.clickup_activities import _mirror_clientes
-        contagem: dict[str, int] = {}
-        for cli in _mirror_clientes().values():
-            if (cli.get("status") or "").upper() != "ATIVO":
-                continue
-            plano = (cli.get("contrato") or "Sem plano").strip() or "Sem plano"
-            contagem[plano] = contagem.get(plano, 0) + 1
-        clientes_plano = sorted(contagem.items(), key=lambda x: -x[1])
-    except Exception:  # noqa: BLE001 — espelho fora não derruba a geração
-        pass
+    # clientes ativos por plano — lista CLIENTES ATIVOS do ClickUp (ADM›Clientes,
+    # 901002253296): é a FONTE do deck oficial (validado 15/07: 30/06 ≈ 245 do
+    # deck de junho; Antigo/Basic 9 e Estratégia 2 exatos). Régua: card-raiz com
+    # status 'ativo' (pausada por inatividade = inadimplente, fora — regra do
+    # Otávio), 1 plano por cliente pela prioridade de Serviço.
+    clientes_plano = _clientes_ativos_por_plano()
     base_ativa = sum(n for _, n in clientes_plano)
 
     pf = PF.carrega()
@@ -125,7 +159,12 @@ def _dados_mes(conn, mes: dt.date) -> dict:
             for j, m_iso in enumerate(pf["meses"]):
                 if m_iso.startswith(str(mes.year)) and m_iso <= iso and tx[j] is not None:
                     churn_serie.append((_MESES[int(m_iso[5:7]) - 1][:3], tx[j]))
+    # taxa do mês: a MESMA régua do slide de evolução (planilha, realizado) —
+    # o deck de junho trazia 9,5% num slide e 7,0% no gráfico; aqui os dois
+    # slides saem da mesma fonte. Fallback: saídas ÷ base ativa.
     taxa_mes = (saidas_total / base_ativa) if base_ativa else None
+    if churn_serie:
+        taxa_mes = churn_serie[-1][1]
 
     return {"funil": passou, "bookings": booked, "receita": receita,
             "vendas_plano": vendas_plano, "clientes_plano": clientes_plano,
