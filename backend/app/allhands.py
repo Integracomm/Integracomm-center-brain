@@ -81,8 +81,14 @@ _PLANO_DECK = [
 ]
 
 
-def _clientes_ativos_por_plano() -> list[tuple[str, int]]:
-    """Contagem por plano na lista Clientes Ativos (status 'ativo')."""
+def _clientes_ativos_por_plano(fim_mes: dt.date) -> list[tuple[str, int]]:
+    """Contagem por plano na lista Clientes Ativos, AS-OF o fim do mês de
+    referência (criado até lá e não fechado até lá — gerar em julho o deck de
+    junho não pode contar o estado de hoje; validação Otávio 15/07). Régua do
+    deck: conta por SERVIÇO (cliente com plano + ADS aparece nas duas linhas;
+    o 'total geral' do deck é a SOMA das linhas: jun = 245); 'pausada por
+    inatividade' fica fora (inadimplente); serviços acessórios (Implantação,
+    Consultoria, CNPJ Adicional...) não são linhas do deck."""
     from .config import get_settings
     from .sources.clickup_activities import _download_list
     s = get_settings()
@@ -91,9 +97,20 @@ def _clientes_ativos_por_plano() -> list[tuple[str, int]]:
         tasks = _download_list(s.clickup_api_token, lista)
     except Exception:  # noqa: BLE001 — ClickUp fora não derruba a geração
         return []
+    corte = dt.datetime.combine(fim_mes + dt.timedelta(days=1), dt.time(3, 0),
+                                tzinfo=dt.timezone.utc)  # fim do dia BRT
+
+    def ts(ms):
+        return dt.datetime.fromtimestamp(int(ms) / 1000, tz=dt.timezone.utc) if ms else None
+
     contagem: dict[str, int] = {}
     for t in tasks:
-        if t.get("parent") or (t.get("status") or {}).get("status") != "ativo":
+        if t.get("parent"):
+            continue
+        if (t.get("status") or {}).get("status") == "pausada por inatividade":
+            continue  # inadimplente (regra Otávio) — o deck não conta
+        criado, fechado = ts(t.get("date_created")), ts(t.get("date_closed"))
+        if not criado or criado >= corte or (fechado is not None and fechado < corte):
             continue
         rotulos = set()
         for c in (t.get("custom_fields") or []):
@@ -102,9 +119,9 @@ def _clientes_ativos_por_plano() -> list[tuple[str, int]]:
                         for o in (c.get("type_config", {}).get("options") or [])}
                 rotulos = {opts.get(v, "") for v in (c.get("value") or [])}
                 break
-        plano = next((nome for nome, labels in _PLANO_DECK
-                      if any(lb in rotulos for lb in labels)), "Antigo/Basic")
-        contagem[plano] = contagem.get(plano, 0) + 1
+        for nome, labels in _PLANO_DECK:  # multi-serviço: uma linha por serviço
+            if any(lb in rotulos for lb in labels):
+                contagem[nome] = contagem.get(nome, 0) + 1
     ordem = [nome for nome, _ in _PLANO_DECK]
     return sorted(contagem.items(), key=lambda x: ordem.index(x[0]))
 
@@ -128,12 +145,23 @@ def _dados_mes(conn, mes: dt.date) -> dict:
                         GROUP BY 1 ORDER BY 2 DESC""",
                     (f"{mes} 00:00-03", f"{fim + dt.timedelta(days=1)} 00:00-03"))
         vendas_plano = [(p, int(n), float(v)) for p, n, v in cur.fetchall()]
-        # saídas do mês por plano (régua oficial de cancelamentos)
-        cur.execute("""SELECT COALESCE(NULLIF(plano, ''), '—'), count(*)
+        # saídas do mês por plano (régua oficial de cancelamentos). Normaliza:
+        # rótulo composto 'Master + ADS' conta no plano principal; plano VAZIO
+        # na planilha fica fora das colunas (como no deck) e vira nota de rodapé
+        cur.execute("""SELECT COALESCE(NULLIF(plano, ''), ''), count(*)
                          FROM grw_cancelamentos
                         WHERE tipo='cancelamento' AND mes = %s
                         GROUP BY 1 ORDER BY 2 DESC""", (mes,))
-        saidas_plano = [(p, int(n)) for p, n in cur.fetchall()]
+        brutos = [(p.strip(), int(n)) for p, n in cur.fetchall()]
+        agr: dict[str, int] = {}
+        saidas_sem_plano = 0
+        for p, n in brutos:
+            principal = p.split("+")[0].strip()
+            if not principal:
+                saidas_sem_plano += n
+                continue
+            agr[principal] = agr.get(principal, 0) + n
+        saidas_plano = sorted(agr.items(), key=lambda x: -x[1])
         saidas_total = sum(n for _, n in saidas_plano)
 
     # clientes ativos por plano — lista CLIENTES ATIVOS do ClickUp (ADM›Clientes,
@@ -141,7 +169,7 @@ def _dados_mes(conn, mes: dt.date) -> dict:
     # deck de junho; Antigo/Basic 9 e Estratégia 2 exatos). Régua: card-raiz com
     # status 'ativo' (pausada por inatividade = inadimplente, fora — regra do
     # Otávio), 1 plano por cliente pela prioridade de Serviço.
-    clientes_plano = _clientes_ativos_por_plano()
+    clientes_plano = _clientes_ativos_por_plano(fim)
     base_ativa = sum(n for _, n in clientes_plano)
 
     pf = PF.carrega()
@@ -169,8 +197,8 @@ def _dados_mes(conn, mes: dt.date) -> dict:
     return {"funil": passou, "bookings": booked, "receita": receita,
             "vendas_plano": vendas_plano, "clientes_plano": clientes_plano,
             "base_ativa": base_ativa, "saidas_plano": saidas_plano,
-            "saidas_total": saidas_total, "taxa_mes": taxa_mes,
-            "meta_mes": meta_mes, "meta_prox": meta_prox,
+            "saidas_total": saidas_total, "saidas_sem_plano": saidas_sem_plano,
+            "taxa_mes": taxa_mes, "meta_mes": meta_mes, "meta_prox": meta_prox,
             "churn_meta": churn_meta, "churn_serie": churn_serie}
 
 
@@ -396,7 +424,10 @@ def _gerar_html(mes: dt.date, d: dict, destaques: list[dict], novos: dict | None
         f"<div style='display:flex;align-items:center;gap:16px;margin:12px 0 14px'>"
         f"<span class='num amarelo' style='font-size:46px'>{d['base_ativa']}</span>"
         "<span class=sub>total geral de clientes ativos</span></div>"
-        f"<div style='display:flex;gap:22px'>{coluna('Planos antigos', col_ant)}{coluna('Planos novos', col_novos)}</div></div>",
+        f"<div style='display:flex;gap:22px'>{coluna('Planos antigos', col_ant)}{coluna('Planos novos', col_novos)}</div>"
+        "<div style='color:#777;font-size:10.5px;margin-top:10px'>fonte: lista Clientes Ativos (ClickUp), "
+        "cliente com mais de um serviço conta em cada linha — gere a apresentação logo após o fechamento do mês "
+        "(gerada muito depois, cartões já movidos p/ Cancelados saem da foto e subcontam)</div></div>",
         rodape))
 
     # 4 — saídas (churn), duas colunas novos × antigos como no deck
@@ -413,15 +444,19 @@ def _gerar_html(mes: dt.date, d: dict, destaques: list[dict], novos: dict | None
 
     taxa_txt = f"{d['taxa_mes'] * 100:.1f}%".replace(".", ",") if d["taxa_mes"] is not None else "—"
     meta_ch = f"{(d['churn_meta'] or 0.05) * 100:.0f}%"
+    nota_sp = (f"<div style='color:#777;font-size:11px;margin-top:10px'>+ {d['saidas_sem_plano']} saída(s) "
+               "sem plano lançado na planilha de cancelamentos (fora das colunas — corrigir na planilha)</div>"
+               if d.get("saidas_sem_plano") else "")
     slides.append(_slide(
         "<div class=pad><div class=kicker>Retenção</div><h1 class=t>Saídas de clientes (churn)</h1>"
         "<div style='display:flex;gap:22px;margin-top:16px'>"
         + col_saida("Planos novos", sd_novos) + col_saida("Planos antigos", sd_ant) +
         "<div style='flex:1;display:flex;flex-direction:column;gap:14px'>"
         f"<div class=card style='padding:18px;text-align:center'><div class='num' style='font-size:40px;color:#ff5555'>{taxa_txt}</div>"
-        "<div class=sub>taxa de cancelamento do mês</div></div>"
+        "<div class=sub>taxa de cancelamento do mês</div>"
+        "<div style='color:#777;font-size:10px;margin-top:6px'>régua: nº de cancelados ÷ base ativa (planilha)</div></div>"
         f"<div class=card style='padding:18px;text-align:center'><div class='num amarelo' style='font-size:40px'>{meta_ch}</div>"
-        "<div class=sub>meta taxa de cancelamento</div></div></div></div></div>", rodape))
+        "<div class=sub>meta taxa de cancelamento</div></div></div></div>" + nota_sp + "</div>", rodape))
 
     # 5 — evolução da taxa de cancelamento
     serie = d["churn_serie"]
