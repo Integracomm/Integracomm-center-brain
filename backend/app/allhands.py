@@ -236,9 +236,9 @@ function addDestaque(){
 }
 function addOrientacao(){
   var d=document.createElement('div'); d.className='row3';
-  d.innerHTML="<div><label>título</label><input name=or_titulo placeholder='ex.: MÁQUINA DE CAFÉ'></div>"
-    +"<div><label>subtítulo (opc.)</label><input name=or_sub placeholder='ex.: atenção na finalização'></div>"
-    +"<div><label>texto</label><input name=or_texto placeholder='ex.: colabore para manter o espaço impecável'></div>"
+  d.innerHTML="<div style='max-width:90px'><label>emoji</label><input name=or_icone placeholder='☕' maxlength=4></div>"
+    +"<div><label>título</label><input name=or_titulo placeholder='ex.: MÁQUINA DE CAFÉ'></div>"
+    +"<div><label>texto</label><input name=or_texto placeholder='ex.: atenção na finalização da bebida'></div>"
     +"<button type=button class=del onclick='this.parentNode.remove()'>✕</button>";
   document.getElementById('orientacoes').appendChild(d);
 }
@@ -518,34 +518,56 @@ def _gerar_html(mes: dt.date, d: dict, destaques: list[dict], novos: dict | None
                 + (f"<div class=sub style='margin-top:10px'>{escape(dq['nivel'])}</div>" if dq.get("nivel") else "")
                 + "</div></div>", rodape))
 
-    # 9 — novos colaboradores (manual)
+    # 9 — novos colaboradores (manual) — layout do deck: faixa de boas-vindas
+    # com ícone em quadrado amarelo + barra lateral; cards de pergunta com
+    # ícone, título branco e traço amarelo
     if novos:
-        sub_nomes = (f"<div style='color:#ffc107;font-size:15px;margin-top:8px'>{escape(novos['nomes'])}</div>"
+        sub_nomes = (f"<div style='color:#ffc107;font-size:14.5px;margin-top:10px'>{escape(novos['nomes'])}</div>"
                      if novos.get("nomes") else "")
         perguntas = "".join(
-            f"<div class=card style='flex:1;padding:18px'><div class=sub style='color:#ffc107;margin-bottom:8px'>{t}</div>"
-            f"<div style='color:#bbb;font-size:13.5px'>{q}</div></div>"
-            for t, q in (("NOME + EQUIPE", "Qual seu nome e equipe que está trabalhando?"),
-                         ("PRIMEIROS DIAS", "Como está sendo seus primeiros dias aqui conosco?"),
-                         ("HOBBIES", "O que gosta de fazer nas horas vagas?")))
+            "<div class=card style='flex:1;padding:20px 20px 16px'>"
+            "<div style='display:flex;align-items:center;gap:9px;margin-bottom:12px'>"
+            f"<div style='width:30px;height:30px;border-radius:7px;background:#ffc107;display:flex;"
+            f"align-items:center;justify-content:center;font-size:15px'>{ic}</div>"
+            f"<div style='font-weight:800;font-size:14.5px;letter-spacing:.06em'>{t}</div></div>"
+            f"<div style='color:#bbb;font-size:13.5px;line-height:1.55'>{q}</div>"
+            "<div style='width:64px;height:6px;background:#ffc107;border-radius:3px;margin-top:18px'></div></div>"
+            for ic, t, q in (("🪪", "NOME + EQUIPE", "Qual seu nome e equipe que está trabalhando?"),
+                             ("💬", "PRIMEIROS DIAS", "Como está sendo seus primeiros dias aqui conosco?"),
+                             ("🚀", "HOBBIES", "O que gosta de fazer nas horas vagas?")))
         slides.append(_slide(
             "<div class=pad><div class=kicker>Apresentação de novos colaboradores</div>"
-            "<h1 class=t style='font-size:40px'>Sejam bem-vindos<br>ao time!</h1>" + sub_nomes +
-            f"<div style='display:flex;gap:18px;margin-top:30px'>{perguntas}</div></div>", rodape))
+            "<div style='display:flex;margin-top:14px'>"
+            "<div style='width:8px;background:#ffc107;border-radius:2px'></div>"
+            "<div class=card style='flex:1;display:flex;align-items:center;gap:22px;"
+            "padding:24px 30px;border-radius:0 14px 14px 0'>"
+            "<div style='width:58px;height:58px;border-radius:12px;background:#ffc107;display:flex;"
+            "align-items:center;justify-content:center;font-size:30px'>🤝</div>"
+            "<div><h1 class=t style='font-size:34px;margin:0'>Sejam bem-vindos<br>ao time!</h1>"
+            + sub_nomes + "</div></div></div>"
+            f"<div style='display:flex;gap:20px;margin-top:26px'>{perguntas}</div></div>", rodape))
 
-    # 10 — orientações & novidades (manual)
+    # 10 — orientações & novidades (manual) — layout do deck: cards centrados,
+    # ícone amarelo em círculo escuro no topo, título BRANCO, texto embaixo
     if orientacoes:
+        n_or = len(orientacoes)
+        largura = "300px" if n_or >= 3 else "340px"
         cards = "".join(
-            f"<div class=card style='width:calc(50% - 11px);padding:18px 20px'>"
-            f"<div style='color:#ffc107;font-weight:800;font-size:16px;letter-spacing:.08em;text-transform:uppercase'>{escape(o['titulo'])}</div>"
-            + (f"<div class=sub style='margin-top:4px'>{escape(o['sub'])}</div>" if o.get("sub") else "")
-            + (f"<div style='color:#bbb;font-size:13.5px;margin-top:8px'>{escape(o['texto'])}</div>" if o.get("texto") else "")
+            f"<div class=card style='width:{largura};padding:30px 26px;text-align:center'>"
+            "<div style='width:88px;height:88px;border-radius:50%;margin:0 auto 20px;"
+            "background:radial-gradient(circle,#242424 0%,#161616 100%);display:flex;"
+            f"align-items:center;justify-content:center;font-size:40px'>{escape(o['icone'])}</div>"
+            f"<div style='font-weight:800;font-size:19px;letter-spacing:.05em;text-transform:uppercase'>{escape(o['titulo'])}</div>"
+            + (f"<div style='color:#bbb;font-size:14px;line-height:1.55;margin-top:12px'>{escape(o['texto'])}</div>"
+               if o.get("texto") else "")
             + "</div>"
             for o in orientacoes)
         slides.append(_slide(
-            "<div class=pad><div class=kicker>Convivência e organização</div>"
+            "<div class=pad style='height:100%;display:flex;flex-direction:column'>"
+            "<div class=kicker>Convivência e organização do espaço</div>"
             "<h1 class=t>Orientações & Novidades</h1>"
-            f"<div style='display:flex;flex-wrap:wrap;gap:22px;margin-top:22px'>{cards}</div></div>", rodape))
+            "<div style='flex:1;display:flex;align-items:center;justify-content:center;"
+            f"gap:26px;flex-wrap:wrap;padding-bottom:20px'>{cards}</div></div>", rodape))
 
     # 11 — fechamento
     slides.append(_slide(
@@ -602,9 +624,10 @@ async def allhands_gerar(request: Request):
         novos = {"nomes": str(form.get("novos_nomes") or "").strip()}
 
     orientacoes = []
-    for t, sb, tx in zip(form.getlist("or_titulo"), form.getlist("or_sub"), form.getlist("or_texto")):
+    for ic, t, tx in zip(form.getlist("or_icone"), form.getlist("or_titulo"), form.getlist("or_texto")):
         if (t or "").strip():
-            orientacoes.append({"titulo": t.strip(), "sub": (sb or "").strip(), "texto": (tx or "").strip()})
+            orientacoes.append({"icone": (ic or "").strip() or "📌",
+                                "titulo": t.strip(), "texto": (tx or "").strip()})
 
     A = _deps()
     with A._conn() as c:
