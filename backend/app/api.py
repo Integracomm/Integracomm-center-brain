@@ -1535,8 +1535,8 @@ def _render_hub(role: str, st: dict, users: list[dict] | None = None,
     # Iniciativas sugeridas pela inteligência central — derivadas dos dados
     # reais das áreas ativas (Growth + Marketing) = priorização cross-área.
     # cada iniciativa é um LINK para os dados que a sustentam (pedido Otávio
-    # 15/07: "vendo isso vou querer saber quais são" — ex.: execução atrasada
-    # abre a aba Contas já filtrada em execução=atrasada)
+    # 15/07: "vendo isso vou querer saber quais são" — ex.: execução crítica
+    # abre a aba Contas já filtrada em execução=crítica)
     initiatives = []
     if crit:
         initiatives.append(("Reter as contas em risco crítico",
@@ -1567,10 +1567,11 @@ def _render_hub(role: str, st: dict, users: list[dict] | None = None,
                             "--status-alto", "/prevendas?view=funil"))
     if st["exec_late"]:
         initiatives.append(("Regularizar execução nas contas em alerta",
-                            f"{st['exec_late']} contas monitoradas têm entregas atrasadas no ClickUp — "
-                            "atrito operacional que alimenta a insatisfação. Clique para ver as contas "
-                            "(motivo do atraso no hover da coluna Execução; responsáveis no relatório).",
-                            "--status-alto", "/growth?view=contas&exec=atrasada"))
+                            f"{st['exec_late']} contas monitoradas com execução CRÍTICA no ClickUp "
+                            "(entregas vencidas ou implantação além do prazo) — atrito operacional que "
+                            "alimenta a insatisfação. Clique para ver as contas (a causa está no hover "
+                            "da coluna Execução; responsáveis no relatório).",
+                            "--status-alto", "/growth?view=contas&exec=critica"))
     if st["non_eval"]:
         initiatives.append(("Recuperar cobertura de dados",
                             f"{st['non_eval']} contas sem conversa suficiente no WhatsApp — o agente não as "
@@ -1615,7 +1616,7 @@ def _render_hub(role: str, st: dict, users: list[dict] | None = None,
         + am(_num(st["monitored"]), "contas monitoradas")
         + am(_num(n_alerts), "alertas abertos", "var(--status-critico)" if n_alerts else None)
         + am(_fmt_brl(st["mrr_risk"]), "MRR em risco", "var(--status-alto)" if st["mrr_risk"] else None)
-        + am(_num(st["exec_late"]), "execução atrasada", "var(--status-medio)" if st["exec_late"] else None)
+        + am(_num(st["exec_late"]), "execução crítica", "var(--status-medio)" if st["exec_late"] else None)
         + f"</div><div class=ad>{escape(g_det)}</div></a>")
 
     if mkt:
@@ -1952,7 +1953,8 @@ def _mrr_txt(s) -> str:
 
 def _exec_badge(s) -> str:
     """Selo de execução (ClickUp): situação das ENTREGAS da conta. Só o rótulo
-    (em dia / atenção / atrasada); nota 0-100 e motivo ficam no hover."""
+    (em dia / atenção / crítica — CRÍTICA ≠ tarefa atrasada: pode vir de
+    implantação estourada etc.; a CAUSA fica no motivo/hover)."""
     v = s.get("exec_score")
     if v is None:
         return _DASH
@@ -1961,7 +1963,7 @@ def _exec_badge(s) -> str:
     elif v >= 40:
         var, txt = "--status-medio", "atenção"
     else:
-        var, txt = "--status-critico", "atrasada"
+        var, txt = "--status-critico", "crítica"
     mot = escape((s.get("exec_motivo") or "")[:140])
     tip = f"Saúde de execução no ClickUp: {v:.0f}/100. {mot}"
     return f"<span class='chip' style='--c:var({var})' title='{tip}'>{txt}</span>"
@@ -2092,7 +2094,7 @@ def _carga_content(scores: list[dict], mirror: dict | None) -> str:
         ths = "".join(f"<th style='text-align:{al};padding:7px 9px;font-size:var(--fs-2xs)'>{h}</th>" for h, al in
                       ((rotulo, "left"), ("Contas", "right"), ("MRR", "right"), ("Crít.", "right"),
                        ("Alto", "right"), ("Aten.", "right"), ("MRR em risco", "right"),
-                       ("Exec. atras.", "right"), ("Faixas 🟢🟡🟠🔴", "center")))
+                       ("Exec. crítica", "right"), ("Faixas 🟢🟡🟠🔴", "center")))
         return f"<div class=central style='padding:6px 14px 12px;overflow-x:auto'><table style='width:100%;border-collapse:collapse'><tr>{ths}</tr>{linhas}</table></div>"
     # ---- capacidade de atendimento: carteira ÷ tamanho do time (14/07 —
     # substitui 'Por responsável': não existe UM responsável, é o squad; o
@@ -2207,7 +2209,7 @@ def _render(role: str, scores: list[dict], alerts: list[dict],
         mrr = _mrr_val(s)
         xs = s.get("exec_score")
         exec_key = ("sem" if xs is None else
-                    "em_dia" if xs >= 70 else "atencao" if xs >= 40 else "atrasada")
+                    "em_dia" if xs >= 70 else "atencao" if xs >= 40 else "critica")
         # selo de execução clicável -> card do cliente no ClickUp (conferência
         # rápida das entregas; pedido Otávio 15/07)
         exec_cell = _exec_badge(s)
@@ -2431,7 +2433,7 @@ __SCRIPT__
             "<b>Serviço-Squad</b> = tipo de serviço + time responsável (ex.: ADS-B3-S2); o squad é "
             "o real da planilha de composição, resolvido pelo nome ou pelo espelho da Operação "
             "(tag completa no hover). "
-            "<b>Execução</b> = situação das entregas no ClickUp — em dia / atenção / atrasada "
+            "<b>Execução</b> = saúde das entregas no ClickUp — em dia / atenção / crítica "
             "(nota e motivo no hover). A <b>diretriz de ação</b> aparece destacada sob cada conta.</p>"
             "<div class=filters>"
             "<div class=grp><label>buscar nome</label><input id=f-name placeholder='cliente…' oninput='applyF()'></div>"
@@ -2439,7 +2441,7 @@ __SCRIPT__
             "<div class=grp><label>alerta</label><select id=f-alert onchange='applyF()'><option value=''>todos</option><option value='critico'>crítico</option><option value='alto'>alto</option><option value='atencao'>atenção</option><option value='sem'>sem alerta</option></select></div>"
             "<div class=grp><label>estágio</label><select id=f-stage onchange='applyF()'><option value=''>todos</option><option value='saudavel'>saudável</option><option value='desengajamento_inicial'>desengajamento</option><option value='insatisfacao_latente'>insatisfação latente</option><option value='insatisfacao_ativa'>insatisfação ativa</option><option value='intencao_de_saida'>intenção de saída</option><option value='nao_avaliavel'>não avaliável</option></select></div>"
             f"<div class=grp><label>squad</label><select id=f-squad onchange='applyF()'><option value=''>todos</option>{squad_opts}</select></div>"
-            "<div class=grp><label>execução</label><select id=f-exec onchange='applyF()'><option value=''>todas</option><option value='em_dia'>em dia</option><option value='atencao'>atenção</option><option value='atrasada'>atrasada</option><option value='sem'>sem dado</option></select></div>"
+            "<div class=grp><label>execução</label><select id=f-exec onchange='applyF()'><option value=''>todas</option><option value='em_dia'>em dia</option><option value='atencao'>atenção</option><option value='critica'>crítica</option><option value='sem'>sem dado</option></select></div>"
             "<div class=grp><label>MRR mínimo (R$)</label><input id=f-mrr type=number min=0 step=100 placeholder='ex.: 3000' oninput='applyF()'></div>"
             "<button id=clearf onclick='clearF()'>limpar</button>"
             f"<span class=count>mostrando <b id=vis>0</b> de {len(ordered)}</span>"
@@ -2635,7 +2637,7 @@ def _report_text(rep: dict) -> str:
         f"• Contas monitoradas: {rep['monitoradas']} ({rep['avaliaveis']} avaliáveis, {rep['sem_dados']} sem dados)",
         f"• Alertas abertos: {rep['alertas_total']} — crítico {sev.get('critico', 0)} · alto {sev.get('alto', 0)} · atenção {sev.get('atencao', 0)}",
         f"• MRR em risco: {_fmt_brl(rep['mrr_risco'])} (só críticos: {_fmt_brl(rep['mrr_critico'])})",
-        f"• Execução atrasada (ClickUp): {rep['exec_atrasada']} contas",
+        f"• Execução crítica (ClickUp): {rep['exec_atrasada']} contas",
         "",
         "*Piores contas (score):*",
     ]
@@ -2782,7 +2784,7 @@ def _squad_analysis(scores: list[dict]) -> tuple[list[dict], int]:
     """Análise por squad: subscores (relacionamento/execução/risco), dores
     dominantes, score composto 0-100 e plano de ação — base do ranking.
     Fortes/fracos/ações consideram TAMBÉM carga e capacidade (contas/pessoa vs
-    média, concentração de MRR em risco, execução atrasada) — pedido Otávio
+    média, concentração de MRR em risco, execução crítica) — pedido Otávio
     15/07 ao unificar tudo na aba 'Análise dos Squads'.
     Só entram os squads da PLANILHA de composição; contas sem squad conhecido
     ficam de fora (contadas à parte). Retorna (análise, n_sem_squad)."""
@@ -2859,7 +2861,7 @@ def _squad_analysis(scores: list[dict]) -> tuple[list[dict], int]:
             acoes.append("Concentração de receita em risco: tratar as contas de maior MRR deste squad "
                          "como prioridade da semana (reunião de retenção com plano de ação individual).")
         if a["exec_atr"] and a["exec_atr"] / a["n"] > 0.2:
-            fracos.append(f"entregas ({a['exec_atr']} contas com execução atrasada no ClickUp)")
+            fracos.append(f"entregas ({a['exec_atr']} contas com execução crítica no ClickUp)")
         # plano de ação: das dimensões mais fracas + dor dominante
         if a["dor"] and a["dor"] in _SQUAD_ACAO:
             acoes.append(_SQUAD_ACAO[a["dor"]])
@@ -3237,7 +3239,7 @@ def _relatorios_content(rep: dict, scores: list[dict]) -> str:
         ("Avaliáveis", rep["avaliaveis"]), ("Sem dados (revisar manual)", rep["sem_dados"]),
         ("Alertas abertos", f"{rep['alertas_total']}  (crítico {sev.get('critico', 0)} · alto {sev.get('alto', 0)} · atenção {sev.get('atencao', 0)})"),
         ("MRR em risco", _fmt_brl(rep["mrr_risco"])), ("MRR em risco crítico", _fmt_brl(rep["mrr_critico"])),
-        ("Execução atrasada (ClickUp)", f"{rep['exec_atrasada']} contas"),
+        ("Execução crítica (ClickUp)", f"{rep['exec_atrasada']} contas"),
     ])
     piores = dl([(f"{i}. {p['nome'][:44]}", f"{p['score']:.1f} · {_STAGE_LABEL.get(p['estagio'], p['estagio'])}"
                   + (f" · {_fmt_brl(p['mrr'])}" if p.get("mrr") else ""))
