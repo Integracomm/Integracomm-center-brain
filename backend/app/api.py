@@ -1534,48 +1534,54 @@ def _render_hub(role: str, st: dict, users: list[dict] | None = None,
     pior_nv = saude[pior][0]
     # Iniciativas sugeridas pela inteligência central — derivadas dos dados
     # reais das áreas ativas (Growth + Marketing) = priorização cross-área.
+    # cada iniciativa é um LINK para os dados que a sustentam (pedido Otávio
+    # 15/07: "vendo isso vou querer saber quais são" — ex.: execução atrasada
+    # abre a aba Contas já filtrada em execução=atrasada)
     initiatives = []
     if crit:
         initiatives.append(("Reter as contas em risco crítico",
                             f"{crit} contas sinalizaram saída ou estão em faixa crítica — "
                             f"{_fmt_brl(st['mrr_crit'])} de MRR em jogo. Fila pronta na área de Growth.",
-                            "--status-critico"))
+                            "--status-critico", "/growth?view=alertas"))
     if mkt and mkt.get("book_meta") and mkt["book"] / mkt["book_meta"] < mkt["frac"] * 0.75:
         initiatives.append(("Destravar bookings do mês",
                             f"{mkt['book']} de {mkt['book_meta']:.0f} bookings da meta com "
                             f"{mkt['frac'] * 100:.0f}% do mês decorrido — ver etapa de maior perda no "
                             "Funil de Prospecção e o gap por plano.",
-                            "--status-critico"))
+                            "--status-critico", "/marketing?view=funil"))
     if mkt and mkt.get("leads_meta") and mkt["leads"] / mkt["leads_meta"] < mkt["frac"] * 0.75:
         initiatives.append(("Acelerar a geração de leads",
                             f"{mkt['leads']} de {mkt['leads_meta']:.0f} leads da meta do mês com "
                             f"{mkt['frac'] * 100:.0f}% do mês decorrido — revisar campanhas e verba "
                             "na aba Metas do Semestre.",
-                            "--status-alto"))
+                            "--status-alto", "/marketing?view=metas"))
     if sales and sales["tem_touch"] and sales["leads"] and sales["sem_toque"] / sales["leads"] > 0.3:
         initiatives.append(("Zerar a fila de leads sem 1º contato",
                             f"{sales['sem_toque']} leads do mês ainda sem contato registrado em Pré-vendas — "
                             "lead não tocado esfria; ver Speed-to-Lead.",
-                            "--status-alto"))
+                            "--status-alto", "/prevendas?view=speed"))
     if sales and sales["taxa"] is not None and sales["taxa_ant"] and sales["taxa"] < sales["taxa_ant"] * 0.8:
         initiatives.append(("Investigar a queda na conversão lead→reunião",
                             f"Taxa caiu de {sales['taxa_ant'] * 100:.1f}% para {sales['taxa'] * 100:.1f}% — "
                             "cruzar com qualidade de lead por origem (Pré-vendas → Funil).",
-                            "--status-alto"))
+                            "--status-alto", "/prevendas?view=funil"))
     if st["exec_late"]:
         initiatives.append(("Regularizar execução nas contas em alerta",
                             f"{st['exec_late']} contas monitoradas têm entregas atrasadas no ClickUp — "
-                            "atrito operacional que alimenta a insatisfação.",
-                            "--status-alto"))
+                            "atrito operacional que alimenta a insatisfação. Clique para ver as contas "
+                            "(motivo do atraso no hover da coluna Execução; responsáveis no relatório).",
+                            "--status-alto", "/growth?view=contas&exec=atrasada"))
     if st["non_eval"]:
         initiatives.append(("Recuperar cobertura de dados",
                             f"{st['non_eval']} contas sem conversa suficiente no WhatsApp — o agente não as "
                             "enxerga; revisar manualmente e reativar os grupos.",
-                            "--status-semdados"))
+                            "--status-semdados", "/growth?view=contas&faixa=sem_dados"))
     init_html = "".join(
-        f"<div class='init'><span class='sdot' style='--c:var({var})'></span>"
-        f"<div><div class='it'>{escape(t)}</div><div class='id_'>{escape(d)}</div></div></div>"
-        for t, d, var in initiatives
+        f"<a class='init' href='{href}' title='abrir os dados desta iniciativa'>"
+        f"<span class='sdot' style='--c:var({var})'></span>"
+        f"<div><div class='it'>{escape(t)}</div><div class='id_'>{escape(d)}</div></div>"
+        f"<span class='ig'>→</span></a>"
+        for t, d, var, href in initiatives
     ) or "<div class='init'><div class='id_'>sem iniciativas pendentes</div></div>"
 
     # ---- cards-resumo por área (mini-painel com os números que importam)
@@ -1802,6 +1808,10 @@ h2{font-family:var(--font-display);font-weight:600;font-size:var(--fs-lg);margin
 .init{display:flex;gap:10px;align-items:flex-start;padding:10px 0;border-top:1px solid var(--border)}
 .init:first-child{border-top:none;padding-top:0}
 .init .sdot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--c);margin-top:5px;flex-shrink:0}
+a.init{text-decoration:none;color:inherit;cursor:pointer}
+a.init:hover .it{color:var(--brand)}
+a.init .ig{margin-left:auto;align-self:center;color:var(--text-faint);flex-shrink:0}
+a.init:hover .ig{color:var(--brand)}
 .it{font-weight:var(--fw-semibold);font-size:var(--fs-md)}
 .id_{font-size:var(--fs-sm);color:var(--text-muted);line-height:1.5;margin-top:2px}
 .foot{font-size:var(--fs-xs);color:var(--text-faint);margin-top:24px}
@@ -2145,6 +2155,9 @@ def _render(role: str, scores: list[dict], alerts: list[dict],
         sev = s.get("alert_sev") or "sem"
         sq = _squad_label(s["name"], _mirror)
         mrr = _mrr_val(s)
+        xs = s.get("exec_score")
+        exec_key = ("sem" if xs is None else
+                    "em_dia" if xs >= 70 else "atencao" if xs >= 40 else "atrasada")
         score_cell = (f"<span class='score'>{float(s['score']):.1f}</span>" if ev
                       else "<span style='color:var(--text-faint)'>s/ dados</span>")
         mot = reason_txt(s)
@@ -2153,7 +2166,8 @@ def _render(role: str, scores: list[dict], alerts: list[dict],
                      if sev != "sem" else "")
         return (
             f"<div class='row acct' data-name=\"{escape(s['name'].lower())}\" data-band=\"{band}\" "
-            f"data-alert=\"{sev}\" data-stage=\"{stage_key}\" data-squad=\"{sq}\" data-mrr=\"{mrr:.0f}\">"
+            f"data-alert=\"{sev}\" data-stage=\"{stage_key}\" data-squad=\"{sq}\" data-mrr=\"{mrr:.0f}\" "
+            f"data-exec=\"{exec_key}\">"
             f"<div class='c-name'><div class='nm'>{escape(s['name'][:60])}</div>{mot_line}"
             f"<a class='repbtn' href='/growth/report?account_id={s['account_id']}' "
             f"title='Relatório mensal de assessoria (mês anterior; gerado na hora)'>Relatório</a> "
@@ -2368,6 +2382,7 @@ __SCRIPT__
             "<div class=grp><label>alerta</label><select id=f-alert onchange='applyF()'><option value=''>todos</option><option value='critico'>crítico</option><option value='alto'>alto</option><option value='atencao'>atenção</option><option value='sem'>sem alerta</option></select></div>"
             "<div class=grp><label>estágio</label><select id=f-stage onchange='applyF()'><option value=''>todos</option><option value='saudavel'>saudável</option><option value='desengajamento_inicial'>desengajamento</option><option value='insatisfacao_latente'>insatisfação latente</option><option value='insatisfacao_ativa'>insatisfação ativa</option><option value='intencao_de_saida'>intenção de saída</option><option value='nao_avaliavel'>não avaliável</option></select></div>"
             f"<div class=grp><label>squad</label><select id=f-squad onchange='applyF()'><option value=''>todos</option>{squad_opts}</select></div>"
+            "<div class=grp><label>execução</label><select id=f-exec onchange='applyF()'><option value=''>todas</option><option value='em_dia'>em dia</option><option value='atencao'>atenção</option><option value='atrasada'>atrasada</option><option value='sem'>sem dado</option></select></div>"
             "<div class=grp><label>MRR mínimo (R$)</label><input id=f-mrr type=number min=0 step=100 placeholder='ex.: 3000' oninput='applyF()'></div>"
             "<button id=clearf onclick='clearF()'>limpar</button>"
             f"<span class=count>mostrando <b id=vis>0</b> de {len(ordered)}</span>"
@@ -2402,12 +2417,14 @@ function outc(id, sel){
 var PAGE=10, page=1;
 function _match(d,f){
   return (!f.n||d.name.indexOf(f.n)>=0)&&(!f.b||d.band===f.b)&&(!f.a||d.alert===f.a)
-    &&(!f.st||d.stage===f.st)&&(!f.sq||d.squad===f.sq)&&(parseFloat(d.mrr)>=f.mrr);
+    &&(!f.st||d.stage===f.st)&&(!f.sq||d.squad===f.sq)&&(!f.x||d.exec===f.x)
+    &&(parseFloat(d.mrr)>=f.mrr);
 }
 function renderRows(){
   var f={n:document.getElementById('f-name').value.toLowerCase().trim(),
     b:document.getElementById('f-band').value, a:document.getElementById('f-alert').value,
     st:document.getElementById('f-stage').value, sq:document.getElementById('f-squad').value,
+    x:document.getElementById('f-exec').value,
     mrr:parseFloat(document.getElementById('f-mrr').value)};
   if(isNaN(f.mrr)) f.mrr=-Infinity;
   var rows=[].slice.call(document.querySelectorAll('.acct'));
@@ -2423,10 +2440,13 @@ function renderRows(){
 }
 function applyF(){page=1;renderRows();}
 function pgGo(d){page+=d;renderRows();window.scrollTo({top:document.querySelector('.tbl-acct').offsetTop-80,behavior:'smooth'});}
-function clearF(){['f-name','f-band','f-alert','f-stage','f-squad','f-mrr'].forEach(function(i){document.getElementById(i).value='';});applyF();}
+function clearF(){['f-name','f-band','f-alert','f-stage','f-squad','f-exec','f-mrr'].forEach(function(i){document.getElementById(i).value='';});applyF();}
 if(document.getElementById('f-name')){
-  var _q=new URLSearchParams(location.search).get('conta');   // veio da aba Alertas
-  if(_q)document.getElementById('f-name').value=_q;
+  // pré-filtros via URL: ?conta= (aba Alertas) · ?exec= / ?faixa= (iniciativas da central)
+  var _p=new URLSearchParams(location.search);
+  if(_p.get('conta'))document.getElementById('f-name').value=_p.get('conta');
+  if(_p.get('exec'))document.getElementById('f-exec').value=_p.get('exec');
+  if(_p.get('faixa'))document.getElementById('f-band').value=_p.get('faixa');
   applyF();
 }
 </script>"""
