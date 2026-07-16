@@ -286,22 +286,46 @@ def _slide(inner: str, rodape: str, bg: str = "#0d0d0d") -> str:
             f"<div class=rodape>{escape(rodape)}</div></div>")
 
 
-def _funil_svg(fun: list[int], booked: int) -> str:
-    """Funil em barras horizontais afunilando (redesenho do visual do deck)."""
-    etapas = [("LEADS", fun[0]), ("MQL", fun[1]), ("SAL", fun[2]),
-              ("SQL", fun[3]), ("OPORTUNIDADES", fun[4]), ("VENDAS", booked)]
-    vmax = max(v for _, v in etapas) or 1
+_PLANOS_BARRAS = ["B1-START", "B2-TRACTION", "B3-SCALE", "B4-PLATINUM", "B5-ELITE",
+                  "Assessoria (Renovação)"]
+
+
+def _plano_barra(produto: str) -> str:
+    """Normaliza o rótulo de produto do Pipedrive p/ o nome do deck."""
+    p = (produto or "").upper()
+    for pref, nome in (("B1", "B1-START"), ("B2", "B2-TRACTION"), ("B3", "B3-SCALE"),
+                       ("B4", "B4-PLATINUM"), ("B5", "B5-ELITE")):
+        if p.startswith(pref):
+            return nome
+    return "Assessoria (Renovação)"
+
+
+def _vendas_plano_barras(vendas_plano: list[tuple[str, int, float]]) -> str:
+    """Gráfico de barras horizontais 'Vendas por plano' — layout do deck
+    (barras amarelas sobre grade, valor na ponta, eixo 0..max)."""
+    cont: dict[str, int] = {n: 0 for n in _PLANOS_BARRAS}
+    for produto, n, _v in vendas_plano:
+        cont[_plano_barra(produto)] += n
+    vmax = max(cont.values()) or 1
+    step = max(1, round(vmax / 6))
+    ticks = list(range(0, vmax + step, step))
+    grade = ("repeating-linear-gradient(90deg,#2c2c2c 0,#2c2c2c 1px,transparent 1px,"
+             f"transparent calc(100%/{max(1, len(ticks) - 1)}))")
     rows = ""
-    for i, (nome, v) in enumerate(etapas):
-        w = max(18, v / vmax * 100)
-        op = 1 - i * 0.09
-        rows += (f"<div style='display:flex;align-items:center;gap:10px;margin:7px 0'>"
-                 f"<div style='width:118px;font-size:10.5px;letter-spacing:.12em;color:#9a9a9a;text-align:right'>{nome}</div>"
-                 f"<div style='height:26px;width:{w * 0.62:.0f}%;border-radius:5px;"
-                 f"background:linear-gradient(90deg,#8a6a00,#ffc107);opacity:{op:.2f};"
-                 f"display:flex;align-items:center;justify-content:flex-end;padding-right:9px'>"
-                 f"<span class=num style='font-size:13.5px;color:#111'>{v:,}</span></div></div>").replace(",", ".")
-    return rows
+    for nome in _PLANOS_BARRAS:
+        v = cont[nome]
+        w = v / (ticks[-1] or 1) * 100
+        barra = (f"<div style='height:24px;width:{max(w, 1.2):.1f}%;background:#ffc107;"
+                 "border-radius:0 4px 4px 0'></div>") if v else ""
+        rows += ("<div style='display:flex;align-items:center;gap:10px;margin:11px 0'>"
+                 f"<div style='width:152px;text-align:right;font-size:12.5px;font-weight:600;line-height:1.2'>{escape(nome)}</div>"
+                 f"<div style='flex:1;position:relative;background:{grade}'>"
+                 "<div style='display:flex;align-items:center;gap:8px'>"
+                 f"{barra}<span class=num style='font-size:14px'>{v}</span></div></div></div>")
+    eixo = "".join(f"<span>{t}</span>" for t in ticks)
+    return (f"<div class=card style='padding:20px 24px'>{rows}"
+            f"<div style='display:flex;justify-content:space-between;margin:6px 0 0 162px;"
+            f"font-size:10.5px;color:#777'>{eixo}</div></div>")
 
 
 def _gerar_html(mes: dt.date, d: dict, destaques: list[dict], novos: dict | None,
@@ -320,28 +344,39 @@ def _gerar_html(mes: dt.date, d: dict, destaques: list[dict], novos: dict | None
         "<div style='font-size:64px;font-weight:800;letter-spacing:.30em;text-shadow:0 2px 24px rgba(0,0,0,.8)'>ALL HANDS</div>"
         f"<div style='font-size:19px;letter-spacing:.5em;color:#ffc107;margin-top:10px'>{mes_nome} / {mes.year}</div></div>", ""))
 
-    # 2 — marketing & comercial
+    # 2 — marketing & comercial: MESMO conteúdo do deck original (feedback
+    # Otávio 15/07 — só Leads/Oportunidades/Vendas, Meta e Vendas por plano
+    # em BARRAS; sem funil completo nem receita)
     fun = d["funil"]
-    pct_meta = (d["receita"] / d["meta_mes"] * 100) if d["meta_mes"] else None
-    vendas_rows = "".join(
-        f"<tr><td>{escape(p)}</td><td>{n}</td><td style='color:#9a9a9a'>{_fmt_brl0(v)}</td></tr>"
-        for p, n, v in d["vendas_plano"][:8])
+
+    def item_funil(icone, rotulo, valor):
+        return ("<div class=card style='display:flex;align-items:center;gap:14px;padding:13px 18px;margin:11px 0'>"
+                f"<div style='width:42px;height:42px;border-radius:9px;background:#ffc107;display:flex;"
+                f"align-items:center;justify-content:center;font-size:21px'>{icone}</div>"
+                f"<div><div style='font-size:12px;font-weight:700;letter-spacing:.14em'>{rotulo}</div>"
+                f"<div class=num style='font-size:23px'>{valor:,}</div></div></div>").replace(",", ".")
+
     slides.append(_slide(
         "<div class=pad>"
         "<div class=kicker>Marketing & Comercial</div>"
-        f"<h1 class=t>Funil de vendas</h1>"
-        "<div style='display:flex;gap:34px;margin-top:16px'>"
-        f"<div style='flex:1.25'>{_funil_svg(fun, d['bookings'])}</div>"
+        "<div style='display:flex;gap:44px;margin-top:8px'>"
         "<div style='flex:1'>"
-        "<div class=sub style='margin-bottom:8px'>Vendas por plano</div>"
-        f"<table class=tp><tr style='color:#9a9a9a;font-size:11px'><td>PLANO</td><td>QTDE</td><td style='text-align:right'>RECEITA</td></tr>{vendas_rows}</table>"
-        f"<div style='display:flex;gap:14px;margin-top:16px'>"
-        f"<div class=card style='flex:1;padding:12px 16px'><div style='font-size:10.5px;color:#9a9a9a;letter-spacing:.14em'>RECEITA</div>"
-        f"<div class='num amarelo' style='font-size:21px'>{_fmt_brl0(d['receita'])}</div></div>"
-        f"<div class=card style='flex:1;padding:12px 16px'><div style='font-size:10.5px;color:#9a9a9a;letter-spacing:.14em'>META"
-        + (f" · {pct_meta:.0f}%" if pct_meta is not None else "") + "</div>"
-        f"<div class=num style='font-size:21px'>{_fmt_brl0(d['meta_mes'])}</div></div>"
-        "</div></div></div></div>", rodape))
+        "<div style='color:#ffc107;font-size:19px;font-weight:800;letter-spacing:.06em;"
+        "border-bottom:1px solid #333;padding-bottom:8px'>FUNIL DE VENDAS</div>"
+        + item_funil("👥", "TOTAL DE LEADS", fun[0])
+        + item_funil("🎯", "OPORTUNIDADES", fun[4])
+        + item_funil("🤝", "TOTAL DE VENDAS", d["bookings"])
+        + "<div style='display:flex;margin-top:22px'>"
+        "<div style='width:7px;background:#ffc107;border-radius:2px'></div>"
+        "<div class=card style='flex:1;text-align:center;padding:14px;border-radius:0 14px 14px 0'>"
+        "<div style='font-size:11px;color:#9a9a9a;letter-spacing:.22em'>META</div>"
+        f"<div class=num style='font-size:34px'>{_fmt_brl0(d['meta_mes'])}</div></div></div>"
+        "</div>"
+        "<div style='flex:1.25'>"
+        "<div style='color:#ffc107;font-size:19px;font-weight:800;letter-spacing:.06em;"
+        "border-bottom:1px solid #333;padding-bottom:8px;margin-bottom:14px'>VENDAS POR PLANO</div>"
+        + _vendas_plano_barras(d["vendas_plano"])
+        + "</div></div></div>", rodape))
 
     # 3 — operação: clientes por plano
     novos_set = _PLANOS_NOVOS
