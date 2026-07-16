@@ -187,6 +187,10 @@ def _dados_mes(conn, mes: dt.date) -> dict:
             for j, m_iso in enumerate(pf["meses"]):
                 if m_iso.startswith(str(mes.year)) and m_iso <= iso and tx[j] is not None:
                     churn_serie.append((_MESES[int(m_iso[5:7]) - 1][:3], tx[j]))
+            # zeros no INÍCIO da série = mês sem dado lançado, não churn zero
+            # (Otávio 15/07: jan 0,0%% saía no gráfico como se fosse real)
+            while churn_serie and not churn_serie[0][1]:
+                churn_serie.pop(0)
     # taxa do mês: a MESMA régua do slide de evolução (planilha, realizado) —
     # o deck de junho trazia 9,5% num slide e 7,0% no gráfico; aqui os dois
     # slides saem da mesma fonte. Fallback: saídas ÷ base ativa.
@@ -450,7 +454,7 @@ def _gerar_html(mes: dt.date, d: dict, destaques: list[dict], novos: dict | None
     slides.append(_slide(
         "<div class=pad><div class=kicker>Retenção</div><h1 class=t>Saídas de clientes (churn)</h1>"
         "<div style='display:flex;gap:22px;margin-top:16px'>"
-        + col_saida("Planos novos", sd_novos) + col_saida("Planos antigos", sd_ant) +
+        + col_saida("Planos antigos", sd_ant) + col_saida("Planos novos", sd_novos) +
         "<div style='flex:1;display:flex;flex-direction:column;gap:14px'>"
         f"<div class=card style='padding:18px;text-align:center'><div class='num' style='font-size:40px;color:#ff5555'>{taxa_txt}</div>"
         "<div class=sub>taxa de cancelamento do mês</div>"
@@ -470,9 +474,10 @@ def _gerar_html(mes: dt.date, d: dict, destaques: list[dict], novos: dict | None
                        + f"<div style='width:56px;height:{h:.0f}px;border-radius:7px 7px 0 0;"
                        "background:linear-gradient(180deg,#ffc107,#8a6a00)'></div>"
                        f"<div style='font-size:12px;color:#9a9a9a;letter-spacing:.12em'>{nome}</div></div>")
+    periodo_ev = (f"{serie[0][0].lower()} a {mes_nome.lower()}" if serie else mes_nome.lower())
     slides.append(_slide(
         "<div class=pad><div class=kicker>Retenção</div><h1 class=t>Evolução da taxa de cancelamento</h1>"
-        f"<div class=sub>últimos meses | janeiro a {mes_nome.lower()}</div>"
+        f"<div class=sub>últimos meses | {periodo_ev}</div>"
         f"<div style='display:flex;align-items:flex-end;justify-content:center;gap:26px;margin-top:34px'>{barras or '<div class=sub>série indisponível</div>'}</div></div>",
         rodape))
 
