@@ -2468,7 +2468,7 @@ __SCRIPT__
             "<div class=grp><label>alerta</label><select id=f-alert onchange='applyF()'><option value=''>todos</option><option value='critico'>crítico</option><option value='alto'>alto</option><option value='atencao'>atenção</option><option value='sem'>sem alerta</option></select></div>"
             "<div class=grp><label>estágio</label><select id=f-stage onchange='applyF()'><option value=''>todos</option><option value='saudavel'>saudável</option><option value='desengajamento_inicial'>desengajamento</option><option value='insatisfacao_latente'>insatisfação latente</option><option value='insatisfacao_ativa'>insatisfação ativa</option><option value='intencao_de_saida'>intenção de saída</option><option value='nao_avaliavel'>não avaliável</option></select></div>"
             f"<div class=grp><label>squad</label><select id=f-squad onchange='applyF()'><option value=''>todos</option>{squad_opts}</select></div>"
-            "<div class=grp><label>execução</label><select id=f-exec onchange='applyF()'><option value=''>todas</option><option value='em_dia'>saudável</option><option value='atencao'>atenção</option><option value='critica'>crítica</option><option value='atrasadas'>com tarefa atrasada</option><option value='sem'>sem dado</option></select></div>"
+            "<div class=grp><label>execução</label><select id=f-exec onchange='applyF()'><option value=''>todas</option><option value='em_dia'>saudável</option><option value='atencao'>atenção</option><option value='critica'>crítica</option><option value='sem'>sem dado</option></select></div><div class=grp><label>atrasos</label><select id=f-atr onchange='applyF()'><option value=''>todos</option><option value='1'>com atraso</option><option value='0'>em dia</option></select></div>"
             "<div class=grp><label>MRR mínimo (R$)</label><input id=f-mrr type=number min=0 step=100 placeholder='ex.: 3000' oninput='applyF()'></div>"
             "<button id=clearf onclick='clearF()'>limpar</button>"
             f"<span class=count>mostrando <b id=vis>0</b> de {len(ordered)}</span>"
@@ -2502,16 +2502,15 @@ function outc(id, sel){
 }
 var PAGE=10, page=1;
 function _match(d,f){
-  var execOk=!f.x||(f.x==='atrasadas'?d.atr==='1':d.exec===f.x);
   return (!f.n||d.name.indexOf(f.n)>=0)&&(!f.b||d.band===f.b)&&(!f.a||d.alert===f.a)
-    &&(!f.st||d.stage===f.st)&&(!f.sq||d.squad===f.sq)&&execOk
-    &&(parseFloat(d.mrr)>=f.mrr);
+    &&(!f.st||d.stage===f.st)&&(!f.sq||d.squad===f.sq)&&(!f.x||d.exec===f.x)
+    &&(!f.at||d.atr===f.at)&&(parseFloat(d.mrr)>=f.mrr);
 }
 function renderRows(){
   var f={n:document.getElementById('f-name').value.toLowerCase().trim(),
     b:document.getElementById('f-band').value, a:document.getElementById('f-alert').value,
     st:document.getElementById('f-stage').value, sq:document.getElementById('f-squad').value,
-    x:document.getElementById('f-exec').value,
+    x:document.getElementById('f-exec').value, at:document.getElementById('f-atr').value,
     mrr:parseFloat(document.getElementById('f-mrr').value)};
   if(isNaN(f.mrr)) f.mrr=-Infinity;
   var rows=[].slice.call(document.querySelectorAll('.acct'));
@@ -2527,12 +2526,14 @@ function renderRows(){
 }
 function applyF(){page=1;renderRows();}
 function pgGo(d){page+=d;renderRows();window.scrollTo({top:document.querySelector('.tbl-acct').offsetTop-80,behavior:'smooth'});}
-function clearF(){['f-name','f-band','f-alert','f-stage','f-squad','f-exec','f-mrr'].forEach(function(i){document.getElementById(i).value='';});applyF();}
+function clearF(){['f-name','f-band','f-alert','f-stage','f-squad','f-exec','f-atr','f-mrr'].forEach(function(i){document.getElementById(i).value='';});applyF();}
 if(document.getElementById('f-name')){
   // pré-filtros via URL: ?conta= (aba Alertas) · ?exec= / ?faixa= (iniciativas da central)
   var _p=new URLSearchParams(location.search);
   if(_p.get('conta'))document.getElementById('f-name').value=_p.get('conta');
-  if(_p.get('exec'))document.getElementById('f-exec').value=_p.get('exec');
+  if(_p.get('exec')==='atrasadas'){document.getElementById('f-atr').value='1';}
+  else if(_p.get('exec'))document.getElementById('f-exec').value=_p.get('exec');
+  if(_p.get('atraso'))document.getElementById('f-atr').value=_p.get('atraso');
   if(_p.get('faixa'))document.getElementById('f-band').value=_p.get('faixa');
   applyF();
 }
