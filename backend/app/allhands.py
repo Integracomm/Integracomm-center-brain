@@ -234,9 +234,16 @@ function addDestaque(){
     +"<button type=button class=del onclick='this.parentNode.remove()'>✕</button>";
   document.getElementById('destaques').appendChild(d);
 }
+var EMOJIS=[["📌","aviso geral"],["📢","comunicado"],["☕","café / copa"],["🍽️","cozinha / almoço"],
+  ["🚪","porta / acesso"],["🔑","chaves / crachá"],["🧹","limpeza / organização"],["🚻","banheiros"],
+  ["❄️","ar-condicionado"],["🖥️","equipamentos / TI"],["📶","internet / wi-fi"],["🅿️","estacionamento"],
+  ["📦","encomendas"],["🕐","horários"],["🔇","silêncio / foco"],["🎉","eventos / festas"],
+  ["🎂","aniversários"],["🏢","espaço / obras"],["🧯","segurança"],["🎮","área de descanso"],
+  ["💡","dica"],["⚠️","atenção"],["✅","novo processo"],["🚀","novidade"]];
 function addOrientacao(){
   var d=document.createElement('div'); d.className='row3';
-  d.innerHTML="<div style='max-width:90px'><label>emoji</label><input name=or_icone placeholder='☕' maxlength=4></div>"
+  var opts=EMOJIS.map(function(e){return "<option value='"+e[0]+"'>"+e[0]+"  "+e[1]+"</option>";}).join("");
+  d.innerHTML="<div style='max-width:190px'><label>ícone</label><select name=or_icone>"+opts+"</select></div>"
     +"<div><label>título</label><input name=or_titulo placeholder='ex.: MÁQUINA DE CAFÉ'></div>"
     +"<div><label>texto</label><input name=or_texto placeholder='ex.: atenção na finalização da bebida'></div>"
     +"<button type=button class=del onclick='this.parentNode.remove()'>✕</button>";
