@@ -320,11 +320,19 @@ def build_report(conn: Any, account_id: str, ref_month: str, generated_by: str |
                 fat["aviso"] = f"Planilha não disponível — acesso falhou ({type(e).__name__})."
 
     # --- atividades (ClickUp API -> fallback mirror) ---
-    atv = CU.completed_activities(acc["name"], start, end)
+    # HISTÓRICO COMPLETO no relatório (Otávio 15/07: visão inteira antes da
+    # reunião), agrupado por MÊS do mais recente ao mais antigo; a contagem do
+    # MÊS de referência segue separada (régua do plano de ação/observações).
+    agora = dt.datetime.now(dt.timezone.utc)
+    atv = CU.completed_activities(acc["name"], dt.datetime(2020, 1, 1, tzinfo=dt.timezone.utc), agora)
+    atv["tasks"].sort(key=lambda t: t["concluida_em"], reverse=True)
+    total_mes = sum(1 for t in atv["tasks"]
+                    if start.date().isoformat() <= t["concluida_em"] < end.date().isoformat())
     grupos: dict[str, list] = {}
     for t in atv["tasks"]:
-        grupos.setdefault(t.get("categoria") or t.get("responsavel") or "Geral", []).append(t)
-    atv["grupos"] = [{"categoria": k, "tarefas": v} for k, v in sorted(grupos.items())]
+        chave = month_label(t["concluida_em"][:7])
+        grupos.setdefault(chave, []).append(t)  # meses na ordem de chegada (desc)
+    atv["grupos"] = [{"categoria": k, "tarefas": v} for k, v in grupos.items()]
     # próximas previstas: sempre relativas a HOJE (insumo p/ a reunião do GC),
     # independente do mês de referência do relatório
     proximas = CU.upcoming_activities(acc["name"])
@@ -379,7 +387,8 @@ def build_report(conn: Any, account_id: str, ref_month: str, generated_by: str |
 
     data = {"header": header, "equipe_squad": equipe_squad, "faturamento": fat,
             "atividades": {"source": atv["source"], "aviso": atv["aviso"],
-                           "total": len(atv["tasks"]), "grupos": atv["grupos"],
+                           "total": total_mes, "total_hist": len(atv["tasks"]),
+                           "grupos": atv["grupos"],
                            "atrasadas": {"source": atrasadas["source"], "aviso": atrasadas["aviso"],
                                          "tasks": atrasadas["tasks"]},
                            "proximas": {"source": proximas["source"], "aviso": proximas["aviso"],

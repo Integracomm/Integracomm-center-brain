@@ -357,7 +357,9 @@ function render(d){
 
   // --- atividades ---
   var cuLink=h.clickup_url?' <a href="'+esc(h.clickup_url)+'" target=_blank rel=noopener style="font-size:var(--fs-xs);color:var(--brand);text-decoration:none;font-weight:400">abrir card no ClickUp ↗</a>':'';
-  html+='<section><h2>Atividades realizadas'+cuLink+'</h2><p class=secsub>'+a.total+' tarefas concluídas no período (fonte: '+esc(a.source)+')</p><div class=card>';
+  html+='<section><h2>Atividades realizadas'+cuLink+'</h2><p class=secsub>histórico completo, mais recente primeiro — '
+      +(a.total_hist!=null?a.total_hist:a.total)+' tarefas no total, '+a.total+' em '+esc(h.reference_month_label)
+      +' (fonte: '+esc(a.source)+')</p><div class=card>';
   if(a.aviso) html+='<div class=warn style="margin-bottom:10px">'+esc(a.aviso)+'</div>';
   if(!a.grupos.length) html+='<div style="color:var(--text-muted);font-size:var(--fs-sm)">Nenhuma atividade concluída registrada no período.</div>';
   a.grupos.forEach(function(g){
