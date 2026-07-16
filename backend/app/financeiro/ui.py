@@ -22,7 +22,8 @@ from ..sources import planejamento_financeiro as PF
 
 router = APIRouter()
 
-_VIEWS = [("visao", "Planejamento x Realizado")]
+_VIEWS = [("visao", "Planejamento x Realizado"),
+          ("receita", "Receita Recorrente")]
 
 
 def _deps():
@@ -71,6 +72,89 @@ def _tabela(dados: dict, metricas: list[tuple[str, str, str]], idxs: list[int],
         linhas += f"<tr><td style='{_TD};text-align:left;{b}'>{escape(rot)}</td>{tds}</tr>"
     return ("<div class=central style='padding:6px 14px 12px;overflow-x:auto'>"
             f"<table style='width:100%;border-collapse:collapse'><tr>{ths}</tr>{linhas}</table></div>")
+
+
+def _fmt_k(v) -> str:
+    if v is None:
+        return "—"
+    if abs(v) >= 1_000_000:
+        return f"{v / 1_000_000:.2f}M".replace(".", ",")
+    if abs(v) >= 1_000:
+        return f"{v / 1_000:.0f}k"
+    return f"{v:.0f}"
+
+
+def _svg_meses(labels: list[str], barras: list[dict], i_atual: int,
+               marcas: list[float | None] | None = None,
+               sublabels: list[str] | None = None, H: int = 200) -> str:
+    """Gráfico de BARRAS por mês (SVG, mesma linguagem do _grafico_kpi de
+    Operações). barras = [{vals, cor, rotulo, frente?}] — a série 'frente'
+    desenha mais estreita por cima (ex.: recorrente dentro do total). Meses
+    após i_atual = projeção (barra vazada tracejada). marcas = tique de meta
+    por mês; sublabels = linha extra sob o rótulo do mês."""
+    n = len(labels)
+    W, PAD, BASE = max(720, 66 * n), 30, H - 34
+    todos = [v for b in barras for v in b["vals"] if v is not None] + [m for m in (marcas or []) if m is not None]
+    vmax = (max(todos) if todos else 1) * 1.18 or 1
+    slot = (W - 2 * PAD) / n
+
+    def x0(i):
+        return PAD + i * slot
+
+    svg = []
+    for b in barras:
+        largura = slot * (0.34 if b.get("frente") else 0.58)
+        for i, v in enumerate(b["vals"]):
+            if v is None:
+                continue
+            h = max(2, v / vmax * (BASE - 26))
+            x = x0(i) + (slot - largura) / 2
+            futuro = i > i_atual
+            estilo = (f"fill:none;stroke:{b['cor']};stroke-width:1.6;stroke-dasharray:4 3;opacity:.75"
+                      if futuro else f"fill:{b['cor']};opacity:{.95 if b.get('frente') else .82}")
+            titulo = f"{labels[i]} — {b['rotulo']}: {_fmt_k(v)}" + (" (projeção)" if futuro else "")
+            svg.append(f"<rect x='{x:.1f}' y='{BASE - h:.1f}' width='{largura:.1f}' height='{h:.1f}' "
+                       f"rx='3' style='{estilo}'><title>{escape(titulo)}</title></rect>")
+            if not b.get("frente"):
+                svg.append(f"<text x='{x0(i) + slot / 2:.1f}' y='{BASE - h - 5:.1f}' text-anchor='middle' "
+                           f"font-size='10' fill='var(--text-2)'>{_fmt_k(v)}</text>")
+    if marcas:
+        for i, m in enumerate(marcas):
+            if m is None:
+                continue
+            y = BASE - max(2, m / vmax * (BASE - 26))
+            svg.append(f"<line x1='{x0(i) + slot * 0.12:.1f}' x2='{x0(i) + slot * 0.88:.1f}' y1='{y:.1f}' y2='{y:.1f}' "
+                       f"stroke='var(--text-muted)' stroke-width='1.6' stroke-dasharray='3 2'>"
+                       f"<title>{escape(labels[i])} — meta: {_fmt_k(m)}</title></line>")
+    for i, lb in enumerate(labels):
+        peso = "700" if i == i_atual else "400"
+        svg.append(f"<text x='{x0(i) + slot / 2:.1f}' y='{BASE + 14}' text-anchor='middle' font-size='10' "
+                   f"font-weight='{peso}' fill='var(--text-muted)'>{escape(lb)}</text>")
+        if sublabels and sublabels[i]:
+            svg.append(f"<text x='{x0(i) + slot / 2:.1f}' y='{BASE + 27}' text-anchor='middle' font-size='9' "
+                       f"fill='var(--text-faint)'>{escape(sublabels[i])}</text>")
+    return (f"<div style='overflow-x:auto'><svg viewBox='0 0 {W} {H}' "
+            f"style='width:100%;min-width:{W * 0.75:.0f}px'>" + "".join(svg) + "</svg></div>")
+
+
+def _chips_meses(labels: list[str], vals: list[float | None], i_atual: int,
+                 verde: float, medio: float, invertido: bool = False) -> str:
+    """Faixa de chips mensais p/ percentuais (inadimplência/churn): cor por
+    limiar (verde ≤ verde, amarelo ≤ medio, senão vermelho)."""
+    out = []
+    for i, v in enumerate(vals):
+        if v is None:
+            cor, txt = "--status-semdados", "—"
+        else:
+            cor = ("--status-baixo" if v <= verde else
+                   "--status-medio" if v <= medio else "--status-critico")
+            txt = f"{v * 100:.0f}%"
+        fut = "opacity:.55" if i > i_atual else ""
+        out.append(f"<div style='text-align:center;{fut}'>"
+                   f"<span class=chip style='--c:var({cor})'>{txt}</span>"
+                   f"<div style='font-size:9px;color:var(--text-faint);margin-top:3px'>{escape(labels[i])}</div></div>")
+    return ("<div style='display:flex;gap:8px;flex-wrap:wrap;justify-content:space-between'>"
+            + "".join(out) + "</div>")
 
 
 def _card_meta(rotulo: str, real, meta, frac: float, kind: str = "num",
@@ -136,8 +220,59 @@ def _visao(conn, request: Request) -> str:
         "</section>"
     )
 
-    # --- histórico realizado ---
-    html += ("<section><h2>Histórico realizado</h2>"
+    # --- visão rápida: gráficos (percepção antes das tabelas — pedido 15/07) ---
+    lbls = [_mes_lbl(m) for m in meses]
+    todos_idx = list(range(len(meses)))
+    receb = PF.linha(dados, "Recebimento TOTAL [R$]")
+    recor = PF.linha(dados, "Recebimento RECORRENTE [R$]")
+    html += ("<section><h2>Recebimento mês a mês</h2>"
+             "<p class=secsub>barra clara = recebimento total · barra escura = parte recorrente · "
+             "tracejado = projeção da planilha (mês em negrito = atual)</p><div class=card>"
+             + _svg_meses(lbls, [
+                 {"vals": receb, "cor": "var(--brand)", "rotulo": "recebimento total"},
+                 {"vals": recor, "cor": "var(--status-baixo)", "rotulo": "recorrente", "frente": True},
+             ], i_atual,
+                 sublabels=[(f"{v * 100:.0f}% rec." if v is not None else "")
+                            for v in PF.linha(dados, "Recebimento RECORRENTE [%]")])
+             + "</div></section>")
+
+    rb_real = PF.linha(dados, "Receita Bookings [R$]")
+    rb_meta = PF.linha(dados, "Meta Bookings [R$]")
+    rb_qtd = PF.linha(dados, "Bookings [Qtde]")
+    cores_rb = []
+    for i in todos_idx:
+        if i > i_atual or rb_real[i] is None or rb_meta[i] is None:
+            cores_rb.append(None)
+        else:
+            cores_rb.append(rb_real[i] >= rb_meta[i])
+    # uma série por cor (bateu/não bateu) p/ o SVG pintar barra a barra
+    ok_vals = [rb_real[i] if cores_rb[i] else None for i in todos_idx]
+    ruim_vals = [rb_real[i] if cores_rb[i] is False else None for i in todos_idx]
+    proj_vals = [rb_meta[i] if i > i_atual else None for i in todos_idx]
+    html += ("<section><h2>Bookings × meta mês a mês</h2>"
+             "<p class=secsub>verde = meta batida · vermelho = abaixo · tique = meta do mês · "
+             "tracejado = meta futura · nº de bookings sob o mês</p><div class=card>"
+             + _svg_meses(lbls, [
+                 {"vals": ok_vals, "cor": "var(--status-baixo)", "rotulo": "receita de bookings"},
+                 {"vals": ruim_vals, "cor": "var(--status-critico)", "rotulo": "receita de bookings"},
+                 {"vals": proj_vals, "cor": "var(--text-muted)", "rotulo": "meta"},
+             ], i_atual, marcas=[rb_meta[i] if i <= i_atual else None for i in todos_idx],
+                 sublabels=[(f"{v:.0f} bk" if v is not None else "") for v in rb_qtd])
+             + "</div></section>")
+
+    inad = PF.linha(dados, "Inadimplência [%]")
+    churn = PF.linha(dados, "Taxa de cancelamento - TOTAL")
+    html += ("<section><h2>Inadimplência e churn</h2>"
+             "<p class=secsub>inadimplência: verde ≤4% · amarelo ≤8% — churn: verde ≤5% · amarelo ≤9% "
+             "(meses após o atual = alvo, esmaecidos)</p>"
+             "<div class=card><div style='font-size:var(--fs-2xs);color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px'>Inadimplência [%]</div>"
+             + _chips_meses(lbls, inad, i_atual, 0.04, 0.08)
+             + "<div style='font-size:var(--fs-2xs);color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin:14px 0 6px'>Taxa de cancelamento [%]</div>"
+             + _chips_meses(lbls, churn, i_atual, 0.05, 0.09)
+             + "</div></section>")
+
+    # --- histórico realizado (detalhe em tabela) ---
+    html += ("<section><h2>Histórico realizado — detalhe</h2>"
              "<p class=secsub>meses fechados, direto da planilha de planejamento</p>"
              + _tabela(dados, [
                  ("Recebimento total", "Recebimento TOTAL [R$]", "brl"),
@@ -184,25 +319,10 @@ def _visao(conn, request: Request) -> str:
              ], idx_metas, destaque={"Meta de bookings (R$)", "Recebimento total projetado"})
              + "</section>")
 
-    # --- saúde da receita recorrente (histórico + projeção) ---
-    todos = idx_hist + idx_metas
-    html += ("<section><h2>Saúde da receita recorrente</h2>"
-             "<p class=secsub>ISR = base ÷ base anterior ×100 · Quick Ratio = nova ÷ perdida · "
-             "mesma régua do bloco da Visão central (meses futuros = projeção)</p>"
-             + _tabela(dados, [
-                 ("Base recorrente B2-B5", "Recebimento Recorrente B2-B5", "brl"),
-                 ("Receita nova B2-B5", "Receita Recorrente Nova B2-B5", "brl"),
-                 ("Receita perdida (churn) B2-B5", "Receita Recorrente Perdida - Churn B2-B5", "brl"),
-                 ("Quick Ratio B2-B5", "Quick Ratio B2-B5", "x"),
-                 ("ISR B2-B5", "ÍSR - Índice", "num1"),
-                 ("Base Planos Antigos", "Recebimento Recorrente Planos Antigos", "brl"),
-                 ("ISR Planos Antigos", "ISR - Planos Antigos", "num1"),
-                 ("Base consolidada", "Recebimento Recorrente CONSOLIDADO", "brl"),
-                 ("ISR consolidado", "ISR - CONSOLIDADO", "num1"),
-                 ("Peso dos antigos no recorrente", "Peso dos Planos Antigos", "pct"),
-                 ("Arrasto dos antigos no ISR (pts)", "Arrasto dos Planos Antigos no ISR", "num1"),
-             ], todos)
-             + "</section>")
+    # saúde da receita recorrente MUDOU p/ aba própria (pedido 15/07)
+    html += ("<p class=note style='margin-top:14px'>A <b>Saúde da Receita Recorrente</b> (ISR, Quick Ratio, "
+             "crossover B2-B5 × antigos) tem aba própria: "
+             "<a href='/financeiro?view=receita' style='color:var(--brand)'>Receita Recorrente</a>.</p>")
 
     html += ("<p class=foot>Fonte: planilha Planejamento_Receita_2026 (cache 10 min) + espelho do Pipedrive "
              "(re-sincroniza ao abrir, defasagem ≤10 min). Recebimento/inadimplência em tempo real entram "
@@ -226,7 +346,14 @@ def financeiro(request: Request, view: str = Query("visao")):
         with c.cursor() as cur:
             cur.execute("INSERT INTO audit_log (actor, action, scope) VALUES (%s,'view',%s)",
                         (user, f"financeiro/{view}"))
-        content = _visao(c, request)
+        if view == "receita":
+            # bloco que morava na Visão central (mudou de casa 15/07)
+            content = ("<div class=page-head><h1>Receita Recorrente</h1>"
+                       "<span class=role-chip>ISR · Quick Ratio · crossover B2-B5 × antigos</span></div>"
+                       + (A._receita_recorrente_html()
+                          or "<section><div class=warn>Planilha de planejamento indisponível — recarregue em instantes.</div></section>"))
+        else:
+            content = _visao(c, request)
     from ..marketing.ui import _shell as MS
     html = MS(A, "admin", view, content, usermail=user, help_area="financeiro")
     nav = "<a class='nav-item' href='/'>← Início (central)</a>"

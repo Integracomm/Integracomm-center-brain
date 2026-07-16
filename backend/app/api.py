@@ -526,7 +526,7 @@ def hub(request: Request):
             pass
         users = list_users(c)
     return HTMLResponse(_render_hub(user, stats, users, mkt, sales=sales, ops=ops,
-                                    mudancas=mudancas, receita_rr=_receita_recorrente_html()))
+                                    mudancas=mudancas))
 
 
 @app.get("/admin", response_class=HTMLResponse)
@@ -1486,7 +1486,7 @@ def _render_hub(role: str, st: dict, users: list[dict] | None = None,
                 mkt: dict | None = None, page: str = "home",
                 llm: dict | None = None, sales: dict | None = None,
                 teams_html: str = "", ops: dict | None = None,
-                mudancas: str = "", receita_rr: str = "") -> str:
+                mudancas: str = "") -> str:
     n_alerts = sum(st["sev"].values())
     crit = st["sev"].get("critico", 0)
 
@@ -1705,29 +1705,50 @@ def _render_hub(role: str, st: dict, users: list[dict] | None = None,
         op_card = ("<a class='area' href='/operacoes'><div class=ahead>"
                    f"<div class=an>Operações</div>{_chip('ativa', '--status-baixo')}</div>"
                    "<div class=ad>iniciativas por área da empresa (Notion) — semáforo de prazo e dependências por trimestre</div></a>")
-    # ---- card Financeiro (planilha de planejamento; cache 10 min)
-    fin_card = ("<a class='area' href='/financeiro'><div class=ahead>"
+    # ---- card Financeiro no MESMO molde das outras áreas (15/07): realizado
+    # ao vivo × meta da planilha, colorido pelo ritmo do mês
+    fin_card = ("<a class='area big' href='/financeiro'><div class=ahead>"
                 f"<div class=an>Financeiro</div>{_chip('ativa', '--status-baixo')}</div>"
                 "<div class=ad>planejamento × realizado — recebimento, bookings vs meta, "
-                "funil projetado e saúde da receita recorrente</div></a>")
+                "funil projetado e receita recorrente</div></a>")
     try:
         from .sources import planejamento_financeiro as _PF
         _fin = _PF.carrega()
-        if _fin:
-            _hj = dt.date.today()
-            _iso = f"{_hj.year:04d}-{_hj.month:02d}"
-            if _iso in _fin["meses"]:
-                _i = _fin["meses"].index(_iso)
-                _mb = _PF.linha(_fin, "Meta Bookings [R$]")[_i]
-                _mr = _PF.linha(_fin, "Recebimento TOTAL [R$]")[_i]
-                _bk = am(_num(mkt["book"]), "bookings até agora") if mkt else ""
-                fin_card = ("<a class='area' href='/financeiro'><div class=ahead>"
-                            f"<div class=an>Financeiro</div>{_chip('ativa', '--status-baixo')}</div>"
-                            "<div class=agrid>"
-                            + am(_fmt_brl(_mb) if _mb else "—", "meta de bookings do mês")
-                            + _bk
-                            + am(_fmt_brl(_mr) if _mr else "—", "recebimento projetado do mês")
-                            + "</div><div class=ad>planejamento × realizado em tempo real — histórico, metas e saúde da receita recorrente</div></a>")
+        _hj = dt.date.today()
+        _iso = f"{_hj.year:04d}-{_hj.month:02d}"
+        if _fin and _iso in _fin["meses"]:
+            import calendar as _cal
+            _i = _fin["meses"].index(_iso)
+            _frac = mkt["frac"] if mkt else _hj.day / _cal.monthrange(_hj.year, _hj.month)[1]
+            _mb = _PF.linha(_fin, "Meta Bookings [R$]")[_i]
+            _mq = _PF.linha(_fin, "Bookings [Qtde]")[_i]
+            _mr = _PF.linha(_fin, "Recebimento TOTAL [R$]")[_i]
+            _isr = _PF.linha(_fin, "ÍSR - Índice")[_i]
+            _rec_live = sales["receita"] if sales else None
+            _bk_live = mkt["book"] if mkt else None
+            # receita de bookings vs meta (R$, cor pelo ritmo)
+            if _rec_live is not None and _mb:
+                _pct = _rec_live / _mb
+                c_frec = "var(--status-baixo)" if _pct >= _frac else "var(--status-critico)"
+                v_frec = (f"{_fmt_brl(_rec_live)}<span style='color:var(--text-faint);font-size:14px'>"
+                          f"/{_fmt_brl(_mb)}</span>")
+                _no_ritmo = _pct >= _frac
+            else:
+                v_frec, c_frec, _no_ritmo = _fmt_brl(_rec_live) if _rec_live is not None else "—", None, None
+            v_fbk, c_fbk = (vs_meta(_bk_live, _mq, _frac) if _bk_live is not None else ("—", None))
+            _chip_fin = (_chip("no ritmo", "--status-baixo") if _no_ritmo
+                         else _chip("atrás da meta", "--status-alto") if _no_ritmo is not None
+                         else _chip("ativa", "--status-baixo"))
+            fin_card = ("<a class='area big' href='/financeiro'><div class=ahead>"
+                        f"<div class=an>Financeiro</div>{_chip_fin}</div>"
+                        "<div class=agrid>"
+                        + am(v_frec, "receita de bookings/meta", c_frec)
+                        + am(v_fbk, "bookings/meta", c_fbk)
+                        + am(_fmt_brl(_mr) if _mr else "—", "recebimento projetado do mês")
+                        + am(f"{_isr:,.0f}".replace(",", ".") if _isr is not None else "—", "ISR B2-B5 (≥100 = crescendo)",
+                             None if _isr is None else ("var(--status-baixo)" if _isr >= 100 else "var(--status-critico)"))
+                        + f"</div><div class=ad>ritmo esperado {_frac * 100:.0f}% do mês · metas da planilha de planejamento · "
+                          "receita recorrente na aba própria</div></a>")
     except Exception:  # noqa: BLE001 — planilha fora não derruba a central
         pass
     area_cards = growth_card + mkt_card + pv_card + vd_card + op_card + fin_card
@@ -1878,10 +1899,8 @@ __BODY__
             f"<div class=central>{init_html}</div></section>"
             "<section><h2>Áreas</h2>"
             "<p class=secsub>resumo do andamento de cada área — clique para abrir o painel completo; verde = no ritmo/meta, vermelho = atenção</p>"
-            f"<div class=areas>{area_cards}</div></section>"
-            # visão executiva de receita fica ao FINAL (14/07: as áreas merecem
-            # a atenção do primeiro olhar)
-            + receita_rr)
+            f"<div class=areas>{area_cards}</div></section>")
+            # Saúde da Receita Recorrente mudou p/ /financeiro?view=receita (15/07)
     return (head.replace("__TOKENS__", _tokens_css()).replace("__USERMAIL__", escape(role))
             .replace("__HOME_ON__", " active" if page != "admin" else "")
             .replace("__ADM_ON__", " active" if page == "admin" else "")
