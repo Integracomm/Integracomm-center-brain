@@ -525,8 +525,10 @@ def hub(request: Request):
         except Exception:  # noqa: BLE001
             pass
         users = list_users(c)
+        impactos = _hub_impactos(c, mkt, sales)
+        lags = _hub_lags(c)
     return HTMLResponse(_render_hub(user, stats, users, mkt, sales=sales, ops=ops,
-                                    mudancas=mudancas))
+                                    mudancas=mudancas, impactos=impactos, lags=lags))
 
 
 @app.get("/admin", response_class=HTMLResponse)
@@ -1393,8 +1395,12 @@ def _receita_recorrente_html() -> str:
     alerta = ""
     if d["alertas"]:
         m, txt = d["alertas"][-1]
+        # link causal (17/07): do sinal financeiro direto p/ o diagnóstico
         alerta = (f"<div class=warn style='margin:10px 0'>⚠️ {escape(txt)} (até {m}) — "
-                  "o modelo recorrente não está se sustentando; olhe cancelamentos por bundle.</div>")
+                  "o modelo recorrente não está se sustentando. Investigar: "
+                  "<a href='/growth?view=cancelamentos' style='color:var(--brand)'>Cancelamentos por bundle</a> · "
+                  "<a href='/marketing?view=ciclo' style='color:var(--brand)'>Ciclo de Vida (qual canal traz quem sai)</a> · "
+                  "<a href='/raiox' style='color:var(--brand)'>Raio-X por Bundle</a></div>")
     cross_txt = (f"★ Crossover projetado: <b>{d['meses'][d['crossover_idx']]}</b> — mês em que a base B2-B5 "
                  f"supera os planos antigos (o modelo novo passa a sustentar a receita sozinho)."
                  if d["crossover_idx"] is not None else "Crossover B2-B5 × antigos ainda não ocorre em 2026.")
@@ -1533,11 +1539,150 @@ def _hub_mudancas(conn: Any) -> str:
             + f"<div class=central>{lis}</div></section>")
 
 
+def _hub_lags(conn: Any) -> dict:
+    """Defasagens REAIS do histórico (medianas) — Integração Causal #4: quanto
+    tempo uma correção numa área leva p/ aparecer na outra. Onde não há base
+    (série de risco começou 14/07), o valor fica None e a tela DIZ isso."""
+    out = {"lead_book": None, "oport_book": None, "book_churn": None,
+           "n_lead": 0, "n_oport": 0, "n_churn": 0}
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY
+                                    EXTRACT(epoch FROM (won_time - add_time)) / 86400), count(*)
+                             FROM mkt_deals_attribution
+                            WHERE status='won' AND won_time IS NOT NULL AND add_time IS NOT NULL
+                              AND won_time >= now() - interval '180 days'""")
+            v, n = cur.fetchone()
+            if n and n >= 10:
+                out["lead_book"], out["n_lead"] = float(v), int(n)
+            cur.execute("""SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY
+                                    EXTRACT(epoch FROM (won_time - oport_time)) / 86400), count(*)
+                             FROM mkt_deals_attribution
+                            WHERE status='won' AND won_time IS NOT NULL AND oport_time IS NOT NULL
+                              AND won_time >= now() - interval '180 days'""")
+            v, n = cur.fetchone()
+            if n and n >= 10:
+                out["oport_book"], out["n_oport"] = float(v), int(n)
+        from .marketing.ui import _ciclo_coorte
+        coorte, _g, _c = _ciclo_coorte(conn)
+        # deltas <=0 são artefato (data de saída em granularidade de MÊS pode
+        # cair antes do fechamento) — ficam fora da mediana
+        dias = [(r["saida"] - r["won"]).days for r in coorte
+                if r["desfecho"] == "precoce" and r.get("saida")
+                and (r["saida"] - r["won"]).days > 0]
+        if len(dias) >= 8:
+            import statistics as _st
+            out["book_churn"], out["n_churn"] = float(_st.median(dias)), len(dias)
+    except Exception:  # noqa: BLE001 — defasagem é informativa, nunca derruba o hub
+        pass
+    return out
+
+
+def _hub_impactos(conn: Any, mkt: dict | None, sales: dict | None) -> dict:
+    """Impacto estimado em R$/MÊS por tipo de gargalo (Integração Causal #2) —
+    faixa conservador–otimista + PREMISSA explícita. São estimativas de
+    potencial p/ PRIORIZAR entre áreas, não promessas."""
+    imp: dict[str, dict] = {}
+    ticket = (sales["receita"] / sales["book"]) if (sales and sales.get("book")) else None
+    conv = (mkt["book"] / mkt["leads"]) if (mkt and mkt.get("leads") and mkt.get("book")) else None
+    # gap de LEADS vs meta (Marketing)
+    if mkt and mkt.get("leads_meta") and mkt.get("frac") and conv and ticket:
+        gap_hoje = max(0.0, mkt["leads_meta"] * mkt["frac"] - mkt["leads"])
+        if gap_hoje >= 5:
+            base = gap_hoje * conv * ticket
+            imp["leads"] = {"faixa": (base * 0.7, base), "janela": "lead_book",
+                            "premissa": (f"assumindo que os {gap_hoje:.0f} leads em atraso vs o ritmo da meta "
+                                         f"convertam na taxa do mês ({conv * 100:.1f}%) e no ticket atual "
+                                         f"({_fmt_brl(ticket)})")}
+    # gap de QUALIFICAÇÃO (Ponte, 90d): taxa geral vs oportunidades c/ SLA ≤15min
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT count(*) FILTER (WHERE status = 'won'),
+                       count(*),
+                       count(*) FILTER (WHERE status = 'won' AND sla <= 15),
+                       count(*) FILTER (WHERE sla <= 15),
+                       (SELECT count(*) FROM mkt_deals_attribution
+                         WHERE oport_time >= now() - interval '90 days')
+                  FROM (SELECT d.status, EXTRACT(epoch FROM (t.first_at - d.add_time)) / 60 AS sla
+                          FROM mkt_deals_attribution d
+                          LEFT JOIN sales_first_touch t ON t.deal_id = d.deal_id
+                         WHERE d.oport_time >= now() - interval '90 days'
+                           AND d.status IN ('won', 'lost')) x""")
+            w, dec, w15, dec15, oports = cur.fetchone()
+        if dec and dec15 and dec15 >= 10 and ticket:
+            tx, tx15 = w / dec, w15 / dec15
+            if tx15 > tx:
+                base = (oports / 3.0) * (tx15 - tx) * ticket
+                imp["ponte"] = {"faixa": (base * 0.5, base), "janela": "oport_book",
+                                "premissa": (f"assumindo que a taxa geral de fechamento ({tx * 100:.1f}%) suba ao "
+                                             f"nível das oportunidades atendidas em ≤15min ({tx15 * 100:.1f}%), "
+                                             f"sobre ~{oports / 3.0:.0f} oportunidades/mês")}
+    except Exception:  # noqa: BLE001
+        pass
+    # CHURN PRECOCE por canal (Ciclo de Vida)
+    try:
+        from .marketing.ui import _ciclo_coorte
+        coorte, _g, _c = _ciclo_coorte(conn)
+        por_canal: dict[str, list] = {}
+        for r in coorte:
+            por_canal.setdefault(r["canal"], []).append(r)
+        cand = {c: rs for c, rs in por_canal.items() if len(rs) >= 8}
+        if len(cand) >= 2:
+            prec = {c: sum(1 for r in rs if r["desfecho"] == "precoce") / len(rs) for c, rs in cand.items()}
+            pior = max(prec, key=prec.get)
+            melhor = min(prec, key=prec.get)
+            if prec[pior] - prec[melhor] >= 0.15:
+                rs = cand[pior]
+                span_m = max(1.0, (max(r["won"] for r in rs) - min(r["won"] for r in rs)).days / 30.4)
+                cli_mes = len(rs) / span_m
+                mrr_med = (sum(r["mrr"] for r in rs) / len(rs)) or 0
+                base = cli_mes * (prec[pior] - prec[melhor]) * mrr_med
+                if base > 0:
+                    imp["ciclo"] = {"faixa": (base * 0.5, base), "janela": "book_churn",
+                                    "pior": pior, "melhor": melhor,
+                                    "premissa": (f"assumindo que o churn precoce de {pior} "
+                                                 f"({prec[pior] * 100:.0f}%) caia ao nível de {melhor} "
+                                                 f"({prec[melhor] * 100:.0f}%), sobre ~{cli_mes:.1f} clientes/mês "
+                                                 f"e MRR médio de {_fmt_brl(mrr_med)}")}
+    except Exception:  # noqa: BLE001
+        pass
+    # EXECUÇÃO CRÍTICA = EXPOSIÇÃO de MRR (honestidade: no nosso histórico a
+    # execução NÃO provou prever churn — é risco exposto, não perda projetada)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT COALESCE(sum(a.recurring_revenue), 0) FROM accounts a
+                            WHERE EXISTS (SELECT 1 FROM signal_snapshots ss
+                                           WHERE ss.account_id = a.id AND ss.signal_key = 'exec_score'
+                                             AND ss.value_num < 40)""")
+            mrr_exec = float(cur.fetchone()[0] or 0)
+            cur.execute("""SELECT count(*) FROM grw_cancelamentos
+                            WHERE tipo='cancelamento'
+                              AND mes >= date_trunc('month', now()) - interval '3 months'
+                              AND mes < date_trunc('month', now())
+                              AND upper(COALESCE(plano, '')) NOT LIKE '%%START%%'""")
+            canc3 = int(cur.fetchone()[0])
+            cur.execute("SELECT count(*) FROM accounts WHERE substring(name FROM 'B[1-5]') IS DISTINCT FROM 'B1'")
+            base_rec = int(cur.fetchone()[0])
+        tx_mes = (canc3 / 3.0 / base_rec) if base_rec else 0.10
+        if mrr_exec > 0:
+            imp["exec"] = {"faixa": (mrr_exec * tx_mes, mrr_exec * tx_mes * 2), "janela": None,
+                           "premissa": (f"EXPOSIÇÃO: {_fmt_brl(mrr_exec)} de MRR em contas com execução crítica × "
+                                        f"churn mensal médio dos recorrentes ({tx_mes * 100:.1f}%; otimista assume "
+                                        "risco dobrado se o atraso persistir). No histórico, execução crítica NÃO "
+                                        "provou prever churn — trate como risco, não como perda certa")}
+    except Exception:  # noqa: BLE001
+        pass
+    return imp
+
+
 def _render_hub(role: str, st: dict, users: list[dict] | None = None,
                 mkt: dict | None = None, page: str = "home",
                 llm: dict | None = None, sales: dict | None = None,
                 teams_html: str = "", ops: dict | None = None,
-                mudancas: str = "") -> str:
+                mudancas: str = "", body_override: str | None = None,
+                active_page: str = "", impactos: dict | None = None,
+                lags: dict | None = None) -> str:
     n_alerts = sum(st["sev"].values())
     crit = st["sev"].get("critico", 0)
 
@@ -1588,41 +1733,49 @@ def _render_hub(role: str, st: dict, users: list[dict] | None = None,
     # cada iniciativa é um LINK para os dados que a sustentam (pedido Otávio
     # 15/07: "vendo isso vou querer saber quais são" — ex.: execução crítica
     # abre a aba Contas já filtrada em execução=crítica)
-    initiatives = []
+    initiatives = []  # (título, descrição, cor, link, tipo) — tipo casa c/ impactos/lags
     if crit:
         initiatives.append(("Reter as contas em risco crítico",
                             f"{crit} contas sinalizaram saída ou estão em faixa crítica — "
                             f"{_fmt_brl(st['mrr_crit'])} de MRR em jogo. Fila pronta na área de Growth.",
-                            "--status-critico", "/growth?view=alertas"))
+                            "--status-critico", "/growth?view=alertas", "retencao"))
     if mkt and mkt.get("book_meta") and mkt["book"] / mkt["book_meta"] < mkt["frac"] * 0.75:
         initiatives.append(("Destravar bookings do mês",
                             f"{mkt['book']} de {mkt['book_meta']:.0f} bookings da meta com "
                             f"{mkt['frac'] * 100:.0f}% do mês decorrido — ver etapa de maior perda no "
                             "Funil de Prospecção e o gap por plano.",
-                            "--status-critico", "/marketing?view=funil"))
+                            "--status-critico", "/marketing?view=funil", "bookings"))
     if mkt and mkt.get("leads_meta") and mkt["leads"] / mkt["leads_meta"] < mkt["frac"] * 0.75:
         initiatives.append(("Acelerar a geração de leads",
                             f"{mkt['leads']} de {mkt['leads_meta']:.0f} leads da meta do mês com "
                             f"{mkt['frac'] * 100:.0f}% do mês decorrido — revisar campanhas e verba "
                             "na aba Metas do Semestre.",
-                            "--status-alto", "/marketing?view=metas"))
+                            "--status-alto", "/marketing?view=metas", "leads"))
     if sales and sales["tem_touch"] and sales["leads"] and sales["sem_toque"] / sales["leads"] > 0.3:
         initiatives.append(("Zerar a fila de leads sem 1º contato",
                             f"{sales['sem_toque']} leads do mês ainda sem contato registrado em Pré-vendas — "
                             "lead não tocado esfria; ver Speed-to-Lead.",
-                            "--status-alto", "/prevendas?view=speed"))
+                            "--status-alto", "/prevendas?view=speed", "ponte"))
     if sales and sales["taxa"] is not None and sales["taxa_ant"] and sales["taxa"] < sales["taxa_ant"] * 0.8:
         initiatives.append(("Investigar a queda na conversão lead→reunião",
                             f"Taxa caiu de {sales['taxa_ant'] * 100:.1f}% para {sales['taxa'] * 100:.1f}% — "
                             "cruzar com qualidade de lead por origem (Pré-vendas → Funil).",
-                            "--status-alto", "/prevendas?view=funil"))
+                            "--status-alto", "/prevendas?view=funil", "conversao"))
+    # churn precoce por canal (Ciclo de Vida) — entra como iniciativa quando a
+    # diferença entre canais é relevante (impacto calculado em _hub_impactos)
+    if impactos and impactos.get("ciclo"):
+        ic = impactos["ciclo"]
+        initiatives.append(("Migrar aquisição do canal que traz churn precoce",
+                            f"{ic['pior']} traz cliente que cancela em ≤3 meses bem acima de {ic['melhor']} — "
+                            "migrar mix e endurecer a qualificação do canal fraco (Ciclo de Vida).",
+                            "--status-alto", "/marketing?view=ciclo", "ciclo"))
     if st["exec_late"]:
         initiatives.append(("Regularizar execução nas contas em alerta",
                             f"{st['exec_late']} contas monitoradas com execução CRÍTICA no ClickUp "
                             "(entregas vencidas ou implantação além do prazo) — atrito operacional que "
                             "alimenta a insatisfação. Clique para ver as contas (a causa está no hover "
                             "da coluna Execução; responsáveis no relatório).",
-                            "--status-alto", "/growth?view=contas&exec=critica"))
+                            "--status-alto", "/growth?view=contas&exec=critica", "exec"))
     # só contas ANTIGAS sem cobertura viram iniciativa — cliente novo ainda em
     # rampa de conversa é esperado, não pendência (Otávio 16/07)
     if st.get("non_eval_antigas"):
@@ -1630,14 +1783,80 @@ def _render_hub(role: str, st: dict, users: list[dict] | None = None,
                             f"{st['non_eval_antigas']} conta(s) há mais de 30 dias na base sem conversa "
                             "suficiente no WhatsApp — o agente não as enxerga; revisar e reativar os grupos "
                             "(contas novas em rampa não entram aqui).",
-                            "--status-semdados", "/growth?view=contas&faixa=sem_dados"))
-    init_html = "".join(
-        f"<a class='init' href='{href}' title='abrir os dados desta iniciativa'>"
-        f"<span class='sdot' style='--c:var({var})'></span>"
-        f"<div><div class='it'>{escape(t)}</div><div class='id_'>{escape(d)}</div></div>"
-        f"<span class='ig'>→</span></a>"
-        for t, d, var, href in initiatives
-    ) or "<div class='init'><div class='id_'>sem iniciativas pendentes</div></div>"
+                            "--status-semdados", "/growth?view=contas&faixa=sem_dados", None))
+
+    # ---- impacto em R$ + defasagem por iniciativa (Integração Causal #2/#4):
+    # a moeda comum ordena a fila — o gestor sequencia por retorno estimado
+    imp = impactos or {}
+    lg = lags or {}
+    # bookings atrás da meta: o impacto é o próprio gap de receita vs o ritmo
+    if (sales and sales.get("receita_meta") and mkt and mkt.get("frac")
+            and "bookings" not in imp):
+        gap_hoje = max(0.0, sales["receita_meta"] * mkt["frac"] - sales["receita"])
+        proj = sales["receita"] / mkt["frac"] if mkt["frac"] else None
+        gap_fim = max(0.0, sales["receita_meta"] - proj) if proj else gap_hoje
+        if gap_hoje > 0:
+            faixa = tuple(sorted((gap_hoje, gap_fim or gap_hoje)))
+            imp["bookings"] = {"faixa": faixa, "janela": "oport_book",
+                               "premissa": ("distância da receita ao ritmo da meta hoje (conservador) e o gap "
+                                            "projetado p/ o fim do mês no ritmo atual (otimista)")}
+
+    def _janela_txt(chave):
+        if not chave:
+            return "sem base histórica para estimar a defasagem"
+        v = lg.get(chave)
+        rot = {"lead_book": "efeito visível em bookings em",
+               "oport_book": "efeito visível em bookings em",
+               "book_churn": "efeito visível na retenção em"}[chave]
+        if v is None:
+            return "sem base histórica para estimar a defasagem"
+        return f"{rot} ~{max(1, round(v)):.0f} dia(s) (mediana histórica) — não avalie antes disso"
+
+    decoradas = []
+    for t, d, var, href, tipo in initiatives:
+        e = imp.get(tipo) if tipo else None
+        chave_j = (e or {}).get("janela") if e else {"retencao": None, "conversao": "lead_book"}.get(tipo)
+        decoradas.append((t, d, var, href, e, chave_j))
+    # ordena por impacto estimado (máx. da faixa); sem estimativa vai ao final
+    decoradas.sort(key=lambda x: -(x[4]["faixa"][1] if x[4] else -1))
+
+    def _init_html(t, d, var, href, e, chave_j):
+        extra = ""
+        if e:
+            lo, hi = e["faixa"]
+            extra = (f"<div class='id_' style='margin-top:4px'><b style='color:var(--brand)'>"
+                     f"≈ {_fmt_brl(lo)}–{_fmt_brl(hi)}/mês em jogo</b> · potencial estimado, não promessa · "
+                     f"premissa: {escape(e['premissa'])} · {escape(_janela_txt(chave_j))}</div>")
+        elif chave_j:
+            extra = f"<div class='id_' style='margin-top:4px'>{escape(_janela_txt(chave_j))}</div>"
+        return (f"<a class='init' href='{href}' title='abrir os dados desta iniciativa'>"
+                f"<span class='sdot' style='--c:var({var})'></span>"
+                f"<div><div class='it'>{escape(t)}</div><div class='id_'>{escape(d)}</div>{extra}</div>"
+                f"<span class='ig'>→</span></a>")
+
+    init_html = "".join(_init_html(*x) for x in decoradas) \
+        or "<div class='init'><div class='id_'>sem iniciativas pendentes</div></div>"
+
+    # ---- defasagem esperada (Integração Causal #4): protege decisão certa de
+    # ser revertida cedo demais — quando cobrar resultado de cada correção
+    lag_rows = []
+    if lg.get("lead_book") is not None:
+        lag_rows.append(("Mudança na geração/qualificação de leads → bookings",
+                         f"~{max(1, round(lg['lead_book']))} dia(s) (mediana de {lg['n_lead']} contratos, 180d) — "
+                         "metade dos contratos fecha até aí; o efeito PLENO leva mais"))
+    if lg.get("oport_book") is not None:
+        lag_rows.append(("Oportunidade criada → contrato fechado",
+                         f"~{max(1, round(lg['oport_book']))} dia(s) (mediana de {lg['n_oport']} contratos, 180d)"))
+    if lg.get("book_churn") is not None:
+        lag_rows.append(("Mudança na aquisição → reflexo no churn precoce",
+                         f"~{max(1, round(lg['book_churn']))} dia(s) (mediana de {lg['n_churn']} cancelamentos "
+                         "precoces; datas de saída em granularidade de mês — leia como ordem de grandeza)"))
+    lag_rows.append(("Execução atrasada → piora de faixa de risco",
+                     "sem base histórica ainda — a série diária de risco começou em 14/07/26"))
+    defasagem_html = ("".join(
+        f"<div class='init'><span class='sdot' style='--c:var(--status-semdados)'></span>"
+        f"<div><div class='it' style='font-size:var(--fs-sm)'>{escape(a)}</div>"
+        f"<div class='id_'>{escape(b)}</div></div></div>" for a, b in lag_rows))
 
     # ---- cards-resumo por área (mini-painel com os números que importam)
     def _num(v):
@@ -1919,6 +2138,7 @@ a.init:hover .ig{color:var(--brand)}
    <div class=brand><div class=logo></div><div><div class=bt>Integracomm IA</div><div class=bs>Central</div></div></div>
    <nav>
      <a class="nav-item__HOME_ON__" href="/">Início</a>
+     <a class="nav-item__RX_ON__" href="/raiox">Raio-X por Bundle</a>
      <a class="nav-item__ADM_ON__" href="/admin">Painel Administrativo</a>
      <a class="nav-item" href="/growth">Growth / Assessoria</a>
      <a class="nav-item" href="/marketing">Marketing</a>
@@ -1953,8 +2173,23 @@ __BODY__
             "<p class=secsub>diagnóstico automático do mês corrente, ordenado da área que mais demanda atenção para a mais saudável — clique para abrir</p>"
             f"<div class=hbar>{hbar}</div></section>"
             "<section><h2>Iniciativas sugeridas</h2>"
-            "<p class=secsub>derivadas dos sinais das áreas ativas — priorização da empresa, não de uma área só</p>"
-            f"<div class=central>{init_html}</div></section>"
+            "<p class=secsub>derivadas dos sinais das áreas ativas e ORDENADAS pelo impacto estimado em R$/mês "
+            "(faixa conservador–otimista, premissa explícita) — priorização da empresa, não de uma área só</p>"
+            + _hint("Iniciativas sugeridas",
+                    "O que mostra: onde agir primeiro, com o valor estimado de cada gargalo em R$/mês — a moeda "
+                    "comum que permite comparar áreas diferentes (lead, SLA, churn, execução).\n"
+                    "Como ler: a faixa (conservador–otimista) e a PREMISSA de cada estimativa estão escritas no item — "
+                    "são potenciais, não promessas; número sem premissa engana. A lista vem ordenada do maior para o "
+                    "menor impacto. Cada item traz também a defasagem esperada: quanto tempo a correção leva para "
+                    "aparecer no resultado (mediana histórica).\n"
+                    "Fique de olho: (1) valide as premissas com o gestor da área antes de mexer em processo; "
+                    "(2) não reavalie uma correção antes da janela de maturação — reverter decisão certa cedo demais "
+                    "é o erro mais caro; (3) 'exposição' (execução crítica) é risco exposto, não perda certa.")
+            + f"<div class=central>{init_html}</div></section>"
+            "<section><h2>Defasagem esperada das correções</h2>"
+            "<p class=secsub>medida no NOSSO histórico (medianas) — quando cobrar resultado de cada tipo de correção; "
+            "onde não há base, está dito</p>"
+            f"<div class=central>{defasagem_html}</div></section>"
             "<section><h2>Áreas</h2>"
             "<p class=secsub>resumo do andamento de cada área — clique para abrir o painel completo; verde = no ritmo/meta, vermelho = atenção</p>"
             f"<div class=areas>{area_cards}</div></section>"
@@ -1967,10 +2202,21 @@ __BODY__
             "<span style='color:var(--text-muted);font-size:var(--fs-sm)'>slides do mês fechado com os dados do painel + "
             "destaques/orientações que você preencher</span></p>")
             # Saúde da Receita Recorrente mudou p/ /financeiro?view=receita (15/07)
+    if body_override is not None:  # página avulsa com o shell da central (Raio-X)
+        body = body_override
     return (head.replace("__TOKENS__", _tokens_css()).replace("__USERMAIL__", escape(role))
-            .replace("__HOME_ON__", " active" if page != "admin" else "")
+            .replace("__HOME_ON__", " active" if page != "admin" and body_override is None else "")
             .replace("__ADM_ON__", " active" if page == "admin" else "")
+            .replace("__RX_ON__", " active" if active_page == "raiox" else "")
             .replace("__BODY__", body))
+
+
+def _render_hub_page(role: str, body: str, active: str = "") -> str:
+    """Página avulsa (ex.: /raiox) com o MESMO shell/nav da central — corpo
+    pronto; os stats vazios não aparecem porque o body é substituído."""
+    st_vazio = {"sev": {}, "mrr_crit": 0.0, "mrr_risk": 0.0, "monitored": 0,
+                "evaluable": 0, "non_eval": 0, "non_eval_antigas": 0, "exec_late": 0}
+    return _render_hub(role, st_vazio, body_override=body, active_page=active)
 
 
 # mapeamento semântico -> variável de token (design-tokens.css é a fonte da verdade)
@@ -3675,6 +3921,7 @@ from .allhands import router as _allhands_router  # noqa: E402
 from .financeiro.ui import router as _financeiro_router  # noqa: E402
 from .marketing.ui import router as _marketing_router  # noqa: E402
 from .operacoes.ui import router as _operacoes_router  # noqa: E402
+from .raiox import router as _raiox_router  # noqa: E402
 from .sales.ui import router as _sales_router  # noqa: E402
 
 app.include_router(_report_router)
@@ -3683,3 +3930,4 @@ app.include_router(_sales_router)
 app.include_router(_operacoes_router)
 app.include_router(_financeiro_router)
 app.include_router(_allhands_router)
+app.include_router(_raiox_router)

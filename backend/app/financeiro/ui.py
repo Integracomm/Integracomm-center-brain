@@ -60,7 +60,8 @@ def _mes_lbl(iso: str) -> str:
 
 def _tabela(dados: dict, metricas: list[tuple[str, str, str]], idxs: list[int],
             destaque: set[str] | None = None, atual: dict | None = None,
-            i_col_atual: int | None = None, frac: float = 1.0) -> str:
+            i_col_atual: int | None = None, frac: float = 1.0,
+            links: dict[str, tuple[str, str]] | None = None) -> str:
     """Tabela métrica × meses. metricas = [(rótulo exibido, prefixo na planilha,
     kind)]; idxs = índices dos meses a mostrar. `atual` (Otávio 16/07) = valores
     REALIZADOS do mês corrente por rótulo — a célula do mês vira 'realizado /
@@ -88,7 +89,14 @@ def _tabela(dados: dict, metricas: list[tuple[str, str, str]], idxs: list[int],
                         f"<span style='color:var(--text-faint)'> / {_fmt(meta_v, kind)}</span></td>")
             else:
                 tds += f"<td style='{_TD};text-align:right'>{_fmt(vals[i], kind)}</td>"
-        linhas += f"<tr><td style='{_TD};text-align:left;{b}'>{escape(rot)}</td>{tds}</tr>"
+        rot_html = escape(rot)
+        # link causal (17/07): do NÚMERO para o diagnóstico — 'por quê?' abre a
+        # visão que explica a causa (Raio-X do bundle, Ponte, Cancelamentos…)
+        if links and rot in links:
+            url, tit = links[rot]
+            rot_html += (f" <a href='{url}' title=\"{escape(tit)}\" "
+                         f"style='color:var(--brand);font-size:var(--fs-2xs);white-space:nowrap'>por quê? →</a>")
+        linhas += f"<tr><td style='{_TD};text-align:left;{b}'>{rot_html}</td>{tds}</tr>"
     return ("<div class=central style='padding:6px 14px 12px;overflow-x:auto'>"
             f"<table style='width:100%;border-collapse:collapse'><tr>{ths}</tr>{linhas}</table></div>")
 
@@ -241,6 +249,68 @@ def _visao(conn, request: Request) -> str:
         "</section>"
     )
 
+    # --- 'o que mais afasta da meta' (17/07): o placar vira ponto de partida
+    # de investigação — 3 maiores desvios em R$, causa provável e link p/ o
+    # diagnóstico (Raio-X do bundle / Ponte / Metas de Marketing)
+    desvios: list[tuple[float, str, str, str]] = []  # (gap R$, texto, causa, url)
+    with conn.cursor() as cur:
+        cur.execute("""SELECT COALESCE(substring(upper(produto) FROM 'B[1-5]'), 'outros'), count(*)
+                         FROM mkt_deals_attribution
+                        WHERE oport_time >= %s GROUP BY 1""", (f"{hoje.replace(day=1)} 00:00-03",))
+        oport_bund = dict(cur.fetchall())
+    _bund_n_tmp: dict[str, int] = {}
+    _bund_v_tmp: dict[str, float] = {}
+    with conn.cursor() as cur:
+        cur.execute("""SELECT COALESCE(substring(upper(produto) FROM 'B[1-5]'), 'outros'),
+                              count(*), COALESCE(sum(COALESCE(valor_custom, valor)), 0)
+                         FROM mkt_deals_attribution
+                        WHERE status='won' AND won_time >= %s GROUP BY 1""",
+                    (f"{hoje.replace(day=1)} 00:00-03",))
+        for b_, n_, v_ in cur.fetchall():
+            _bund_n_tmp[b_], _bund_v_tmp[b_] = int(n_), float(v_)
+    tx_meta = PF.linha(dados, "Tx. Oportunidade x Booking")[i_atual]
+    for b_ in ("B1", "B2", "B3", "B4", "B5"):
+        m_r = PF.linha(dados, f"{b_} - Meta: Booking [R$]")[i_atual]
+        m_q = PF.linha(dados, f"{b_} - Meta: Booking [Qtde]")[i_atual]
+        if not m_r:
+            continue
+        gap = m_r * frac - _bund_v_tmp.get(b_, 0.0)
+        if gap <= 0:
+            continue
+        oport_nec = (m_q * frac / tx_meta) if (m_q and tx_meta) else None
+        causa = ("faltam oportunidades — geração/qualificação"
+                 if oport_nec and oport_bund.get(b_, 0) < oport_nec
+                 else "conversão abaixo do plano — fechamento/proposta")
+        desvios.append((gap, f"{b_}: {_bund_n_tmp.get(b_, 0)}/{m_q:.0f} bookings — "
+                             f"{_fmt(gap, 'brl')} atrás do ritmo", causa, f"/raiox?b={b_}"))
+    tx_atual = (booked / passou[4]) if passou[4] else None
+    if tx_meta and tx_atual is not None and tx_atual < tx_meta and passou[4]:
+        gap_tx = passou[4] * (tx_meta - tx_atual) * (receita / booked if booked else 0)
+        desvios.append((gap_tx, f"Tx. Oportunidade→Booking em {tx_atual * 100:.1f}% vs {tx_meta * 100:.0f}% planejado "
+                                f"— ≈ {_fmt(gap_tx, 'brl')} no mês", "qualificação herdada × fechamento — ver a Ponte",
+                        "/vendas?view=ponte"))
+    m_leads = PF.linha(dados, "Leads [Qtde]")[i_atual]
+    if m_leads and passou[0] < m_leads * frac and booked and passou[0]:
+        gap_l = (m_leads * frac - passou[0]) * (booked / passou[0]) * (receita / booked)
+        desvios.append((gap_l, f"Leads a {passou[0] / m_leads * 100:.0f}% da meta ({passou[0]:.0f}/{m_leads:.0f}) "
+                               f"— ≈ {_fmt(gap_l, 'brl')} no ritmo atual", "volume de topo — verba/campanhas",
+                        "/marketing?view=metas"))
+    if desvios:
+        top3 = sorted(desvios, key=lambda x: -x[0])[:3]
+        itens_dsv = "".join(
+            f"<a class=init href='{url}' style='display:flex;gap:10px;align-items:flex-start;padding:9px 0;"
+            "border-top:1px solid var(--border);text-decoration:none;color:inherit'>"
+            "<span style='display:inline-block;width:8px;height:8px;border-radius:50%;"
+            "background:var(--status-critico);margin-top:6px;flex-shrink:0'></span>"
+            f"<span><b>{escape(txt)}</b><br><span style='color:var(--text-muted);font-size:var(--fs-sm)'>"
+            f"causa provável: {escape(causa)} — clique para investigar</span></span>"
+            f"<span style='margin-left:auto;color:var(--text-faint)'>→</span></a>"
+            for _g, txt, causa, url in top3)
+        html += ("<section><h2>O que mais afasta da meta este mês</h2>"
+                 "<p class=secsub>os 3 maiores desvios em R$ (vs o ritmo do mês) com a causa provável — "
+                 "cada um abre o diagnóstico; estimativas indicativas, não promessas</p>"
+                 f"<div class=central style='padding-top:4px'>{itens_dsv}</div></section>")
+
     # --- visão rápida: gráficos (percepção antes das tabelas — pedido 15/07) ---
     lbls = [_mes_lbl(m) for m in meses]
     todos_idx = list(range(len(meses)))
@@ -341,6 +411,13 @@ def _visao(conn, request: Request) -> str:
     for b_ in ("B1", "B2", "B3", "B4", "B5"):
         atual[f"{b_} — qtde"] = bund_n.get(b_, 0)
         atual[f"{b_} — R$"] = bund_v.get(b_, 0.0)
+    # links causais (17/07): do número ao diagnóstico
+    links_meta = {"Tx. Oportunidade → Booking": ("/vendas?view=ponte",
+                                                 "a taxa é herdada da qualificação ou é do fechamento? Ver a Ponte"),
+                  "Churn alvo (%)": ("/growth?view=cancelamentos", "quem sai e por quê — aba Cancelamentos")}
+    for b_ in ("B1", "B2", "B3", "B4", "B5"):
+        links_meta[f"{b_} — qtde"] = (f"/raiox?b={b_}",
+                                      f"Raio-X do {b_}: aquisição → fechamento → retenção → operação")
     html += ("<section><h2>Metas — mês corrente e próximos</h2>"
              f"<p class=secsub>plano da planilha: bookings por bundle, funil projetado e recebimento — "
              f"<b>{mes_nome} (atual) = realizado ao vivo / meta</b>, verde = no ritmo do mês ({frac * 100:.0f}% decorrido); "
@@ -369,7 +446,7 @@ def _visao(conn, request: Request) -> str:
                  ("Inadimplência alvo (%)", "Inadimplência [%]", "pct"),
                  ("Churn alvo (%)", "Taxa de cancelamento - TOTAL", "pct"),
              ], idx_metas, destaque={"Meta de bookings (R$)", "Recebimento total projetado"},
-                 atual=atual, i_col_atual=i_atual, frac=frac)
+                 atual=atual, i_col_atual=i_atual, frac=frac, links=links_meta)
              + "</section>")
 
     # saúde da receita recorrente MUDOU p/ aba própria (pedido 15/07)

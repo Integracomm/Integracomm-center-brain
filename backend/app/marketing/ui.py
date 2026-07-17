@@ -1034,7 +1034,11 @@ def _funil(conn, request: Request) -> str:
 # (deal.titulo = pessoa; grw_cancelamentos.cliente = 'EMPRESA | PESSOA') —
 # casamento por inclusão sem acento; cobertura reportada na tela.
 # ---------------------------------------------------------------------------
-def _ciclo_vida(conn) -> str:
+def _ciclo_coorte(conn) -> tuple[list[dict], dict, dict]:
+    """A COORTE do Ciclo de Vida como dados reutilizáveis (extraída 17/07 p/ o
+    Raio-X por Bundle): cada cliente FECHADO com canal/criativo/bundle/desfecho.
+    Retorna (coorte, gasto_por_canal, meta) onde meta = {sem_origem, canc_casados,
+    n_cancs} p/ a nota de cobertura."""
     import unicodedata
 
     def nrm(s):
@@ -1070,13 +1074,23 @@ def _ciclo_vida(conn) -> str:
         desfecho = ("ativo" if saida is None else ("precoce" if meses_casa <= 3 else "tardio"))
         parcial = (hoje - won).days < 92  # safra jovem: churn tardio impossível
         coorte.append({"canal": AN.canal_de(og), "og": og, "criativo": cont, "bundle": bnd,
-                       "won": won, "mrr": float(mrr or 0), "desfecho": desfecho, "parcial": parcial})
-    tot = len(coorte)
-    if not tot:
-        return "<h1>Ciclo de Vida</h1><section><div class=warn>sem bookings rastreados ainda</div></section>"
+                       "won": won, "saida": saida, "mrr": float(mrr or 0),
+                       "desfecho": desfecho, "parcial": parcial})
     with conn.cursor() as cur:
         cur.execute("SELECT canal, min(date), sum(spend) FROM mkt_insights_daily GROUP BY 1")
         gasto = {("Meta Ads" if cn == "meta" else "Google Ads"): (d0, float(g)) for cn, d0, g in cur.fetchall()}
+    return coorte, gasto, {"sem_origem": sem_origem, "canc_casados": len(canc_casados),
+                           "n_cancs": len(cancs)}
+
+
+def _ciclo_vida(conn) -> str:
+    coorte, gasto, _meta_cob = _ciclo_coorte(conn)
+    canc_casados = set(range(_meta_cob["canc_casados"]))  # só p/ contagem da nota
+    cancs = [None] * _meta_cob["n_cancs"]
+    sem_origem = _meta_cob["sem_origem"]
+    tot = len(coorte)
+    if not tot:
+        return "<h1>Ciclo de Vida</h1><section><div class=warn>sem bookings rastreados ainda</div></section>"
 
     _td = "padding:7px 9px;border-bottom:1px solid var(--border);font-size:var(--fs-sm);font-variant-numeric:tabular-nums"
 
