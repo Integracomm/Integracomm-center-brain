@@ -866,12 +866,19 @@ def _hub_stats(conn: Any) -> dict:
         cur.execute("""SELECT count(*) FROM (SELECT DISTINCT ON (account_id) evaluable FROM scores
                        ORDER BY account_id, computed_at DESC) t WHERE NOT evaluable""")
         non_eval = cur.fetchone()[0]
+        # sem cobertura HÁ MAIS DE 30 DIAS na base = problema real; conta nova
+        # ainda em rampa de dados é esperado e não vira iniciativa (Otávio 16/07)
+        cur.execute("""SELECT count(*) FROM (SELECT DISTINCT ON (account_id) account_id, evaluable
+                         FROM scores ORDER BY account_id, computed_at DESC) t
+                        JOIN accounts a ON a.id = t.account_id
+                       WHERE NOT t.evaluable AND a.created_at < now() - interval '30 days'""")
+        non_eval_antigas = cur.fetchone()[0]
         cur.execute("""SELECT count(DISTINCT s.account_id) FROM signal_snapshots s
                        WHERE s.signal_key='exec_score' AND s.value_num < 70""")
         exec_late = cur.fetchone()[0]
     return {"monitored": monitored, "evaluable": evaluable, "sev": sev,
             "mrr_risk": mrr_risk, "mrr_crit": mrr_crit, "non_eval": non_eval,
-            "exec_late": exec_late}
+            "non_eval_antigas": non_eval_antigas, "exec_late": exec_late}
 
 
 def _hub_mkt_stats(conn: Any) -> dict | None:
@@ -902,7 +909,10 @@ def _hub_mkt_stats(conn: Any) -> dict | None:
                 "book": booked, "book_meta": meta("Booking"),
                 "gasto": gasto, "verba": verba,
                 "cpl": gasto / total if total and gasto else None,
-                "cpl_alvo": (plan.get("Lead") or {}).get("custo")}
+                "cpl_alvo": (plan.get("Lead") or {}).get("custo"),
+                # CAC blended do mês: gasto de mídia ÷ contratos fechados (todos
+                # os canais) — visão de eficiência p/ o card do hub (16/07)
+                "cac": gasto / booked if booked and gasto else None}
     except Exception:  # noqa: BLE001 — marketing sem cache não derruba o hub
         return None
 
@@ -1420,31 +1430,73 @@ def _hub_mudancas(conn: Any) -> str:
                             ORDER BY max(computed_at) DESC LIMIT 2""")
             runs = [r[0] for r in cur.fetchall()]
             if len(runs) == 2:
+                # direção da mudança de faixa COM as contas (Otávio 16/07: o
+                # link precisa levar EXATAMENTE ao que o item diz — nomes no
+                # texto + ?ids= pré-filtrando a aba Contas). rank baixo<...<critico
                 cur.execute("""
-                    SELECT count(*) FILTER (WHERE n.risk_band='critico' AND o.risk_band <> 'critico'),
-                           count(*) FILTER (WHERE n.risk_band <> 'critico' AND o.risk_band='critico'),
-                           count(*) FILTER (WHERE n.risk_band <> o.risk_band)
-                      FROM scores n JOIN scores o ON o.account_id = n.account_id
-                     WHERE n.run_id = %s AND o.run_id = %s""", (runs[0], runs[1]))
-                ent, sai, mud = cur.fetchone()
-                if ent:
-                    itens.append((f"<b style='color:var(--status-critico)'>{ent}</b> conta(s) ENTRARAM em crítico na última rodada", "/growth?view=alertas"))
-                if sai:
-                    itens.append((f"<b style='color:var(--status-baixo)'>{sai}</b> conta(s) saíram de crítico", "/growth"))
-                if mud - ent - sai > 0:
-                    itens.append((f"{mud - ent - sai} conta(s) mudaram de faixa de risco", "/growth"))
+                    SELECT a.id::text, a.name, n.risk_band, o.risk_band,
+                           CASE n.risk_band WHEN 'baixo' THEN 1 WHEN 'medio' THEN 2
+                                            WHEN 'alto' THEN 3 WHEN 'critico' THEN 4 END,
+                           CASE o.risk_band WHEN 'baixo' THEN 1 WHEN 'medio' THEN 2
+                                            WHEN 'alto' THEN 3 WHEN 'critico' THEN 4 END
+                      FROM scores n
+                      JOIN scores o ON o.account_id = n.account_id
+                      JOIN accounts a ON a.id = n.account_id
+                     WHERE n.run_id = %s AND o.run_id = %s
+                       AND n.risk_band <> o.risk_band""", (runs[0], runs[1]))
+                ent_l, sai_l, pior_l, melhor_l = [], [], [], []
+                for aid, nome, nb, ob, rn, ro in cur.fetchall():
+                    if nb == "critico":
+                        ent_l.append((aid, nome))
+                    elif ob == "critico":
+                        sai_l.append((aid, nome))
+                    elif rn is not None and ro is not None and rn > ro:
+                        pior_l.append((aid, nome))
+                    elif rn is not None and ro is not None and rn < ro:
+                        melhor_l.append((aid, nome))
+
+                def _mud_item(lista, texto, cor):
+                    nomes = ", ".join(escape((n or "?")[:26]) for _, n in lista[:3])
+                    if len(lista) > 3:
+                        nomes += f" +{len(lista) - 3}"
+                    return (f"<b style='color:var({cor})'>{len(lista)}</b> conta(s) {texto}: "
+                            f"<span style='color:var(--text-muted)'>{nomes}</span>",
+                            f"/growth?view=contas&ids={','.join(a for a, _ in lista)}")
+                if ent_l:
+                    itens.append(_mud_item(ent_l, "ENTRARAM em crítico na última rodada", "--status-critico"))
+                if sai_l:
+                    itens.append(_mud_item(sai_l, "saíram de crítico", "--status-baixo"))
+                if pior_l:
+                    itens.append(_mud_item(pior_l, "PIORARAM de faixa de risco", "--status-alto"))
+                if melhor_l:
+                    itens.append(_mud_item(melhor_l, "melhoraram de faixa de risco", "--status-baixo"))
             # VENDAS: bookings e oportunidades nas últimas 24h
             cur.execute("""SELECT count(*), COALESCE(sum(COALESCE(valor_custom, valor)), 0)
                              FROM mkt_deals_attribution
                             WHERE status='won' AND won_time >= now() - interval '24 hours'""")
             bk, rec = cur.fetchone()
             if bk:
-                itens.append((f"<b style='color:var(--status-baixo)'>{bk}</b> booking(s) nas últimas 24h — R$ {float(rec):,.0f}".replace(",", "."), "/vendas"))
+                cur.execute("""SELECT titulo FROM mkt_deals_attribution
+                                WHERE status='won' AND won_time >= now() - interval '24 hours'
+                                ORDER BY won_time DESC LIMIT 3""")
+                bk_nm = ", ".join(escape((r[0] or "?")[:26]) for r in cur.fetchall())
+                if bk > 3:
+                    bk_nm += f" +{bk - 3}"
+                itens.append((f"<b style='color:var(--status-baixo)'>{bk}</b> booking(s) nas últimas 24h — "
+                              f"R$ {float(rec):,.0f}".replace(",", ".")
+                              + f": <span style='color:var(--text-muted)'>{bk_nm}</span>", "/vendas"))
             cur.execute("""SELECT count(*) FROM mkt_deals_attribution
                             WHERE oport_time >= now() - interval '24 hours'""")
             op = cur.fetchone()[0]
             if op:
-                itens.append((f"<b>{op}</b> nova(s) oportunidade(s) nas últimas 24h", "/vendas?view=funil"))
+                cur.execute("""SELECT titulo FROM mkt_deals_attribution
+                                WHERE oport_time >= now() - interval '24 hours'
+                                ORDER BY oport_time DESC LIMIT 3""")
+                op_nm = ", ".join(escape((r[0] or "?")[:26]) for r in cur.fetchall())
+                if op > 3:
+                    op_nm += f" +{op - 3}"
+                itens.append((f"<b>{op}</b> nova(s) oportunidade(s) nas últimas 24h: "
+                              f"<span style='color:var(--text-muted)'>{op_nm}</span>", "/vendas?view=funil"))
             # MARKETING: CPL de ontem vs média 7d anterior, por canal pago
             cur.execute("""
                 WITH d1 AS (SELECT canal, sum(spend) g, sum(leads) l FROM mkt_insights_daily
@@ -1571,10 +1623,13 @@ def _render_hub(role: str, st: dict, users: list[dict] | None = None,
                             "alimenta a insatisfação. Clique para ver as contas (a causa está no hover "
                             "da coluna Execução; responsáveis no relatório).",
                             "--status-alto", "/growth?view=contas&exec=critica"))
-    if st["non_eval"]:
+    # só contas ANTIGAS sem cobertura viram iniciativa — cliente novo ainda em
+    # rampa de conversa é esperado, não pendência (Otávio 16/07)
+    if st.get("non_eval_antigas"):
         initiatives.append(("Recuperar cobertura de dados",
-                            f"{st['non_eval']} contas sem conversa suficiente no WhatsApp — o agente não as "
-                            "enxerga; revisar manualmente e reativar os grupos.",
+                            f"{st['non_eval_antigas']} conta(s) há mais de 30 dias na base sem conversa "
+                            "suficiente no WhatsApp — o agente não as enxerga; revisar e reativar os grupos "
+                            "(contas novas em rampa não entram aqui).",
                             "--status-semdados", "/growth?view=contas&faixa=sem_dados"))
     init_html = "".join(
         f"<a class='init' href='{href}' title='abrir os dados desta iniciativa'>"
@@ -1618,10 +1673,12 @@ def _render_hub(role: str, st: dict, users: list[dict] | None = None,
         + am(_num(st["exec_late"]), "execução crítica", "var(--status-medio)" if st["exec_late"] else None)
         + f"</div><div class=ad>{escape(g_det)}</div></a>")
 
+    # cards COMPLEMENTARES entre áreas (Otávio 16/07: sem número repetido) —
+    # bookings/receita ficam SÓ em Vendas; Marketing = aquisição + eficiência
+    # (CAC no lugar de bookings); PV = qualificação + fila; Financeiro = caixa
     if mkt:
         v_leads, c_leads = vs_meta(mkt["leads"], mkt.get("leads_meta"), mkt["frac"])
         v_oport, c_oport = vs_meta(mkt["oport"], mkt.get("oport_meta"), mkt["frac"])
-        v_book, c_book = vs_meta(mkt["book"], mkt.get("book_meta"), mkt["frac"])
         gasto_txt = _fmt_brl(mkt["gasto"])
         c_gasto = None
         if mkt.get("verba"):
@@ -1634,15 +1691,16 @@ def _render_hub(role: str, st: dict, users: list[dict] | None = None,
             if mkt.get("cpl_alvo"):
                 cpl_txt += f" (alvo {_fmt_brl(mkt['cpl_alvo'])})"
         m_det = (f"mês {mkt['mes'].strftime('%m-%Y')} · ritmo esperado {mkt['frac'] * 100:.0f}%"
-                 + cpl_txt + " · metas da planilha do time")
+                 + cpl_txt + " · bookings e receita no card de Vendas")
+        cac_txt = _fmt_brl(mkt["cac"]) if mkt.get("cac") is not None else "—"
         mkt_card = (
             "<a class='area big' href='/marketing'><div class=ahead>"
             f"<div class=an>Marketing</div>{chip_area('marketing')}</div>"
             "<div class=agrid>"
             + am(v_leads, "leads no mês", c_leads)
             + am(v_oport, "oportunidades", c_oport)
-            + am(v_book, "bookings", c_book)
             + am(gasto_txt, "gasto mídia/verba", c_gasto)
+            + am(cac_txt, "CAC do mês (gasto ÷ contratos)")
             + f"</div><div class=ad>{escape(m_det)}</div></a>")
     else:
         mkt_card = ("<a class='area big' href='/marketing'><div class=ahead>"
@@ -1660,27 +1718,32 @@ def _render_hub(role: str, st: dict, users: list[dict] | None = None,
         if sales["speed_med"] is not None:
             m = sales["speed_med"]
             speed_txt = f"{m:.0f} min" if m < 120 else f"{m / 60:.1f} h"
+        fila_txt = _num(sales["sem_toque"]) if sales["tem_touch"] else "—"
+        c_fila = ("var(--status-critico)" if sales["tem_touch"] and sales["leads"]
+                  and sales["sem_toque"] / sales["leads"] > 0.3 else None)
         pv_card = (
             "<a class='area big' href='/prevendas'><div class=ahead>"
             f"<div class=an>Pré-vendas</div>{chip_area('prevendas')}</div>"
             "<div class=agrid>"
-            + am(_num(sales["leads"]), "leads recebidos")
             + am(_num(sales["reunioes"]), "SQLs (agendaram)")
             + am(taxa_txt, "lead→SQL", c_taxa)
             + am(speed_txt, "1º contato (mediana)",
                  "var(--status-critico)" if (sales["speed_med"] or 0) > 60 else None)
-            + f"</div><div class=ad>{escape(saude['prevendas'][1])}</div></a>")
+            + am(fila_txt, "leads sem 1º contato", c_fila)
+            + f"</div><div class=ad>{escape(saude['prevendas'][1])} · leads do mês no card de Marketing</div></a>")
         v_bk, c_bk = vs_meta(sales["book"], sales.get("book_meta"), mkt["frac"] if mkt else 1.0)
         rec_txt = _fmt_brl(sales["receita"])
         if sales.get("receita_meta"):
             rec_txt += (f"<span style='color:var(--text-faint);font-size:14px'>"
                         f"/{_fmt_brl(sales['receita_meta'])}</span>")
+        ticket_txt = _fmt_brl(sales["receita"] / sales["book"]) if sales["book"] else "—"
         vd_card = (
             "<a class='area big' href='/vendas'><div class=ahead>"
             f"<div class=an>Vendas</div>{chip_area('vendas')}</div>"
             "<div class=agrid>"
             + am(v_bk, "bookings no mês", c_bk)
             + am(rec_txt, "receita/meta")
+            + am(ticket_txt, "ticket médio do mês")
             + am(_num(sales["pipeline"]), "deals abertos no pipe")
             + f"</div><div class=ad>{escape(saude['vendas'][1])}</div></a>")
     else:
@@ -1721,33 +1784,28 @@ def _render_hub(role: str, st: dict, users: list[dict] | None = None,
             _i = _fin["meses"].index(_iso)
             _frac = mkt["frac"] if mkt else _hj.day / _cal.monthrange(_hj.year, _hj.month)[1]
             _mb = _PF.linha(_fin, "Meta Bookings [R$]")[_i]
-            _mq = _PF.linha(_fin, "Bookings [Qtde]")[_i]
             _mr = _PF.linha(_fin, "Recebimento TOTAL [R$]")[_i]
+            _rec_pct = _PF.linha(_fin, "Recebimento RECORRENTE [%]")[_i]
+            _inad = _PF.linha(_fin, "Inadimplência [%]")[_i]
             _isr = _PF.linha(_fin, "ÍSR - Índice")[_i]
             _rec_live = sales["receita"] if sales else None
-            _bk_live = mkt["book"] if mkt else None
-            # receita de bookings vs meta (R$, cor pelo ritmo)
-            if _rec_live is not None and _mb:
-                _pct = _rec_live / _mb
-                c_frec = "var(--status-baixo)" if _pct >= _frac else "var(--status-critico)"
-                v_frec = (f"{_fmt_brl(_rec_live)}<span style='color:var(--text-faint);font-size:14px'>"
-                          f"/{_fmt_brl(_mb)}</span>")
-                _no_ritmo = _pct >= _frac
-            else:
-                v_frec, c_frec, _no_ritmo = _fmt_brl(_rec_live) if _rec_live is not None else "—", None, None
-            v_fbk, c_fbk = (vs_meta(_bk_live, _mq, _frac) if _bk_live is not None else ("—", None))
+            # chip pelo ritmo da receita × meta (o NÚMERO em si fica no card de
+            # Vendas — aqui é caixa/estrutura, sem repetir bookings; 16/07)
+            _no_ritmo = (_rec_live / _mb >= _frac) if (_rec_live is not None and _mb) else None
             _chip_fin = (_chip("no ritmo", "--status-baixo") if _no_ritmo
                          else _chip("atrás da meta", "--status-alto") if _no_ritmo is not None
                          else _chip("ativa", "--status-baixo"))
             fin_card = ("<a class='area big' href='/financeiro'><div class=ahead>"
                         f"<div class=an>Financeiro</div>{_chip_fin}</div>"
                         "<div class=agrid>"
-                        + am(v_frec, "receita de bookings/meta", c_frec)
-                        + am(v_fbk, "bookings/meta", c_fbk)
                         + am(_fmt_brl(_mr) if _mr else "—", "recebimento projetado do mês")
+                        + am(f"{_rec_pct * 100:.0f}%" if _rec_pct is not None else "—", "% recorrente projetado")
+                        + am(f"{_inad * 100:.1f}%" if _inad is not None else "—", "inadimplência alvo",
+                             None if _inad is None else ("var(--status-baixo)" if _inad <= 0.04 else
+                                                         "var(--status-medio)" if _inad <= 0.08 else "var(--status-critico)"))
                         + am(f"{_isr:,.0f}".replace(",", ".") if _isr is not None else "—", "ISR B2-B5 (≥100 = crescendo)",
                              None if _isr is None else ("var(--status-baixo)" if _isr >= 100 else "var(--status-critico)"))
-                        + f"</div><div class=ad>ritmo esperado {_frac * 100:.0f}% do mês · metas da planilha de planejamento · "
+                        + f"</div><div class=ad>ritmo esperado {_frac * 100:.0f}% do mês · chip = receita × meta (número no card de Vendas) · "
                           "receita recorrente na aba própria</div></a>")
     except Exception:  # noqa: BLE001 — planilha fora não derruba a central
         pass
@@ -2110,8 +2168,27 @@ def _carga_content(scores: list[dict], mirror: dict | None) -> str:
             continue
         pessoas = len(times.get(k, []))
         cap_rows.append((k, pessoas, d))
+    # tarefas ABERTAS por squad (Otávio 16/07): contas/pessoa sozinho engana —
+    # tarefas recorrentes (semanais+) fazem squads com MENOS contas carregarem
+    # MAIS trabalho; a carga real é o nº de tarefas ativas no ClickUp
+    try:
+        from .sources.clickup_activities import open_tasks_count as _open_fn
+    except Exception:  # noqa: BLE001
+        _open_fn = None
+    tarefas_sq: dict[str, int] = {}
+    if _open_fn is not None:
+        for s in scores:
+            k_sq = _resolve_squad(s["name"], mirror)
+            if k_sq is None:
+                continue
+            try:
+                tarefas_sq[k_sq] = tarefas_sq.get(k_sq, 0) + (_open_fn(s["name"]) or 0)
+            except Exception:  # noqa: BLE001 — conta sem match não derruba a aba
+                pass
     medias = [d["n"] / p for _k, p, d in cap_rows if p]
     med_cp = (sum(medias) / len(medias)) if medias else None
+    _tps = [tarefas_sq.get(k, 0) / p for k, p, _d in cap_rows if p] if tarefas_sq else []
+    med_tp = (sum(_tps) / len(_tps)) if _tps else None
     linhas_cap = ""
     sobre, folga = [], []
     for k, p, d in sorted(cap_rows, key=lambda x: -(x[2]["n"] / x[1] if x[1] else 0)):
@@ -2131,10 +2208,24 @@ def _carga_content(scores: list[dict], mirror: dict | None) -> str:
         cp_txt = f"{cp:.1f}" if cp is not None else "—"
         graves_p = f"{graves / p:.1f}" if p else "—"
         saud_txt = f"{saudaveis / avaliadas * 100:.0f}%" if avaliadas else "—"
+        tar = tarefas_sq.get(k, 0)
+        tp = tar / p if p else None
+        # tarefas/pessoa colorida vs média: é a CARGA REAL — pode divergir de
+        # contas/pessoa quando o mix tem muita tarefa recorrente
+        tp_cor = ""
+        if tp is not None and med_tp:
+            if tp >= med_tp * 1.3:
+                tp_cor = ";color:var(--status-critico);font-weight:700"
+            elif tp <= med_tp * 0.7:
+                tp_cor = ";color:var(--status-baixo)"
+        tar_txt = f"{tar}" if tarefas_sq else "—"
+        tp_txt = f"{tp:.0f}" if tp is not None and tarefas_sq else "—"
         linhas_cap += (f"<tr><td style='{_tdl}'><b>{escape(k)}</b>{chip}</td>"
                        f"<td style='{_td}'>{p or '—'}</td>"
                        f"<td style='{_td}'>{d['n']}</td>"
                        f"<td style='{_td}'><b>{cp_txt}</b></td>"
+                       f"<td style='{_td}'>{tar_txt}</td>"
+                       f"<td style='{_td}{tp_cor}'>{tp_txt}</td>"
                        f"<td style='{_td}'>{mrr_p}</td>"
                        f"<td style='{_td}'>{graves_p}</td>"
                        f"<td style='{_td}'>{saud_txt}</td></tr>")
@@ -2144,8 +2235,16 @@ def _carga_content(scores: list[dict], mirror: dict | None) -> str:
         alvo = f" O squad {folga[0][0]} tem folga ({folga[0][1]:.1f} contas/pessoa) e é o candidato natural a absorver contas do mesmo bundle." if folga else ""
         leitura_cap = (f"{pior[0]} está com {pior[1]:.1f} contas por pessoa (média: {med_cp:.1f}) e {pior[2]} alerta(s) grave(s) — "
                        f"candidato a redistribuição de clientes ou reforço.{alvo}")
+    if tarefas_sq and med_tp:
+        _rank_tp = sorted(((k, tarefas_sq.get(k, 0) / p) for k, p, _d in cap_rows if p), key=lambda x: -x[1])
+        _rank_cp = sorted(((k, d["n"] / p) for k, p, d in cap_rows if p), key=lambda x: -x[1])
+        if _rank_tp and _rank_cp and _rank_tp[0][0] != _rank_cp[0][0]:
+            leitura_cap += (f" Atenção à carga REAL de trabalho: {_rank_tp[0][0]} lidera em tarefas abertas/pessoa "
+                            f"({_rank_tp[0][1]:.0f}) embora {_rank_cp[0][0]} tenha mais contas/pessoa ({_rank_cp[0][1]:.1f}) — "
+                            "tarefas recorrentes fazem a carga diferir do tamanho da carteira; use as duas colunas juntas.")
     ths_cap = "".join(f"<th style='text-align:{al};padding:7px 9px;font-size:var(--fs-2xs)'>{h}</th>" for h, al in
                       (("Squad", "left"), ("Pessoas", "right"), ("Contas", "right"), ("Contas/pessoa", "right"),
+                       ("Tarefas abertas", "right"), ("Tarefas/pessoa", "right"),
                        ("MRR/pessoa", "right"), ("Graves/pessoa", "right"), ("% saudável", "right")))
     # ---- atividades em atraso por squad e por responsável (Otávio 16/07): os
     # atrasos que a aba Contas mostra por conta, agregados aqui por TIME e por
@@ -2172,15 +2271,18 @@ def _carga_content(scores: list[dict], mirror: dict | None) -> str:
             if sq is None:
                 atr_sem_squad += len(tasks)
             else:
-                d = atr_sq.setdefault(sq, {"tarefas": 0, "contas": 0, "pior": 0})
+                d = atr_sq.setdefault(sq, {"tarefas": 0, "contas": 0, "pior": 0, "itens": []})
                 d["tarefas"] += len(tasks)
                 d["contas"] += 1
                 d["pior"] = max(d["pior"], max(t["dias_atraso"] for t in tasks))
+                d["itens"].extend((s["name"], t) for t in tasks)
             for t in tasks:
                 for nome in (t.get("responsavel") or "(sem responsável)").split(", "):
-                    r = atr_resp.setdefault(nome, {"tarefas": 0, "contas": set(), "squads": Counter(), "pior": 0})
+                    r = atr_resp.setdefault(nome, {"tarefas": 0, "contas": set(), "squads": Counter(),
+                                                   "pior": 0, "itens": []})
                     r["tarefas"] += 1
                     r["contas"].add(s["name"])
+                    r["itens"].append((s["name"], t))
                     if sq:
                         r["squads"][sq] += 1
                     r["pior"] = max(r["pior"], t["dias_atraso"])
@@ -2204,8 +2306,31 @@ def _carga_content(scores: list[dict], mirror: dict | None) -> str:
 
     _r_atr = _pearson([(cp_by[k], atr_sq.get(k, {}).get("tarefas", 0) / p)
                        for k, p, _d in cap_rows if p and cp_by.get(k) is not None])
+
+    # drill-down (Otávio 16/07): clicar no squad/responsável abre a lista das
+    # tarefas vencidas, cada uma com link direto p/ a TAREFA no ClickUp
+    def _atr_lista(itens: list[tuple[str, dict]]) -> str:
+        li = ""
+        for conta, t in sorted(itens, key=lambda x: -x[1]["dias_atraso"]):
+            nome_t = escape((t.get("nome") or "?")[:70])
+            if t.get("url"):
+                nome_t = (f"<a href='{t['url']}' target=_blank rel=noopener "
+                          f"style='color:var(--text);text-decoration:underline;text-decoration-style:dotted' "
+                          f"title='abrir a tarefa no ClickUp'>{nome_t}</a>")
+            venceu = f"{t['vence_em'][8:10]}/{t['vence_em'][5:7]}" if t.get("vence_em") else "—"
+            li += (f"<div style='display:flex;gap:10px;align-items:baseline;padding:4px 0;"
+                   f"border-bottom:1px solid var(--border);font-size:var(--fs-xs)'>"
+                   f"<span style='color:var(--status-critico);font-variant-numeric:tabular-nums;"
+                   f"min-width:44px;text-align:right'>{t['dias_atraso']} d</span>"
+                   f"<span style='flex:1;min-width:220px'>{nome_t}"
+                   f"<span style='color:var(--text-muted)'> — {escape(conta[:42])}</span></span>"
+                   f"<span style='color:var(--text-muted)'>{escape(t.get('responsavel') or 'sem responsável')}</span>"
+                   f"<span style='color:var(--text-faint);white-space:nowrap'>venceu {venceu}</span></div>")
+        return (f"<div style='padding:6px 10px 10px;background:var(--bg-panel);"
+                f"border-radius:var(--radius-sm)'>{li}</div>")
+
     linhas_atr, top_atr = "", None
-    for k, _p, d in sorted(cap_rows, key=lambda x: -atr_sq.get(x[0], {}).get("tarefas", 0)):
+    for _i_sq, (k, _p, d) in enumerate(sorted(cap_rows, key=lambda x: -atr_sq.get(x[0], {}).get("tarefas", 0))):
         a = atr_sq.get(k, {"tarefas": 0, "contas": 0, "pior": 0})
         p = pess_by.get(k) or 0
         app = a["tarefas"] / p if p else None
@@ -2223,26 +2348,42 @@ def _carga_content(scores: list[dict], mirror: dict | None) -> str:
         if top_atr is None and a["tarefas"]:
             top_atr = (k, a, chip)
         pct = f"{a['contas'] / d['n'] * 100:.0f}%" if d["n"] else "—"
-        linhas_atr += (f"<tr><td style='{_tdl}'><b>{escape(k)}</b>{chip}</td>"
+        if a["tarefas"]:
+            seta = ("<span style='color:var(--brand);font-size:var(--fs-2xs)' "
+                    "title='clique para ver as tarefas'>▸</span> ")
+            nome_sq = (f"<span style='cursor:pointer' onclick=\"atrTgl('atr-sq-{_i_sq}')\">"
+                       f"{seta}<b style='text-decoration:underline;text-decoration-style:dotted'>{escape(k)}</b></span>")
+        else:
+            nome_sq = f"<b>{escape(k)}</b>"
+        linhas_atr += (f"<tr><td style='{_tdl}'>{nome_sq}{chip}</td>"
                        f"<td style='{_td};color:var(--status-critico)'><b>{a['tarefas'] or ''}</b></td>"
                        f"<td style='{_td}'>{a['contas'] or ''}</td>"
                        f"<td style='{_td}'>{pct}</td>"
                        f"<td style='{_td}'>{f'{app:.1f}' if app is not None else '—'}</td>"
                        f"<td style='{_td}'>{f'{cp:.1f}' if cp is not None else '—'}</td>"
                        f"<td style='{_td}'>{a['pior'] or ''}</td></tr>")
+        if a["tarefas"]:
+            linhas_atr += (f"<tr id='atr-sq-{_i_sq}' style='display:none'>"
+                           f"<td colspan=7 style='padding:2px 9px 10px'>{_atr_lista(a['itens'])}</td></tr>")
     ths_atr = "".join(f"<th style='text-align:{al};padding:7px 9px;font-size:var(--fs-2xs)'>{h}</th>" for h, al in
                       (("Squad", "left"), ("Tarefas atrasadas", "right"), ("Contas com atraso", "right"),
                        ("% da carteira", "right"), ("Atrasos/pessoa", "right"), ("Contas/pessoa", "right"),
                        ("Maior atraso (dias)", "right")))
     linhas_resp = ""
     resp_ord = sorted(atr_resp.items(), key=lambda x: -x[1]["tarefas"])
-    for nome, r in resp_ord[:15]:
+    for _i_r, (nome, r) in enumerate(resp_ord[:15]):
         sq_txt = ", ".join(f"{s} ({n})" for s, n in r["squads"].most_common(3)) or "—"
-        linhas_resp += (f"<tr><td style='{_tdl}'><b>{escape(nome)}</b></td>"
+        seta = ("<span style='color:var(--brand);font-size:var(--fs-2xs)' "
+                "title='clique para ver as tarefas'>▸</span> ")
+        nome_r = (f"<span style='cursor:pointer' onclick=\"atrTgl('atr-rp-{_i_r}')\">"
+                  f"{seta}<b style='text-decoration:underline;text-decoration-style:dotted'>{escape(nome)}</b></span>")
+        linhas_resp += (f"<tr><td style='{_tdl}'>{nome_r}</td>"
                         f"<td style='{_td};color:var(--status-critico)'><b>{r['tarefas']}</b></td>"
                         f"<td style='{_td}'>{len(r['contas'])}</td>"
                         f"<td style='{_tdl}'>{escape(sq_txt)}</td>"
-                        f"<td style='{_td}'>{r['pior']}</td></tr>")
+                        f"<td style='{_td}'>{r['pior']}</td></tr>"
+                        f"<tr id='atr-rp-{_i_r}' style='display:none'>"
+                        f"<td colspan=5 style='padding:2px 9px 10px'>{_atr_lista(r['itens'])}</td></tr>")
     ths_resp = "".join(f"<th style='text-align:{al};padding:7px 9px;font-size:var(--fs-2xs)'>{h}</th>" for h, al in
                        (("Responsável", "left"), ("Tarefas atrasadas", "right"), ("Contas", "right"),
                         ("Squad(s)", "left"), ("Maior atraso (dias)", "right")))
@@ -2286,7 +2427,10 @@ def _carga_content(scores: list[dict], mirror: dict | None) -> str:
         "<section><h2>Atividades em atraso</h2>"
         "<p class=secsub>tarefas ABERTAS com vencimento estourado no ClickUp (as mesmas da coluna 'Atrasos' da aba Contas), "
         "agregadas por squad e por responsável — 'atrasos/pessoa' ao lado de 'contas/pessoa' responde se o atraso vem de "
-        "sobrecarga (capacidade) ou de ritmo/processo</p>"
+        "sobrecarga (capacidade) ou de ritmo/processo · <b>clique num squad ou responsável</b> para abrir a lista das "
+        "tarefas, cada uma com link direto no ClickUp</p>"
+        "<script>function atrTgl(id){var e=document.getElementById(id);"
+        "e.style.display=(e.style.display==='none')?'':'none';}</script>"
         f"<div class=card><div class=sug-item>→ {escape(leitura_atr)}</div></div>"
         f"<div class=central style='padding:6px 14px 12px;overflow-x:auto'><table style='width:100%;border-collapse:collapse'>"
         f"<tr>{ths_atr}</tr>{linhas_atr}</table></div>{nota_atr}"
@@ -2311,8 +2455,9 @@ def _carga_content(scores: list[dict], mirror: dict | None) -> str:
         "ANTES de a sobrecarga virar churn · chip = concentração (≥3 críticos ou ≥30% do MRR em risco)</p>"
         + tabela(por_squad, "Squad") + "</section>"
         "<section><h2>Capacidade de atendimento</h2>"
-        "<p class=secsub>carteira ÷ tamanho do time (pessoas da planilha de composição) — o squad dá conta das contas que atende? "
-        "sobrecarga = contas/pessoa ≥1,3× a média dos squads · folga = ≤0,7×</p>"
+        "<p class=secsub>carteira E carga de trabalho ÷ tamanho do time — contas/pessoa mede a carteira; "
+        "<b>tarefas abertas/pessoa</b> mede o trabalho REAL no ClickUp (tarefas recorrentes fazem os dois divergirem) · "
+        "chip sobrecarga/folga = contas/pessoa vs média · tarefas/pessoa em vermelho/verde = bem acima/abaixo da média</p>"
         f"<div class=card><div class=sug-item>→ {escape(leitura_cap)}</div>"
         "<style>.sug-item{padding:7px 0 12px;font-size:var(--fs-sm);line-height:1.6;color:var(--text-2)}</style></div>"
         f"<div class=central style='padding:6px 14px 12px;overflow-x:auto'><table style='width:100%;border-collapse:collapse'>"
@@ -2403,7 +2548,7 @@ def _render(role: str, scores: list[dict], alerts: list[dict],
         return (
             f"<div class='row acct' data-name=\"{escape(s['name'].lower())}\" data-band=\"{band}\" "
             f"data-alert=\"{sev}\" data-stage=\"{stage_key}\" data-squad=\"{sq}\" data-mrr=\"{mrr:.0f}\" "
-            f"data-exec=\"{exec_key}\" data-atr=\"{atr}\">"
+            f"data-exec=\"{exec_key}\" data-atr=\"{atr}\" data-aid=\"{s['account_id']}\">"
             f"<div class='c-name'><div class='nm'>{escape(s['name'][:60])}</div>{mot_line}"
             f"<div class='acts'>"
             f"<a class='repbtn' href='/growth/report?account_id={s['account_id']}' "
@@ -2610,7 +2755,17 @@ __SCRIPT__
     elif view == "playbooks":
         content = _playbooks_content(practices or {}, interventions or []) + foot
     elif view == "cancelamentos":
-        content = _cancel_content(cancel or [], request, base_bundle or {}) + foot
+        # MRR da base atual por bundle (p/ a taxa por FATURAMENTO — Otávio 16/07):
+        # (soma, nº de contas COM valor) — cobertura baixa suprime a taxa (antigos
+        # quase não têm MRR lançado e a taxa sairia absurda, ex.: 307%/mês)
+        mrr_bundle: dict[str, tuple[float, int]] = {}
+        for s in scores:
+            m_b = re.search(r"B[1-5]", s["name"])
+            k_b = m_b.group(0) if m_b else "outros"
+            v_b = max(0.0, _mrr_val(s))
+            soma, cnt = mrr_bundle.get(k_b, (0.0, 0))
+            mrr_bundle[k_b] = (soma + v_b, cnt + (1 if v_b > 0 else 0))
+        content = _cancel_content(cancel or [], request, base_bundle or {}, mrr_bundle) + foot
     elif view == "relatorios":
         rep = _report_from(scores, alerts)
         content = _relatorios_content(rep, scores) + foot
@@ -2668,9 +2823,9 @@ function outc(id, sel){
   .then(function(j){if(j.error){alert(j.error);sel.value='';}else{sel.style.borderColor='var(--status-baixo)';}})
   .catch(function(){alert('falha de rede');sel.value='';});
 }
-var PAGE=10, page=1;
+var PAGE=10, page=1, IDS=null; /* ?ids= = conjunto exato de contas (links do hub) */
 function _match(d,f){
-  return (!f.n||d.name.indexOf(f.n)>=0)&&(!f.b||d.band===f.b)&&(!f.a||d.alert===f.a)
+  return (!IDS||IDS.has(d.aid))&&(!f.n||d.name.indexOf(f.n)>=0)&&(!f.b||d.band===f.b)&&(!f.a||d.alert===f.a)
     &&(!f.st||d.stage===f.st)&&(!f.sq||d.squad===f.sq)&&(!f.x||d.exec===f.x)
     &&(!f.at||d.atr===f.at)&&(parseFloat(d.mrr)>=f.mrr);
 }
@@ -2694,10 +2849,12 @@ function renderRows(){
 }
 function applyF(){page=1;renderRows();}
 function pgGo(d){page+=d;renderRows();window.scrollTo({top:document.querySelector('.tbl-acct').offsetTop-80,behavior:'smooth'});}
-function clearF(){['f-name','f-band','f-alert','f-stage','f-squad','f-exec','f-atr','f-mrr'].forEach(function(i){document.getElementById(i).value='';});applyF();}
+function clearF(){IDS=null;['f-name','f-band','f-alert','f-stage','f-squad','f-exec','f-atr','f-mrr'].forEach(function(i){document.getElementById(i).value='';});applyF();}
 if(document.getElementById('f-name')){
   // pré-filtros via URL: ?conta= (aba Alertas) · ?exec= / ?faixa= (iniciativas da central)
+  // · ?ids= (itens de 'O que mudou desde ontem' — conjunto exato de contas)
   var _p=new URLSearchParams(location.search);
+  if(_p.get('ids'))IDS=new Set(_p.get('ids').split(','));
   if(_p.get('conta'))document.getElementById('f-name').value=_p.get('conta');
   if(_p.get('exec')==='atrasadas'){document.getElementById('f-atr').value='1';}
   else if(_p.get('exec'))document.getElementById('f-exec').value=_p.get('exec');
@@ -3207,7 +3364,8 @@ def _canc_legado(r: dict) -> bool:
     return any(x in pl for x in _PLANOS_LEGADO) and "TRACTION" not in pl
 
 
-def _cancel_content(rows: list[dict], request: Request, base_bundle: dict | None = None) -> str:
+def _cancel_content(rows: list[dict], request: Request, base_bundle: dict | None = None,
+                    mrr_bundle: dict | None = None) -> str:
     """Aba Cancelamentos — análises sobre as planilhas do time (fonte oficial
     de churn realizado; ClickUp de cancelados é mal preenchido)."""
     if not rows:
@@ -3336,29 +3494,68 @@ def _cancel_content(rows: list[dict], request: Request, base_bundle: dict | None
                       f"<td style='{td};color:var(--text-2)'>{escape((r['motivo'] or '')[:160])}</td></tr>")
 
     # ---- taxa de cancelamento por bundle (base = contas monitoradas HOJE)
+    # Régua GERAL (Otávio 16/07): só planos RECORRENTES — o B1 é semestral pago
+    # à vista (não recorrente) e distorcia a taxa geral (explica a diferença p/
+    # os decks antigos do All Hands). B1 segue exibido, mas FORA do total.
+    # Duas visões lado a lado: por Nº DE CLIENTES e por FATURAMENTO (MRR).
     base_bundle = base_bundle or {}
+    mrr_bundle = mrr_bundle or {}
     canc_bund: dict = {}
     for r in canc:
         canc_bund.setdefault(_canc_bundle(r) or "outros", []).append(r)
     n_meses = max(1, len({r["mes"] for r in canc}) or 1)
-    tx_rows = ""
-    tot_base = sum(v for k, v in base_bundle.items() if k != "outros")
-    tot_canc_b = sum(len(v) for k, v in canc_bund.items() if k != "outros")
-    for b in ("B1", "B2", "B3", "B4", "B5"):
-        cb, bb = len(canc_bund.get(b, [])), base_bundle.get(b, 0)
-        tx = (cb / n_meses) / bb if bb else None
+
+    def _linha_tx(rotulo, bb, mrr_par, rs, chip="", negrito=False):
+        mrr_b, mrr_cnt = mrr_par
+        cb = len(rs)
+        mrr_p = sum(_f(r["valor"]) or 0 for r in rs)
+        tx_c = (cb / n_meses) / bb if bb else None
+        # nem toda conta tem MRR lançado (cobertura 20-56% por bundle) — usar a
+        # soma crua distorcia a taxa (antigos davam 307%/mês). Base ESTIMADA =
+        # média das contas COM valor × total de contas, marcada com ≈.
+        est = bool(bb and mrr_cnt and mrr_cnt < bb)
+        if est:
+            mrr_b = mrr_b / mrr_cnt * bb
+        tx_f = (mrr_p / n_meses) / mrr_b if mrr_b else None
+        pre = "≈ " if est else ""
+        if mrr_b:
+            mrr_b_txt = f"{pre}{_fmt_brl(mrr_b)}"
+            if est:
+                mrr_b_txt = (f"<span title='estimado: média das contas com MRR lançado × total "
+                             f"({mrr_cnt} de {bb} têm valor)'>{mrr_b_txt}</span>")
+        else:
+            mrr_b_txt = "—"
         td = "text-align:right;padding:7px;border-bottom:1px solid var(--border);font-variant-numeric:tabular-nums"
-        tx_rows += (f"<tr><td style='padding:7px;border-bottom:1px solid var(--border)'><b>{b}</b></td>"
-                    f"<td style='{td}'>{bb or '—'}</td><td style='{td}'>{cb}</td>"
-                    f"<td style='{td}'>{(f'{tx*100:.1f}%/mês' if tx is not None else '—')}</td></tr>")
-    tx_tot = (tot_canc_b / n_meses) / tot_base if tot_base else None
-    tx_rows += (f"<tr style='border-top:2px solid var(--border-strong)'><td style='padding:7px'><b>Total bundles</b></td>"
-                f"<td style='text-align:right;padding:7px'><b>{tot_base}</b></td>"
-                f"<td style='text-align:right;padding:7px'><b>{tot_canc_b}</b></td>"
-                f"<td style='text-align:right;padding:7px'><b>{(f'{tx_tot*100:.1f}%/mês' if tx_tot is not None else '—')}</b></td></tr>")
+        b = "font-weight:700" if negrito else ""
+        borda = "border-top:2px solid var(--border-strong)" if negrito else ""
+        return (f"<tr style='{borda}'><td style='padding:7px;border-bottom:1px solid var(--border);{b}'>{rotulo}{chip}</td>"
+                f"<td style='{td};{b}'>{bb or '—'}</td>"
+                f"<td style='{td};{b}'>{mrr_b_txt}</td>"
+                f"<td style='{td};{b}'>{cb}</td>"
+                f"<td style='{td};{b}'>{_fmt_brl(mrr_p)}</td>"
+                f"<td style='{td};{b}'>{(f'{tx_c * 100:.1f}%/mês' if tx_c is not None else '—')}</td>"
+                f"<td style='{td};{b}'>{(f'{pre}{tx_f * 100:.1f}%/mês' if tx_f is not None else '—')}</td></tr>")
+
+    chip_b1 = (" <span class=chip style='--c:var(--status-semdados)' title='B1/Start é plano semestral pago à vista "
+               "— não recorrente; entra na visão por plano mas fica FORA da taxa geral'>não recorrente</span>")
+    _sem_mrr = (0.0, 0)
+    tx_rows = _linha_tx("<b>B1</b>", base_bundle.get("B1", 0), mrr_bundle.get("B1", _sem_mrr),
+                        canc_bund.get("B1", []), chip=chip_b1)
+    for b in ("B2", "B3", "B4", "B5"):
+        tx_rows += _linha_tx(f"<b>{b}</b>", base_bundle.get(b, 0), mrr_bundle.get(b, _sem_mrr), canc_bund.get(b, []))
+    tx_rows += _linha_tx("antigos/ADS (sem Bx no nome)", base_bundle.get("outros", 0),
+                         mrr_bundle.get("outros", _sem_mrr), canc_bund.get("outros", []))
+    rec_base = sum(v for k, v in base_bundle.items() if k != "B1")
+    rec_mrr = (sum(v[0] for k, v in mrr_bundle.items() if k != "B1"),
+               sum(v[1] for k, v in mrr_bundle.items() if k != "B1"))
+    rec_canc = [r for k, rs in canc_bund.items() if k != "B1" for r in rs]
+    tx_rows += _linha_tx("Taxa GERAL — recorrentes (sem B1)", rec_base, rec_mrr, rec_canc, negrito=True)
     taxa_html = ("<section><div class=sec-head><h2>Taxa de cancelamento por bundle</h2>"
-                 f"<span class=sub>média mensal do período filtrado ({n_meses} m) ÷ base monitorada ATUAL — aproximação: não temos a base histórica mês a mês</span></div>"
-                 + card(tbl("<tr>" + "".join(f"<th style='text-align:{al};padding:7px;border-bottom:1px solid var(--border-strong);color:var(--text-muted);font-size:var(--fs-2xs);text-transform:uppercase'>{h}</th>" for h, al in (("Bundle", "left"), ("Base ativa", "right"), ("Saídas no período", "right"), ("Taxa média", "right"))) + "</tr>", tx_rows))
+                 f"<span class=sub>média mensal do período filtrado ({n_meses} m) ÷ base monitorada ATUAL (aproximação: sem base histórica mês a mês) · "
+                 "taxa GERAL = só planos recorrentes — B1 fora (semestral, não recorrente) · "
+                 "duas visões: por clientes e por faturamento (MRR) · ≈ = base de MRR estimada "
+                 "(nem toda conta tem valor lançado; média das preenchidas × total)</span></div>"
+                 + card(tbl("<tr>" + "".join(f"<th style='text-align:{al};padding:7px;border-bottom:1px solid var(--border-strong);color:var(--text-muted);font-size:var(--fs-2xs);text-transform:uppercase'>{h}</th>" for h, al in (("Bundle", "left"), ("Base ativa", "right"), ("MRR da base", "right"), ("Saídas no período", "right"), ("MRR perdido", "right"), ("Taxa clientes", "right"), ("Taxa faturamento", "right"))) + "</tr>", tx_rows))
                  + "</section>")
 
     # ---- gráfico de evolução mensal (total × novos × antigos) + MRR

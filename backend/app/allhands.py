@@ -15,6 +15,8 @@ com as mesmas réguas oficiais do app:
   7-8. Promovidos & Destaques (MANUAL: nome/cargo/tipo/nível/foto — slide sai se vazio)
   9. Novos colaboradores (MANUAL: liga/desliga + nomes — roteiro fixo do deck)
  10. Orientações & Novidades (MANUAL: cards título/subtítulo/texto — sai se vazio)
+ 10b. Slides EXTRAS (MANUAL, 16/07: quantos quiser — categoria/título; cada linha
+      do texto vira um marcador; imagem opcional à direita. Ex.: evento do mês)
  11. Fechamento ("ótimo mês para todos nós")
 
 Fotos enviadas no formulário são EMBUTIDAS em base64 no HTML gerado (nada é
@@ -81,14 +83,18 @@ _PLANO_DECK = [
 ]
 
 
-def _clientes_ativos_por_plano(fim_mes: dt.date) -> list[tuple[str, int]]:
-    """Contagem por plano na lista Clientes Ativos, AS-OF o fim do mês de
+def _clientes_ativos_por_plano(fim_mes: dt.date) -> tuple[list[tuple[str, int]], dict[str, int]]:
+    """Contagens por plano na lista Clientes Ativos, AS-OF o fim do mês de
     referência (criado até lá e não fechado até lá — gerar em julho o deck de
-    junho não pode contar o estado de hoje; validação Otávio 15/07). Régua do
-    deck: conta por SERVIÇO (cliente com plano + ADS aparece nas duas linhas;
-    o 'total geral' do deck é a SOMA das linhas: jun = 245); 'pausada por
-    inatividade' fica fora (inadimplente); serviços acessórios (Implantação,
-    Consultoria, CNPJ Adicional...) não são linhas do deck."""
+    junho não pode contar o estado de hoje; validação Otávio 15/07).
+    Retorna DUAS réguas: (por SERVIÇO, por CLIENTE).
+    - por SERVIÇO = régua do slide 'Clientes por plano' (cliente com plano +
+      ADS aparece nas duas linhas; o 'total geral' do deck é a SOMA: jun=245);
+    - por CLIENTE = cada card conta 1× no plano de maior prioridade — régua da
+      TAXA de cancelamento (16/07: a base implícita do deck antigo é por
+      cliente, não por serviço).
+    'pausada por inatividade' fica fora (inadimplente); serviços acessórios
+    (Implantação, Consultoria, CNPJ Adicional...) não são linhas do deck."""
     from .config import get_settings
     from .sources.clickup_activities import _download_list
     s = get_settings()
@@ -104,6 +110,7 @@ def _clientes_ativos_por_plano(fim_mes: dt.date) -> list[tuple[str, int]]:
         return dt.datetime.fromtimestamp(int(ms) / 1000, tz=dt.timezone.utc) if ms else None
 
     contagem: dict[str, int] = {}
+    por_cliente: dict[str, int] = {}
     for t in tasks:
         if t.get("parent"):
             continue
@@ -119,11 +126,15 @@ def _clientes_ativos_por_plano(fim_mes: dt.date) -> list[tuple[str, int]]:
                         for o in (c.get("type_config", {}).get("options") or [])}
                 rotulos = {opts.get(v, "") for v in (c.get("value") or [])}
                 break
+        primeiro = True
         for nome, labels in _PLANO_DECK:  # multi-serviço: uma linha por serviço
             if any(lb in rotulos for lb in labels):
                 contagem[nome] = contagem.get(nome, 0) + 1
+                if primeiro:  # por CLIENTE: só o plano de maior prioridade
+                    por_cliente[nome] = por_cliente.get(nome, 0) + 1
+                    primeiro = False
     ordem = [nome for nome, _ in _PLANO_DECK]
-    return sorted(contagem.items(), key=lambda x: ordem.index(x[0]))
+    return sorted(contagem.items(), key=lambda x: ordem.index(x[0])), por_cliente
 
 
 def _dados_mes(conn, mes: dt.date) -> dict:
@@ -148,19 +159,22 @@ def _dados_mes(conn, mes: dt.date) -> dict:
         # saídas do mês por plano (régua oficial de cancelamentos). Normaliza:
         # rótulo composto 'Master + ADS' conta no plano principal; plano VAZIO
         # na planilha fica fora das colunas (como no deck) e vira nota de rodapé
-        cur.execute("""SELECT COALESCE(NULLIF(plano, ''), ''), count(*)
+        cur.execute("""SELECT COALESCE(NULLIF(plano, ''), ''), count(*),
+                              COALESCE(sum(valor), 0)
                          FROM grw_cancelamentos
                         WHERE tipo='cancelamento' AND mes = %s
                         GROUP BY 1 ORDER BY 2 DESC""", (mes,))
-        brutos = [(p.strip(), int(n)) for p, n in cur.fetchall()]
+        brutos = [(p.strip(), int(n), float(v or 0)) for p, n, v in cur.fetchall()]
         agr: dict[str, int] = {}
+        agr_mrr: dict[str, float] = {}
         saidas_sem_plano = 0
-        for p, n in brutos:
+        for p, n, v in brutos:
             principal = p.split("+")[0].strip()
             if not principal:
                 saidas_sem_plano += n
                 continue
             agr[principal] = agr.get(principal, 0) + n
+            agr_mrr[principal] = agr_mrr.get(principal, 0.0) + v
         saidas_plano = sorted(agr.items(), key=lambda x: -x[1])
         saidas_total = sum(n for _, n in saidas_plano)
 
@@ -169,7 +183,7 @@ def _dados_mes(conn, mes: dt.date) -> dict:
     # deck de junho; Antigo/Basic 9 e Estratégia 2 exatos). Régua: card-raiz com
     # status 'ativo' (pausada por inatividade = inadimplente, fora — regra do
     # Otávio), 1 plano por cliente pela prioridade de Serviço.
-    clientes_plano = _clientes_ativos_por_plano(fim)
+    clientes_plano, cli_por_plano = _clientes_ativos_por_plano(fim)
     base_ativa = sum(n for _, n in clientes_plano)
 
     pf = PF.carrega()
@@ -191,17 +205,29 @@ def _dados_mes(conn, mes: dt.date) -> dict:
             # (Otávio 15/07: jan 0,0%% saía no gráfico como se fosse real)
             while churn_serie and not churn_serie[0][1]:
                 churn_serie.pop(0)
-    # taxa do mês: a MESMA régua do slide de evolução (planilha, realizado) —
-    # o deck de junho trazia 9,5% num slide e 7,0% no gráfico; aqui os dois
-    # slides saem da mesma fonte. Fallback: saídas ÷ base ativa.
-    taxa_mes = (saidas_total / base_ativa) if base_ativa else None
-    if churn_serie:
-        taxa_mes = churn_serie[-1][1]
+    # taxa GERAL do mês (régua Otávio 16/07): só planos RECORRENTES — o B1/Start
+    # é semestral pago à vista (não recorrente) e distorcia a taxa geral; era
+    # essa a diferença p/ os números dos decks antigos. Régua: cancelados
+    # recorrentes ÷ base ativa recorrente. Junto vai a visão por FATURAMENTO
+    # (MRR perdido dos recorrentes no mês).
+    def _recorrente(plano: str) -> bool:
+        p = (plano or "").upper()
+        return "START" not in p and not p.startswith("B1")
+
+    # base da TAXA = por CLIENTE (cada cliente 1×), não por serviço — a base
+    # implícita nos decks antigos (saídas ÷ taxa) é menor que a soma das linhas
+    # e compatível com contagem por cliente sem B1 (análise 16/07)
+    base_rec = sum(n for p, n in cli_por_plano.items() if _recorrente(p))
+    saidas_rec = sum(n for p, n in saidas_plano if _recorrente(p))
+    mrr_rec_perdido = sum(v for p, v in agr_mrr.items() if _recorrente(p))
+    taxa_mes = (saidas_rec / base_rec) if base_rec else None
 
     return {"funil": passou, "bookings": booked, "receita": receita,
             "vendas_plano": vendas_plano, "clientes_plano": clientes_plano,
             "base_ativa": base_ativa, "saidas_plano": saidas_plano,
             "saidas_total": saidas_total, "saidas_sem_plano": saidas_sem_plano,
+            "base_rec": base_rec, "saidas_rec": saidas_rec,
+            "mrr_rec_perdido": mrr_rec_perdido,
             "taxa_mes": taxa_mes, "meta_mes": meta_mes, "meta_prox": meta_prox,
             "churn_meta": churn_meta, "churn_serie": churn_serie}
 
@@ -223,6 +249,15 @@ button{cursor:pointer;font-family:inherit} .add{background:none;border:1px dashe
 a{color:#ffc107}
 """
 
+_EMOJIS = [("📌", "aviso geral"), ("📢", "comunicado"), ("☕", "café / copa"), ("🍽️", "cozinha / almoço"),
+           ("🚪", "porta / acesso"), ("🔑", "chaves / crachá"), ("🧹", "limpeza / organização"), ("🚻", "banheiros"),
+           ("❄️", "ar-condicionado"), ("🖥️", "equipamentos / TI"), ("📶", "internet / wi-fi"), ("🅿️", "estacionamento"),
+           ("📦", "encomendas"), ("🕐", "horários"), ("🔇", "silêncio / foco"), ("🎉", "eventos / festas"),
+           ("🎂", "aniversários"), ("🏢", "espaço / obras"), ("🧯", "segurança"), ("🎮", "área de descanso"),
+           ("💡", "dica"), ("⚠️", "atenção"), ("✅", "novo processo"), ("🚀", "novidade")]
+
+_TIPOS_DQ = ("DESTAQUE", "PROMOÇÃO", "MÉRITO")
+
 _FORM_JS = """
 function addDestaque(){
   var d=document.createElement('div'); d.className='row';
@@ -230,16 +265,12 @@ function addDestaque(){
     +"<div><label>nome</label><input name=dq_nome placeholder='ex.: Valéria Gatti'></div>"
     +"<div><label>cargo</label><input name=dq_cargo placeholder='ex.: Coordenadora de Vendas'></div>"
     +"<div><label>nível (opc.)</label><input name=dq_nivel placeholder='ex.: Nível 2'></div>"
-    +"<div><label>foto (opc.)</label><input type=file name=dq_foto accept='image/*'></div>"
+    +"<div><label>foto (opc.)</label><input type=file name=dq_foto accept='image/*'>"
+    +"<input type=hidden name=dq_foto_b64 value=''></div>"
     +"<button type=button class=del onclick='this.parentNode.remove()'>✕</button>";
   document.getElementById('destaques').appendChild(d);
 }
-var EMOJIS=[["📌","aviso geral"],["📢","comunicado"],["☕","café / copa"],["🍽️","cozinha / almoço"],
-  ["🚪","porta / acesso"],["🔑","chaves / crachá"],["🧹","limpeza / organização"],["🚻","banheiros"],
-  ["❄️","ar-condicionado"],["🖥️","equipamentos / TI"],["📶","internet / wi-fi"],["🅿️","estacionamento"],
-  ["📦","encomendas"],["🕐","horários"],["🔇","silêncio / foco"],["🎉","eventos / festas"],
-  ["🎂","aniversários"],["🏢","espaço / obras"],["🧯","segurança"],["🎮","área de descanso"],
-  ["💡","dica"],["⚠️","atenção"],["✅","novo processo"],["🚀","novidade"]];
+var EMOJIS=__EMOJIS__;
 function addOrientacao(){
   var d=document.createElement('div'); d.className='row3';
   var opts=EMOJIS.map(function(e){return "<option value='"+e[0]+"'>"+e[0]+"  "+e[1]+"</option>";}).join("");
@@ -249,23 +280,85 @@ function addOrientacao(){
     +"<button type=button class=del onclick='this.parentNode.remove()'>✕</button>";
   document.getElementById('orientacoes').appendChild(d);
 }
+function addExtra(){
+  var d=document.createElement('div');
+  d.style.cssText='border:1px dashed #3a3a3a;border-radius:10px;padding:12px 14px;margin-bottom:12px';
+  d.innerHTML="<div style='display:grid;grid-template-columns:220px 1fr auto;gap:10px;align-items:end'>"
+    +"<div><label>categoria (canto do slide)</label><input name=sx_kicker placeholder='ex.: Eventos'></div>"
+    +"<div><label>título do slide</label><input name=sx_titulo placeholder='ex.: Feira do Empreendedor — próximo mês'></div>"
+    +"<button type=button class=del onclick='this.parentNode.parentNode.remove()'>✕</button></div>"
+    +"<label>conteúdo — cada linha vira um marcador no slide</label>"
+    +"<textarea name=sx_texto rows=3 placeholder='ex.:\\nData: 12/08, das 9h às 18h\\nLocal: Expo Center Norte\\nQuem vai: time de Vendas + Growth'></textarea>"
+    +"<label>imagem (opcional — aparece à direita do texto)</label><input type=file name=sx_foto accept='image/*'>"
+    +"<input type=hidden name=sx_foto_b64 value=''>";
+  document.getElementById('extras').appendChild(d);
+}
 """
 
 
-@router.get("/allhands", response_class=HTMLResponse)
-def allhands_form(request: Request):
-    s, redir = _require_admin(request)
-    if redir:
-        return redir
+def _form_page(mes_sel: dt.date | None = None, destaques: list | None = None,
+               novos: dict | None = None, orientacoes: list | None = None,
+               extras: list | None = None) -> str:
+    """Formulário do All Hands — vazio (1ª visita) ou PRÉ-PREENCHIDO (16/07:
+    '← ajustar conteúdo' não pode perder o que já foi digitado; fotos voltam
+    como campo oculto base64 e são mantidas a menos que se envie outra)."""
+    import json as _json
     hoje = dt.date.today()
-    opcoes = ""
+    meses_opts = []
     for k in range(0, 4):
         m = hoje.replace(day=1)
         for _ in range(k + 1):
             m = (m - dt.timedelta(days=1)).replace(day=1)
-        sel = " selected" if k == 0 else ""
-        opcoes += f"<option value='{m.isoformat()}'{sel}>{_MESES[m.month - 1].title()} / {m.year}</option>"
-    return HTMLResponse(f"""<!doctype html><html lang=pt-br><head><meta charset=utf-8>
+        meses_opts.append(m)
+    if mes_sel and mes_sel not in meses_opts:
+        meses_opts.append(mes_sel)
+    alvo = mes_sel or meses_opts[0]
+    opcoes = "".join(f"<option value='{m.isoformat()}'{' selected' if m == alvo else ''}>"
+                     f"{_MESES[m.month - 1].title()} / {m.year}</option>" for m in meses_opts)
+
+    def _e(v):
+        return escape(str(v or ""), quote=True)
+
+    _NOTA_FOTO = "<div style='font-size:10.5px;color:#7fae7f;margin-top:3px'>✓ mantida da edição anterior — envie outra para trocar</div>"
+    dq_rows = ""
+    for dq in (destaques or []):
+        tipos = "".join(f"<option{' selected' if t == dq.get('tipo') else ''}>{t}</option>" for t in _TIPOS_DQ)
+        dq_rows += (
+            "<div class=row>"
+            f"<div><label>tipo</label><select name=dq_tipo>{tipos}</select></div>"
+            f"<div><label>nome</label><input name=dq_nome value=\"{_e(dq.get('nome'))}\"></div>"
+            f"<div><label>cargo</label><input name=dq_cargo value=\"{_e(dq.get('cargo'))}\"></div>"
+            f"<div><label>nível (opc.)</label><input name=dq_nivel value=\"{_e(dq.get('nivel'))}\"></div>"
+            f"<div><label>foto (opc.)</label><input type=file name=dq_foto accept='image/*'>"
+            f"{_NOTA_FOTO if dq.get('foto') else ''}"
+            f"<input type=hidden name=dq_foto_b64 value=\"{_e(dq.get('foto'))}\"></div>"
+            "<button type=button class=del onclick='this.parentNode.remove()'>✕</button></div>")
+    or_rows = ""
+    for o in (orientacoes or []):
+        opts = "".join(f"<option value='{ic}'{' selected' if ic == o.get('icone') else ''}>{ic}  {lb}</option>"
+                       for ic, lb in _EMOJIS)
+        or_rows += (
+            "<div class=row3>"
+            f"<div style='max-width:190px'><label>ícone</label><select name=or_icone>{opts}</select></div>"
+            f"<div><label>título</label><input name=or_titulo value=\"{_e(o.get('titulo'))}\"></div>"
+            f"<div><label>texto</label><input name=or_texto value=\"{_e(o.get('texto'))}\"></div>"
+            "<button type=button class=del onclick='this.parentNode.remove()'>✕</button></div>")
+    sx_blocks = ""
+    for ex in (extras or []):
+        sx_blocks += (
+            "<div style='border:1px dashed #3a3a3a;border-radius:10px;padding:12px 14px;margin-bottom:12px'>"
+            "<div style='display:grid;grid-template-columns:220px 1fr auto;gap:10px;align-items:end'>"
+            f"<div><label>categoria (canto do slide)</label><input name=sx_kicker value=\"{_e(ex.get('kicker'))}\"></div>"
+            f"<div><label>título do slide</label><input name=sx_titulo value=\"{_e(ex.get('titulo'))}\"></div>"
+            "<button type=button class=del onclick='this.parentNode.parentNode.remove()'>✕</button></div>"
+            "<label>conteúdo — cada linha vira um marcador no slide</label>"
+            f"<textarea name=sx_texto rows=3>{escape(ex.get('texto') or '')}</textarea>"
+            "<label>imagem (opcional — aparece à direita do texto)</label><input type=file name=sx_foto accept='image/*'>"
+            f"{_NOTA_FOTO if ex.get('foto') else ''}"
+            f"<input type=hidden name=sx_foto_b64 value=\"{_e(ex.get('foto'))}\"></div>")
+    novos_chk = " checked" if novos else ""
+    js = _FORM_JS.replace("__EMOJIS__", _json.dumps([list(e) for e in _EMOJIS], ensure_ascii=False))
+    return f"""<!doctype html><html lang=pt-br><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1"><title>All Hands — gerar apresentação</title>
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;600;700;800&display=swap" rel=stylesheet>
 <style>{_FORM_CSS}</style></head><body>
@@ -278,16 +371,39 @@ são preenchidos automaticamente com as mesmas réguas do painel. Preencha abaix
 <div class=sec><h2>MÊS DE REFERÊNCIA</h2><p>use um mês fechado — os números do funil/churn são do mês inteiro</p>
 <select name=mes style="max-width:280px">{opcoes}</select></div>
 <div class=sec><h2>DESTAQUES & PROMOÇÕES</h2><p>um slide por pessoa, no layout do deck (foto, tipo, nome, cargo, nível)</p>
-<div id=destaques></div><button type=button class=add onclick="addDestaque()">+ adicionar pessoa</button></div>
+<div id=destaques>{dq_rows}</div><button type=button class=add onclick="addDestaque()">+ adicionar pessoa</button></div>
 <div class=sec><h2>NOVOS COLABORADORES</h2><p>liga o slide de boas-vindas (roteiro fixo: nome+equipe · primeiros dias · hobbies)</p>
 <label style="display:flex;align-items:center;gap:8px;text-transform:none;font-size:13.5px;color:#fff">
-<input type=checkbox name=tem_novos value=1 style="width:auto"> temos novos colaboradores este mês</label>
-<label>nomes (opcional, vira subtítulo do slide)</label><input name=novos_nomes placeholder="ex.: Ana (Growth) · Pedro (Vendas)" style="max-width:600px"></div>
+<input type=checkbox name=tem_novos value=1 style="width:auto"{novos_chk}> temos novos colaboradores este mês</label>
+<label>nomes (opcional, vira subtítulo do slide)</label><input name=novos_nomes value="{_e((novos or {}).get('nomes'))}" placeholder="ex.: Ana (Growth) · Pedro (Vendas)" style="max-width:600px"></div>
 <div class=sec><h2>ORIENTAÇÕES & NOVIDADES</h2><p>cards de avisos internos, como no deck (2 por linha)</p>
-<div id=orientacoes></div><button type=button class=add onclick="addOrientacao()">+ adicionar aviso</button></div>
+<div id=orientacoes>{or_rows}</div><button type=button class=add onclick="addOrientacao()">+ adicionar aviso</button></div>
+<div class=sec><h2>SLIDES EXTRAS</h2><p>slides livres no design do deck — ex.: um evento do mês que vem, um projeto novo.
+Dê um título, escreva o conteúdo (cada linha vira um marcador) e anexe uma imagem se quiser; entram antes do fechamento</p>
+<div id=extras>{sx_blocks}</div><button type=button class=add onclick="addExtra()">+ adicionar slide</button></div>
 <button type=submit class=go>GERAR APRESENTAÇÃO →</button>
-<p style="color:#777;font-size:12px">na página gerada, use “Exportar / Imprimir” e salve como PDF (16:9, uma página por slide).</p>
-</form><script>{_FORM_JS}</script></body></html>""")
+<p style="color:#777;font-size:12px">a apresentação abre na tela para conferência — de lá você exporta em PDF (Imprimir),
+baixa o PPTX editável ou volta para ajustar o conteúdo sem perder nada.</p>
+</form><script>{js}</script></body></html>"""
+
+
+@router.get("/allhands", response_class=HTMLResponse)
+def allhands_form(request: Request):
+    s, redir = _require_admin(request)
+    if redir:
+        return redir
+    return HTMLResponse(_form_page())
+
+
+@router.post("/allhands/editar", response_class=HTMLResponse)
+async def allhands_editar(request: Request):
+    """'← ajustar conteúdo' da apresentação gerada: reabre o formulário com
+    TUDO que foi digitado (16/07 — antes voltava vazio e perdia o trabalho)."""
+    s, redir = _require_admin(request)
+    if redir:
+        return redir
+    mes, destaques, novos, orientacoes, extras = await _parse_form(await request.form(**_FORM_LIMITS))
+    return HTMLResponse(_form_page(mes, destaques, novos, orientacoes, extras))
 
 
 # ---------------------------------------------------------------------------
@@ -367,8 +483,38 @@ def _vendas_plano_barras(vendas_plano: list[tuple[str, int, float]]) -> str:
             f"font-size:10.5px;color:#777'>{eixo}</div></div>")
 
 
+def _hidden_form(mes: dt.date, destaques: list[dict], novos: dict | None,
+                 orientacoes: list[dict], extras: list[dict]) -> str:
+    """Todo o conteúdo manual como campos ocultos — permite, NA página gerada,
+    baixar o PPTX e voltar ao formulário sem redigitar nada (16/07)."""
+    def _e(v):
+        return escape(str(v or ""), quote=True)
+
+    h = [f"<input type=hidden name=mes value='{mes.isoformat()}'>"]
+    for dq in destaques:
+        h += [f"<input type=hidden name=dq_tipo value=\"{_e(dq['tipo'])}\">",
+              f"<input type=hidden name=dq_nome value=\"{_e(dq['nome'])}\">",
+              f"<input type=hidden name=dq_cargo value=\"{_e(dq['cargo'])}\">",
+              f"<input type=hidden name=dq_nivel value=\"{_e(dq.get('nivel'))}\">",
+              f"<input type=hidden name=dq_foto_b64 value=\"{_e(dq.get('foto'))}\">"]
+    if novos:
+        h += ["<input type=hidden name=tem_novos value=1>",
+              f"<input type=hidden name=novos_nomes value=\"{_e(novos.get('nomes'))}\">"]
+    for o in orientacoes:
+        h += [f"<input type=hidden name=or_icone value=\"{_e(o['icone'])}\">",
+              f"<input type=hidden name=or_titulo value=\"{_e(o['titulo'])}\">",
+              f"<input type=hidden name=or_texto value=\"{_e(o.get('texto'))}\">"]
+    for ex in extras or []:
+        h += [f"<input type=hidden name=sx_kicker value=\"{_e(ex.get('kicker'))}\">",
+              f"<input type=hidden name=sx_titulo value=\"{_e(ex['titulo'])}\">",
+              # textarea oculta preserva as QUEBRAS DE LINHA (viram marcadores)
+              f"<textarea name=sx_texto style='display:none'>{escape(ex.get('texto') or '')}</textarea>",
+              f"<input type=hidden name=sx_foto_b64 value=\"{_e(ex.get('foto'))}\">"]
+    return "".join(h)
+
+
 def _gerar_html(mes: dt.date, d: dict, destaques: list[dict], novos: dict | None,
-                orientacoes: list[dict]) -> str:
+                orientacoes: list[dict], extras: list[dict] | None = None) -> str:
     mes_nome = _MESES[mes.month - 1]
     prox = (mes.replace(day=28) + dt.timedelta(days=5)).replace(day=1)
     rodape = f"ALL HANDS · {mes_nome} {mes.year}"
@@ -465,7 +611,10 @@ def _gerar_html(mes: dt.date, d: dict, destaques: list[dict], novos: dict | None
         "<div style='flex:1;display:flex;flex-direction:column;gap:14px'>"
         f"<div class=card style='padding:18px;text-align:center'><div class='num' style='font-size:40px;color:#ff5555'>{taxa_txt}</div>"
         "<div class=sub>taxa de cancelamento do mês</div>"
-        "<div style='color:#777;font-size:10px;margin-top:6px'>régua: nº de cancelados ÷ base ativa (planilha)</div></div>"
+        f"<div class='num' style='font-size:19px;color:#ff8a8a;margin-top:10px'>{_fmt_brl0(d.get('mrr_rec_perdido'))}</div>"
+        "<div class=sub>faturamento recorrente perdido</div>"
+        f"<div style='color:#777;font-size:10px;margin-top:6px'>régua: cancelados recorrentes ÷ clientes recorrentes ativos "
+        f"({d.get('saidas_rec', 0)} de {d.get('base_rec', 0)}; cada cliente conta 1×) — B1/Start fora: semestral, não recorrente</div></div>"
         f"<div class=card style='padding:18px;text-align:center'><div class='num amarelo' style='font-size:40px'>{meta_ch}</div>"
         "<div class=sub>meta taxa de cancelamento</div></div></div></div>" + nota_sp + "</div>", rodape))
 
@@ -485,7 +634,9 @@ def _gerar_html(mes: dt.date, d: dict, destaques: list[dict], novos: dict | None
     slides.append(_slide(
         "<div class=pad><div class=kicker>Retenção</div><h1 class=t>Evolução da taxa de cancelamento</h1>"
         f"<div class=sub>últimos meses | {periodo_ev}</div>"
-        f"<div style='display:flex;align-items:flex-end;justify-content:center;gap:26px;margin-top:34px'>{barras or '<div class=sub>série indisponível</div>'}</div></div>",
+        f"<div style='display:flex;align-items:flex-end;justify-content:center;gap:26px;margin-top:34px'>{barras or '<div class=sub>série indisponível</div>'}</div>"
+        "<div style='color:#777;font-size:10px;margin-top:14px;text-align:center'>série = realizado lançado na planilha de "
+        "planejamento (régua da gestão) — pode diferir da taxa recorrente do slide anterior enquanto a planilha incluir B1</div></div>",
         rodape))
 
     # 6 — metas do próximo mês
@@ -576,6 +727,27 @@ def _gerar_html(mes: dt.date, d: dict, destaques: list[dict], novos: dict | None
             "<div style='flex:1;display:flex;align-items:center;justify-content:center;"
             f"gap:26px;flex-wrap:wrap;padding-bottom:20px'>{cards}</div></div>", rodape))
 
+    # slides EXTRAS (manual, 16/07): conteúdo livre no design do deck — cada
+    # linha do texto vira um marcador; imagem opcional à direita
+    for ex in (extras or []):
+        linhas_ex = [ln.strip() for ln in (ex.get("texto") or "").splitlines() if ln.strip()]
+        bullets = "".join(
+            "<div style='display:flex;gap:14px;align-items:flex-start;margin:13px 0'>"
+            "<div style='width:8px;height:8px;border-radius:50%;background:#ffc107;margin-top:8px;flex-shrink:0'></div>"
+            f"<div style='color:#ddd;font-size:16.5px;line-height:1.55'>{escape(ln)}</div></div>"
+            for ln in linhas_ex)
+        corpo = (f"<div class=card style='flex:1;padding:22px 28px'>{bullets}</div>" if bullets else "")
+        # imagem SEM corte (Otávio 16/07: banner paisagem saía cortado no
+        # enquadramento fixo) — mantém a proporção original dentro do limite
+        img_ex = (f"<img src='{ex['foto']}' style='max-width:46%;max-height:360px;width:auto;height:auto;"
+                  f"object-fit:contain;border-radius:14px;flex-shrink:0'>" if ex.get("foto") else "")
+        slides.append(_slide(
+            "<div class=pad style='height:100%;display:flex;flex-direction:column'>"
+            f"<div class=kicker>{escape(ex.get('kicker') or 'Novidades')}</div>"
+            f"<h1 class=t>{escape(ex['titulo'])}</h1>"
+            f"<div style='flex:1;display:flex;gap:30px;align-items:center;margin-top:14px'>{corpo}{img_ex}</div></div>",
+            rodape))
+
     # 11 — fechamento
     slides.append(_slide(
         "<div style='position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;align-items:center;"
@@ -585,21 +757,37 @@ def _gerar_html(mes: dt.date, d: dict, destaques: list[dict], novos: dict | None
         "<div style='font-size:46px;font-weight:800;letter-spacing:.14em;color:#ffc107'>PARA TODOS NÓS</div>"
         f"<div class=sub style='margin-top:16px'>{rodape}</div></div>", ""))
 
+    oculto = _hidden_form(mes, destaques, novos, orientacoes, extras or [])
     return (f"<!doctype html><html lang=pt-br><head><meta charset=utf-8><title>All Hands · {mes_nome.title()} {mes.year}</title>"
             "<link href='https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;600;700;800&display=swap' rel=stylesheet>"
             f"<style>{_SLIDE_CSS}</style></head><body>"
-            "<div class=toolbar><button onclick='window.print()'>Exportar / Imprimir (PDF)</button>"
-            f"<a href='/allhands'>← ajustar conteúdo</a><a href='/'>central</a>"
-            "<span style='color:#777;font-size:12px'>salve como PDF em orientação paisagem — 1 página por slide</span></div>"
+            # toolbar: conferir na tela e SÓ ENTÃO exportar (PDF ou PPTX) ou
+            # voltar a ajustar — o form oculto carrega tudo que foi digitado
+            # multipart evita o inchaço do percent-encoding no base64 das fotos
+            "<div class=toolbar><form method=post action='/allhands/editar' "
+            "enctype='multipart/form-data' style='display:contents'>"
+            + oculto +
+            "<button type=button onclick='window.print()'>Exportar / Imprimir (PDF)</button>"
+            "<button type=submit formaction='/allhands/pptx' "
+            "style='background:#1a1a1a;color:#ffc107;border:1px solid #ffc107'>Baixar PPTX ↓</button>"
+            "<button type=submit style='background:none;border:none;color:#ffc107;cursor:pointer;"
+            "font-size:13px;font-family:inherit;padding:0 6px'>← ajustar conteúdo</button>"
+            "</form><a href='/'>central</a>"
+            "<span style='color:#777;font-size:12px'>PDF: orientação paisagem, 1 página por slide · "
+            "PPTX: arquivo editável no PowerPoint · ajustar conteúdo mantém tudo preenchido</span></div>"
             + "".join(slides) + "</body></html>")
 
 
-@router.post("/allhands/gerar", response_class=HTMLResponse)
-async def allhands_gerar(request: Request):
-    s, redir = _require_admin(request)
-    if redir:
-        return redir
-    form = await request.form()
+# o form oculto da página gerada devolve as FOTOS como campos de texto base64
+# (p/ reeditar/baixar PPTX sem redigitar) — o limite padrão do Starlette é 1MB
+# por campo e estourava com foto real ('Field exceeded maximum size of 1024KB',
+# Otávio 16/07). 32MB cobre a maior foto aceita (8MB → ~10,7MB em base64).
+_FORM_LIMITS = {"max_part_size": 32 * 1024 * 1024, "max_fields": 2000}
+
+
+async def _parse_form(form) -> tuple:
+    """Conteúdo manual do formulário — compartilhado entre a geração HTML e a
+    exportação PPTX (mesmos campos, mesmos slides)."""
     try:
         mes = dt.date.fromisoformat(str(form.get("mes")))
     except (TypeError, ValueError):
@@ -611,6 +799,7 @@ async def allhands_gerar(request: Request):
     cargos = form.getlist("dq_cargo")
     niveis = form.getlist("dq_nivel")
     fotos = form.getlist("dq_foto")
+    fotos_b64 = form.getlist("dq_foto_b64")  # foto mantida de edição anterior
     for i, nome in enumerate(nomes):
         if not (nome or "").strip():
             continue
@@ -620,6 +809,8 @@ async def allhands_gerar(request: Request):
             if raw and len(raw) < 8_000_000:
                 mime = fotos[i].content_type or "image/jpeg"
                 foto_b64 = f"data:{mime};base64,{base64.b64encode(raw).decode()}"
+        if foto_b64 is None and i < len(fotos_b64) and str(fotos_b64[i]).startswith("data:"):
+            foto_b64 = str(fotos_b64[i])
         destaques.append({"tipo": (tipos[i] if i < len(tipos) else "DESTAQUE").strip() or "DESTAQUE",
                           "nome": nome.strip(),
                           "cargo": (cargos[i] if i < len(cargos) else "").strip(),
@@ -636,10 +827,61 @@ async def allhands_gerar(request: Request):
             orientacoes.append({"icone": (ic or "").strip() or "📌",
                                 "titulo": t.strip(), "texto": (tx or "").strip()})
 
+    # slides EXTRAS (Otávio 16/07): conteúdo livre — título + linhas + imagem
+    extras = []
+    sx_k, sx_t = form.getlist("sx_kicker"), form.getlist("sx_titulo")
+    sx_x, sx_f = form.getlist("sx_texto"), form.getlist("sx_foto")
+    for i, tit in enumerate(sx_t):
+        if not (tit or "").strip():
+            continue
+        foto_b64 = None
+        if i < len(sx_f) and getattr(sx_f[i], "filename", ""):
+            raw = await sx_f[i].read()
+            if raw and len(raw) < 8_000_000:
+                mime = sx_f[i].content_type or "image/jpeg"
+                foto_b64 = f"data:{mime};base64,{base64.b64encode(raw).decode()}"
+        sx_fb = form.getlist("sx_foto_b64")
+        if foto_b64 is None and i < len(sx_fb) and str(sx_fb[i]).startswith("data:"):
+            foto_b64 = str(sx_fb[i])
+        extras.append({"kicker": (sx_k[i] if i < len(sx_k) else "").strip(),
+                       "titulo": tit.strip(),
+                       "texto": (sx_x[i] if i < len(sx_x) else "").strip(),
+                       "foto": foto_b64})
+    return mes, destaques, novos, orientacoes, extras
+
+
+@router.post("/allhands/gerar", response_class=HTMLResponse)
+async def allhands_gerar(request: Request):
+    s, redir = _require_admin(request)
+    if redir:
+        return redir
+    mes, destaques, novos, orientacoes, extras = await _parse_form(await request.form(**_FORM_LIMITS))
     A = _deps()
     with A._conn() as c:
         with c.cursor() as cur:
             cur.execute("INSERT INTO audit_log (actor, action, scope) VALUES (%s,'generate',%s)",
                         (s[0], f"allhands/{mes:%Y-%m}"))
         dados = _dados_mes(c, mes)
-    return HTMLResponse(_gerar_html(mes, dados, destaques, novos, orientacoes))
+    return HTMLResponse(_gerar_html(mes, dados, destaques, novos, orientacoes, extras))
+
+
+@router.post("/allhands/pptx")
+async def allhands_pptx(request: Request):
+    """Exportação PPTX nativa (Otávio 16/07) — mesmo formulário, mesmos dados;
+    o arquivo sai editável no PowerPoint."""
+    s, redir = _require_admin(request)
+    if redir:
+        return redir
+    mes, destaques, novos, orientacoes, extras = await _parse_form(await request.form(**_FORM_LIMITS))
+    A = _deps()
+    with A._conn() as c:
+        with c.cursor() as cur:
+            cur.execute("INSERT INTO audit_log (actor, action, scope) VALUES (%s,'generate',%s)",
+                        (s[0], f"allhands-pptx/{mes:%Y-%m}"))
+        dados = _dados_mes(c, mes)
+    from fastapi.responses import Response
+    from .allhands_pptx import gerar_pptx
+    raw = gerar_pptx(mes, dados, destaques, novos, orientacoes, extras)
+    return Response(
+        raw, media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        headers={"Content-Disposition": f'attachment; filename="allhands_{mes:%Y-%m}.pptx"'})

@@ -59,16 +59,35 @@ def _mes_lbl(iso: str) -> str:
 
 
 def _tabela(dados: dict, metricas: list[tuple[str, str, str]], idxs: list[int],
-            destaque: set[str] | None = None) -> str:
+            destaque: set[str] | None = None, atual: dict | None = None,
+            i_col_atual: int | None = None, frac: float = 1.0) -> str:
     """Tabela métrica × meses. metricas = [(rótulo exibido, prefixo na planilha,
-    kind)]; idxs = índices dos meses a mostrar."""
-    ths = _TH.format(al="left", h="Métrica") + "".join(
-        _TH.format(al="right", h=_mes_lbl(dados["meses"][i])) for i in idxs)
+    kind)]; idxs = índices dos meses a mostrar. `atual` (Otávio 16/07) = valores
+    REALIZADOS do mês corrente por rótulo — a célula do mês vira 'realizado /
+    meta', colorida pelo ritmo do mês (frac decorrida); % compara direto."""
+
+    def th_mes(i):
+        lbl = _mes_lbl(dados["meses"][i])
+        if atual is not None and i == i_col_atual:
+            lbl += " · real / meta"
+        return _TH.format(al="right", h=lbl)
+
+    ths = _TH.format(al="left", h="Métrica") + "".join(th_mes(i) for i in idxs)
     linhas = ""
     for rot, prefixo, kind in metricas:
         vals = PF.linha(dados, prefixo)
         b = "font-weight:600" if destaque and rot in destaque else ""
-        tds = "".join(f"<td style='{_TD};text-align:right'>{_fmt(vals[i], kind)}</td>" for i in idxs)
+        tds = ""
+        for i in idxs:
+            if atual is not None and i == i_col_atual and rot in atual:
+                real, meta_v = atual[rot], vals[i]
+                ritmo = 1.0 if kind == "pct" else frac
+                cor = ("var(--status-baixo)" if meta_v and (real or 0) >= meta_v * ritmo else
+                       "var(--status-critico)" if meta_v else "var(--text)")
+                tds += (f"<td style='{_TD};text-align:right'><b style='color:{cor}'>{_fmt(real, kind)}</b>"
+                        f"<span style='color:var(--text-faint)'> / {_fmt(meta_v, kind)}</span></td>")
+            else:
+                tds += f"<td style='{_TD};text-align:right'>{_fmt(vals[i], kind)}</td>"
         linhas += f"<tr><td style='{_TD};text-align:left;{b}'>{escape(rot)}</td>{tds}</tr>"
     return ("<div class=central style='padding:6px 14px 12px;overflow-x:auto'>"
             f"<table style='width:100%;border-collapse:collapse'><tr>{ths}</tr>{linhas}</table></div>")
@@ -302,8 +321,30 @@ def _visao(conn, request: Request) -> str:
              + "</section>")
 
     # --- metas dos próximos meses ---
+    # mês CORRENTE: realizado AO VIVO na frente de cada meta (Otávio 16/07) —
+    # bookings por bundle do Pipedrive (mesma régua do All Hands) + funil oficial
+    bund_n: dict[str, int] = {}
+    bund_v: dict[str, float] = {}
+    with conn.cursor() as cur:
+        cur.execute("""SELECT COALESCE(substring(upper(produto) FROM 'B[1-5]'), 'outros'),
+                              count(*), COALESCE(sum(COALESCE(valor_custom, valor)), 0)
+                         FROM mkt_deals_attribution
+                        WHERE status='won' AND won_time >= %s
+                        GROUP BY 1""", (f"{hoje.replace(day=1)} 00:00-03",))
+        for b_, n_, v_ in cur.fetchall():
+            bund_n[b_] = int(n_)
+            bund_v[b_] = float(v_)
+    atual = {"Meta de bookings (R$)": receita, "Bookings (qtde)": booked,
+             "Leads": passou[0], "MQLs": passou[1], "SALs": passou[2],
+             "SQLs": passou[3], "Oportunidades": passou[4],
+             "Tx. Oportunidade → Booking": (booked / passou[4] if passou[4] else None)}
+    for b_ in ("B1", "B2", "B3", "B4", "B5"):
+        atual[f"{b_} — qtde"] = bund_n.get(b_, 0)
+        atual[f"{b_} — R$"] = bund_v.get(b_, 0.0)
     html += ("<section><h2>Metas — mês corrente e próximos</h2>"
-             "<p class=secsub>plano da planilha: bookings por bundle, funil projetado e recebimento</p>"
+             f"<p class=secsub>plano da planilha: bookings por bundle, funil projetado e recebimento — "
+             f"<b>{mes_nome} (atual) = realizado ao vivo / meta</b>, verde = no ritmo do mês ({frac * 100:.0f}% decorrido); "
+             "recebimento/inadimplência/churn seguem só como projeção (sem fonte em tempo real até o Omie)</p>"
              + _tabela(dados, [
                  ("Meta de bookings (R$)", "Meta Bookings [R$]", "brl"),
                  ("Bookings (qtde)", "Bookings [Qtde]", "num"),
@@ -327,7 +368,8 @@ def _visao(conn, request: Request) -> str:
                  ("Recebimento recorrente projetado", "Recebimento RECORRENTE [R$]", "brl"),
                  ("Inadimplência alvo (%)", "Inadimplência [%]", "pct"),
                  ("Churn alvo (%)", "Taxa de cancelamento - TOTAL", "pct"),
-             ], idx_metas, destaque={"Meta de bookings (R$)", "Recebimento total projetado"})
+             ], idx_metas, destaque={"Meta de bookings (R$)", "Recebimento total projetado"},
+                 atual=atual, i_col_atual=i_atual, frac=frac)
              + "</section>")
 
     # saúde da receita recorrente MUDOU p/ aba própria (pedido 15/07)

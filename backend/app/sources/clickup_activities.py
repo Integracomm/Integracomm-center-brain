@@ -506,8 +506,30 @@ def _overdue_from_clickup(account_name: str, now: dt.datetime, limit: int = 20) 
         out.append({"nome": t.get("name"),
                     "vence_em": due.astimezone(dt.timezone(dt.timedelta(hours=-3))).date().isoformat(),
                     "dias_atraso": (now - due).days,
-                    "responsavel": assg, "status": (t.get("status") or {}).get("status")})
+                    "responsavel": assg, "status": (t.get("status") or {}).get("status"),
+                    # link direto da TAREFA (drill-down dos squads, Otávio 16/07)
+                    "url": t.get("url") or f"https://app.clickup.com/t/{t['id']}"})
     return sorted(out, key=lambda x: -x["dias_atraso"])[:limit]
+
+
+def open_tasks_count(account_name: str) -> int | None:
+    """Tarefas ABERTAS da conta (sem conclusão/fechamento) nos índices já
+    cacheados — carga REAL de trabalho p/ a Capacidade por squad (Otávio 16/07:
+    tarefas recorrentes fazem squads com menos contas carregarem mais trabalho).
+    None = API não configurada."""
+    s = get_settings()
+    if not (s.clickup_api_token and s.clickup_list_assessoria):
+        return None
+    vistos: set[str] = set()
+    n = 0
+    for lst in _report_lists(s):
+        for t in _subs_lookup(s.clickup_api_token, lst, norm_account(account_name)):
+            if t["id"] in vistos:
+                continue
+            vistos.add(t["id"])
+            if not (t.get("date_done") or t.get("date_closed")):
+                n += 1
+    return n
 
 
 def overdue_activities(account_name: str, now: dt.datetime | None = None) -> dict:
