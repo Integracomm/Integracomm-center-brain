@@ -1730,7 +1730,10 @@ def _vd_ponte(conn, request: Request, area: str = "vendas") -> str:
     tot_d = sum(1 for r in rows if r[1] in ("won", "lost"))
     kpis = ("<div class=kpis>"
             f"<div class=kpi><div class=n>{len(rows)}</div><div class=l>oportunidades no período</div></div>"
-            f"<div class=kpi><div class=n>{_fmt(tot_g / tot_d if tot_d else None, 'pct')}</div><div class=l>taxa de fechamento</div><div class=s>{tot_g} ÷ {tot_d} decididas</div></div>"
+            f"<div class=kpi><div class=n>{_fmt(tot_g / tot_d if tot_d else None, 'pct')}</div>"
+            "<div class=l>fechamento no período</div>"
+            f"<div class=s>{tot_g} ÷ {tot_d} decididas · oportunidades (Dia Oportunidade) do período selecionado, "
+            "todas as origens — o Raio-X usa janela fixa (30/90/120d): números podem diferir</div></div>"
             f"<div class=kpi><div class=n>{len(rows) - tot_d}</div><div class=l>ainda em aberto</div></div></div>")
     return ("<h1>Ponte Pré-vendas → Vendas</h1>"
             "<div class=sub>a pergunta estratégica: a conversão fraca é herdada da qualificação ou é do fechamento? · "

@@ -59,6 +59,16 @@ def _shell(A, role: str, view: str, content: str, usermail: str = "",
            help_area: str = "marketing") -> str:
     from ..help_texts import inject_help
     content = inject_help(help_area, view, content)
+    # 'seu foco desta semana' no topo da área (Ações da Semana, 17/07) — o
+    # gestor vê o foco do próprio time sem abrir a central
+    try:
+        _team = {"marketing": "marketing", "prevendas": "prevendas", "vendas": "vendas"}.get(help_area)
+        if _team:
+            from ..semana import foco_time_html
+            with A._conn() as _c:
+                content = foco_time_html(_c, _team) + content
+    except Exception:  # noqa: BLE001 — banner nunca derruba a área
+        pass
     nav = "<a class='nav-item' href='/'>← Início (central)</a>" if role == "admin" else ""
     for v, label in _VIEWS:
         cls = "nav-item active" if v == view else "nav-item"
@@ -1194,6 +1204,11 @@ def _ciclo_vida(conn) -> str:
         "<section><h2>Leitura do especialista</h2><div class=card><div class=sug-item>→ "
         f"{escape(leitura)}</div><style>.sug-item{{padding:7px 0;font-size:var(--fs-sm);line-height:1.6;color:var(--text-2)}}</style></div></section>"
         "<section><h2>Desfecho por canal de origem</h2><p class=secsub>CAC aj. = CAC ÷ taxa de retenção — o custo REAL por cliente que fica (corrige a ilusão do canal barato); CAC só p/ canais com gasto rastreado</p>"
+        # A2 (17/07): a incerteza do vínculo JUNTO da conclusão, não só no rodapé
+        f"<p class=note style='margin:0 0 8px'>Conclusões baseadas em <b>{len(canc_casados)} de {len(cancs)}</b> "
+        f"cancelamentos vinculados a um booking rastreado "
+        f"({(len(canc_casados) / len(cancs) * 100) if cancs else 0:.0f}%) — os sem vínculo (clientes pré-2025) "
+        "podem alterar este quadro; 'canal X retém melhor' é leitura da parte vinculada.</p>"
         f"<div class=card><table style='width:100%;border-collapse:collapse'><tr>{ths([('Canal', 'left'), ('Clientes', 'right'), ('Ativos', 'right'), ('Precoce', 'right'), ('Tardio', 'right'), ('MRR retido', 'right'), ('MRR perdido', 'right'), ('CAC', 'right'), ('CAC aj.', 'right')])}</tr>{rows_c}</table></div></section>"
         "<section><h2>Criativos que trazem churn precoce (mídia paga)</h2><p class=secsub>ordenado do pior — criativo que promete demais traz cliente que sai cedo; amostra &lt;8 mostra o dado, sem diagnóstico</p>"
         f"<div class=card><table style='width:100%;border-collapse:collapse'><tr>{ths([('Criativo', 'left'), ('Clientes', 'right'), ('Ativos', 'right'), ('Precoce', 'right'), ('', 'right')])}</tr>{rows_k or '<tr><td>—</td></tr>'}</table></div></section>"

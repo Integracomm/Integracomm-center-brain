@@ -52,7 +52,7 @@ def _pct(v) -> str:
 # ---------------------------------------------------------------------------
 # dados — tudo filtrado pelo bundle, reusando as fontes das áreas
 # ---------------------------------------------------------------------------
-def _dados_bundle(conn, b: str) -> dict:
+def _dados_bundle(conn, b: str, janela: int = 120) -> dict:
     import calendar
     import statistics as st
 
@@ -62,7 +62,7 @@ def _dados_bundle(conn, b: str) -> dict:
     frac = hoje.day / calendar.monthrange(hoje.year, hoje.month)[1]
     todos = b == "TODOS"  # visão da EMPRESA: mesma cadeia sem filtro de bundle
     like = "%" if todos else f"{b}%"
-    d: dict = {"b": b, "todos": todos, "frac": frac}
+    d: dict = {"b": b, "todos": todos, "frac": frac, "janela": janela}
 
     # ---- 1+4. aquisição e retenção: a MESMA coorte do Ciclo de Vida ----
     from .marketing.ui import _ciclo_coorte
@@ -92,7 +92,7 @@ def _dados_bundle(conn, b: str) -> dict:
     d["tardio_pct"] = (sum(1 for r in cb if r["desfecho"] == "tardio") / len(cb)) if cb else None
     d["cobertura"] = cob
 
-    # ---- 2. qualificação → fechamento (Ponte, 120d, filtrada pelo bundle) ----
+    # ---- 2. qualificação → fechamento (Ponte, janela ajustável, por bundle) ----
     with conn.cursor() as cur:
         cur.execute("""
             SELECT d.status,
@@ -101,8 +101,8 @@ def _dados_bundle(conn, b: str) -> dict:
                    COALESCE(d.valor_custom, d.valor)
               FROM mkt_deals_attribution d
               LEFT JOIN sales_first_touch t ON t.deal_id = d.deal_id
-             WHERE d.oport_time >= now() - interval '120 days'
-               AND upper(COALESCE(d.produto, '')) LIKE %s""", (like,))
+             WHERE d.oport_time >= now() - make_interval(days => %s)
+               AND upper(COALESCE(d.produto, '')) LIKE %s""", (janela, like))
         oports = cur.fetchall()
     dec = [r for r in oports if r[0] in ("won", "lost")]
     won = [r for r in dec if r[0] == "won"]
@@ -160,6 +160,11 @@ def _dados_bundle(conn, b: str) -> dict:
         cancs = [dict(zip(cols, r)) for r in cur.fetchall()]
     cancs_b = cancs if todos else [r for r in cancs if A._canc_bundle(r) == b]
     d["canc_total"] = len(cancs_b)
+    # cobertura do vínculo booking↔cancelamento NESTE escopo (A2, 17/07): as
+    # conclusões de retenção por canal carregam essa incerteza — mostrar no
+    # ponto da decisão, não só no rodapé
+    d["cov_casados"] = sum(1 for r in cb if r.get("saida"))
+    d["cov_total"] = len(cancs_b)
     seis = [(mes - dt.timedelta(days=30 * k)).replace(day=1) for k in range(5, -1, -1)]
     d["canc_meses"] = [(m.strftime("%m/%y"), sum(1 for r in cancs_b if r["mes"] == m),
                         sum(float(r["valor"] or 0) for r in cancs_b if r["mes"] == m)) for m in seis]
@@ -246,7 +251,7 @@ def _fatos(d: dict) -> list[str]:
         f.append(f"Meta do mês: {d['real_q']}/{d['meta_q']:.0f} bookings ({pace * 100:.0f}% da meta "
                  f"com {d['frac'] * 100:.0f}% do mês decorrido) — {_brl(d['real_r'])} de {_brl(d['meta_r'])}.")
     if d["taxa"] is not None:
-        f.append(f"Fechamento (120d): {d['won_n']} de {d['dec_n']} oportunidades decididas ({_pct(d['taxa'])}).")
+        f.append(f"Fechamento ({d['janela']}d): {d['won_n']} de {d['dec_n']} oportunidades decididas ({_pct(d['taxa'])}).")
     if d["tx_sla_ok"] is not None and d["tx_sla_ruim"] is not None and d["tx_sla_ok"] > d["tx_sla_ruim"]:
         f.append(f"Oportunidade de lead atendido em ≤15min fecha {_pct(d['tx_sla_ok'])} vs "
                  f"{_pct(d['tx_sla_ruim'])} quando o 1º contato passou de 1h — qualificação pesa.")
@@ -355,7 +360,7 @@ def _leitura_llm(conn, b: str, fatos: list[str]) -> str | None:
 # ---------------------------------------------------------------------------
 # render
 # ---------------------------------------------------------------------------
-def _render(d: dict, leitura: str, via_llm: bool) -> str:
+def _render(d: dict, leitura: str, via_llm: bool, alt_leitura: str = "") -> str:
     from .help_texts import _hint
     b = d["b"]
     _td = ("padding:6px 9px;border-bottom:1px solid var(--border);font-size:var(--fs-sm);"
@@ -367,12 +372,21 @@ def _render(d: dict, leitura: str, via_llm: bool) -> str:
         return (f"<div class=central style='padding:6px 14px 10px;overflow-x:auto'>"
                 f"<table style='width:100%;border-collapse:collapse'><tr>{h}</tr>{linhas}</table></div>")
 
+    j = d.get("janela", 120)
     sel = "".join(
-        f"<a href='/raiox?b={x}' style=\"display:inline-block;padding:7px 16px;border-radius:999px;"
+        f"<a href='/raiox?b={x}&j={j}' style=\"display:inline-block;padding:7px 16px;border-radius:999px;"
         f"font-weight:600;font-size:var(--fs-sm);margin-right:8px;"
         + ("background:var(--brand);color:var(--brand-ink)" if x == b else
            "background:var(--surface-2);color:var(--text-2);border:1px solid var(--border-strong)")
         + f"\">{'Todos (empresa)' if x == 'TODOS' else x}</a>" for x in _BUNDLES)
+    # A1 (17/07): janela do fechamento AJUSTÁVEL — p/ comparar maçã com maçã
+    # com a Ponte (que usa o período selecionado lá)
+    sel += ("<span style='margin-left:14px;font-size:var(--fs-2xs);color:var(--text-muted)'>janela do fechamento:</span> "
+            + " ".join(
+                f"<a href='/raiox?b={b}&j={x}' style=\"font-size:var(--fs-xs);padding:4px 10px;border-radius:999px;"
+                + ("background:var(--surface-3);color:var(--text);border:1px solid var(--brand)" if x == j else
+                   "color:var(--text-muted);border:1px solid var(--border)")
+                + f"\">{x}d</a>" for x in (30, 90, 120)))
 
     ritmo = None
     if d["meta_q"]:
@@ -388,8 +402,10 @@ def _render(d: dict, leitura: str, via_llm: bool) -> str:
         f"<div class=kpi><div class=n>{'≈ ' if not d['mrr_exato'] and d['mrr_est'] else ''}{_brl(d['mrr_est'])}</div>"
         f"<div class=l>MRR da base ({d['mrr_cnt']}/{d['base_contas']} c/ valor)</div></div>"
         + kpi_meta +
-        f"<div class=kpi><div class=n>{_pct(d['taxa'])}</div><div class=l>fechamento 120d "
-        f"({d['won_n']}/{d['dec_n']} decididas)</div></div>"
+        f"<div class=kpi><div class=n>{_pct(d['taxa'])}</div><div class=l>fechamento {d['janela']}d "
+        f"({d['won_n']}/{d['dec_n']} decididas)</div>"
+        f"<div class=s>oportunidades (Dia Oportunidade) dos últimos {d['janela']} dias, TODAS as origens, "
+        "taxa sobre decididas — a Ponte usa o período selecionado lá</div></div>"
         f"<div class=kpi><div class=n style='color:var(--status-critico)'>{_pct(d['precoce_pct'])}</div>"
         f"<div class=l>churn precoce da coorte</div></div>"
         "</div>")
@@ -405,10 +421,24 @@ def _render(d: dict, leitura: str, via_llm: bool) -> str:
                  f"<td style='{_td};text-align:right'>{_brl(x['cac'])}</td>"
                  f"<td style='{_td};text-align:right'><b>{_brl(x['cac_aj'])}</b></td>"
                  f"<td style='{_td}'>{'<span class=note>amostra pequena</span>' if peq else ''}</td></tr>")
+    # A2: incerteza da cobertura JUNTO da conclusão (não só no rodapé)
+    cov_c, cov_t = d.get("cov_casados", 0), d.get("cov_total", 0)
+    cov_pct = (cov_c / cov_t) if cov_t else None
+    cov_grave = cov_pct is not None and cov_pct < 0.4
+    cov_nota = ""
+    if cov_t:
+        cov_nota = (f"<div class='{'warn' if cov_grave else 'note'}' style='margin:6px 0 10px;font-size:var(--fs-xs);"
+                    f"{'padding:8px 12px' if cov_grave else ''}'>"
+                    f"{'⚠ ' if cov_grave else ''}As conclusões de retenção abaixo se baseiam em <b>{cov_c} de {cov_t}</b> "
+                    f"cancelamentos deste escopo vinculados a um booking rastreado ({cov_pct * 100:.0f}%) — os sem "
+                    "vínculo (clientes pré-2025) podem alterar o quadro."
+                    + (" Cobertura BAIXA: trate como indício, não conclusão." if cov_grave else "")
+                    + "</div>")
     s1 = ("<section><h2>1 · Aquisição — de onde vem o cliente deste bundle</h2>"
           "<p class=secsub>coorte completa de clientes fechados (Ciclo de Vida) filtrada pelo bundle · "
           "CAC é do CANAL (o gasto de mídia não separa por plano); CAC ajustado divide pela retenção DO BUNDLE no canal · "
           f"<a href='/marketing?view=ciclo' style='color:var(--brand)'>ver Ciclo de Vida completo →</a></p>"
+          + cov_nota
           + _hint("Aquisição do bundle",
                   "O que mostra: por qual canal os clientes DESTE plano chegaram, e o que aconteceu com eles depois.\n"
                   "Como ler: Retidos = seguem ativos. Precoce = cancelaram em até 3 meses. CAC = custo por cliente do canal "
@@ -433,8 +463,11 @@ def _render(d: dict, leitura: str, via_llm: bool) -> str:
         sla_txt = (f"<div class=sug-item>→ 1º contato em ≤15min fecha <b>{_pct(d['tx_sla_ok'])}</b> "
                    f"({d['n_sla_ok']} decididas) · acima de 1h fecha <b>{_pct(d['tx_sla_ruim'])}</b> "
                    f"({d['n_sla_ruim']} decididas)</div>")
-    s2 = ("<section><h2>2 · Qualificação → Fechamento</h2>"
-          "<p class=secsub>oportunidades DESTE bundle nos últimos 120 dias (Ponte PV→Vendas filtrada) · taxa sobre decididas · "
+    s2 = (f"<section><h2>2 · Qualificação → Fechamento <span style='font-size:var(--fs-2xs);"
+          f"color:var(--text-faint);font-weight:400'>(fechamento {j}d)</span></h2>"
+          f"<p class=secsub>oportunidades deste escopo nos últimos {j} dias — TODAS as origens, campo Dia "
+          "Oportunidade, taxa sobre decididas (ganhas+perdidas) · a Ponte mostra o 'fechamento no período' "
+          "selecionado lá: janelas/universos diferentes dão números diferentes · "
           f"ticket médio dos fechados: <b>{_brl(d['ticket'])}</b> · "
           f"<a href='/vendas?view=ponte' style='color:var(--brand)'>ver Ponte completa →</a></p>"
           + _hint("Qualificação e fechamento do bundle",
@@ -551,26 +584,105 @@ def _render(d: dict, leitura: str, via_llm: bool) -> str:
                  ("Saídas", "right"), ("Sai (MRR)", "right"), ("Saldo", "right")], rows)
           + "</section>")
 
-    origem_l = ("leitura gerada por IA (Claude) a partir dos números acima — confira antes de decidir"
-                if via_llm else "leitura determinística (regras) a partir dos números acima")
+    # A3 (17/07): a leitura é HIPÓTESE bem-informada, não veredito — título
+    # explícito, nota de correlação≠causa, hipótese alternativa e aviso com peso
+    titulo_l = ("Hipótese principal (gerada por IA)" if via_llm
+                else "Hipótese principal (regras determinísticas)")
+    alt_html = ""
+    if via_llm and alt_leitura:
+        alt_html = (f"<div class=sug-item style='margin-top:8px;color:var(--text-muted)'>"
+                    f"<b>Outra leitura possível</b> (heurística, das mesmas evidências): {escape(alt_leitura)}</div>")
+    aviso = ("<div class=warn style='margin-top:10px;font-size:var(--fs-sm)'>"
+             "⚠ <b>Associação observada, não causa comprovada</b> — os elos (ex.: SLA×fechamento, canal×churn) são "
+             "correlações do histórico. Confira os números das seções abaixo e teste em pequena escala antes de "
+             "realocar orçamento grande.</div>")
     return (
         f"<h1>Raio-X por Bundle</h1>"
         "<p class=sub>a cadeia completa do plano numa tela só: aquisição → qualificação → meta → retenção → "
         "operação → receita recorrente. Compõe as mesmas réguas das áreas, filtradas pelo bundle — nada é recalculado.</p>"
         f"<div style='margin:16px 0 4px'>{sel}</div>"
         + kpis +
-        "<section><h2>Leitura do especialista</h2>"
-        f"<p class=secsub>{origem_l}</p>"
-        f"<div class=central><div class=sug-item style='font-size:var(--fs-md);line-height:1.65'>→ {escape(leitura)}</div></div>"
-        "</section>"
+        f"<section><h2>{titulo_l}</h2>"
+        "<p class=secsub>síntese dos elos medidos acima — hipótese para investigar, não conclusão fechada</p>"
+        f"<div class=central><div class=sug-item style='font-size:var(--fs-md);line-height:1.65'>→ {escape(leitura)}</div>"
+        + alt_html + aviso + "</div></section>"
         + s1 + s2 + s3 + s4 + s5 + s6 +
         f"<p class=note style='margin-top:14px'>Cobertura do vínculo aquisição↔retenção: "
         f"{d['cobertura']['canc_casados']}/{d['cobertura']['n_cancs']} cancelamentos casados com um booking rastreado. "
         "Onde a amostra do bundle é pequena, a tabela avisa — não conclua por meia dúzia de casos.</p>")
 
 
+def mini_cards_html(conn, coorte: list[dict]) -> str:
+    """Raio-X COMPACTO p/ a Visão Central (Cockpit, 17/07): um mini-card por
+    bundle com bookings×meta do mês e churn precoce da coorte — MESMAS fontes e
+    janelas das seções 3 e 4 do Raio-X completo (nada recalculado com outra
+    régua). O bundle mais fora do ritmo aparece destacado."""
+    import calendar
+    from .help_texts import _hint
+    from .sources import planejamento_financeiro as PF
+    hoje = dt.date.today()
+    mes = hoje.replace(day=1)
+    frac = hoje.day / calendar.monthrange(hoje.year, hoje.month)[1]
+    pf = PF.carrega()
+    iso = f"{mes.year:04d}-{mes.month:02d}"
+    i_pf = pf["meses"].index(iso) if pf and iso in pf["meses"] else None
+    with conn.cursor() as cur:
+        cur.execute("""SELECT substring(upper(COALESCE(produto, '')) FROM 'B[1-5]'), count(*)
+                         FROM mkt_deals_attribution
+                        WHERE status='won' AND won_time >= %s GROUP BY 1""", (f"{mes} 00:00-03",))
+        reais = {b_: int(n) for b_, n in cur.fetchall() if b_}
+    cards, ratios = [], {}
+    for b_ in ("B1", "B2", "B3", "B4", "B5"):
+        meta_q = PF.linha(pf, f"{b_} - Meta: Booking [Qtde]")[i_pf] if i_pf is not None else None
+        real = reais.get(b_, 0)
+        cb = [r for r in coorte if r["bundle"] == b_]
+        prec = (sum(1 for r in cb if r["desfecho"] == "precoce") / len(cb)) if len(cb) >= 8 else None
+        ratio = (real / meta_q / frac) if (meta_q and frac) else None
+        if ratio is not None:
+            ratios[b_] = ratio
+        cards.append((b_, meta_q, real, prec, ratio))
+    pior = min(ratios, key=ratios.get) if ratios else None
+    out = ""
+    for b_, meta_q, real, prec, ratio in cards:
+        cor = ("--status-semdados" if ratio is None else
+               "--status-baixo" if ratio >= 0.85 else
+               "--status-medio" if ratio >= 0.6 else "--status-critico")
+        borda = (f"border:1px solid var(--status-critico);box-shadow:inset 3px 0 0 var(--status-critico)"
+                 if b_ == pior else "border:1px solid var(--border-mid)")
+        selo_pior = ("<span class=chip style='--c:var(--status-critico)'>mais fora da meta</span>"
+                     if b_ == pior else "")
+        bk_txt = f"{real}/{meta_q:.0f}" if meta_q else f"{real}"
+        prec_txt = (f"{prec * 100:.0f}% churn precoce" if prec is not None
+                    else "coorte pequena p/ churn")
+        out += (
+            f"<a href='/raiox?b={b_}' style=\"display:block;background:var(--surface-1);{borda};"
+            f"border-radius:var(--radius-md);padding:13px 15px;text-decoration:none;color:inherit\">"
+            f"<div style='display:flex;justify-content:space-between;align-items:baseline'>"
+            f"<b style='font-family:var(--font-display);font-size:15px'>{b_}</b>{selo_pior}</div>"
+            f"<div style='font-family:var(--font-display);font-weight:700;font-size:21px;margin-top:6px;"
+            f"color:var(--{cor[2:]})'>{bk_txt}</div>"
+            f"<div style='font-size:var(--fs-2xs);color:var(--text-muted);text-transform:uppercase;"
+            f"letter-spacing:var(--tracking-label)'>bookings × meta</div>"
+            f"<div style='font-size:var(--fs-xs);color:var(--text-muted);margin-top:5px'>{prec_txt}</div></a>")
+    return (
+        "<section><h2>Raio-X compacto por bundle</h2>"
+        "<p class=secsub>o resumo do resumo: bookings × meta do mês (cor pelo ritmo) e churn precoce da coorte — "
+        "clique num bundle para abrir a cadeia completa · "
+        "<a href='/raiox' style='color:var(--brand)'>visão da empresa toda →</a></p>"
+        + _hint("Raio-X compacto por bundle",
+                "O que mostra: de relance, qual plano está sangrando — bookings contra a meta do mês (a cor segue o "
+                "ritmo: verde = no ritmo, amarelo = atrás, vermelho = bem atrás) e o churn precoce da coorte de cada "
+                "bundle.\n"
+                "Como ler: são os MESMOS números do Raio-X completo (mesma fonte, mesma janela) — o card é só a "
+                "porta de entrada. O bundle mais fora do ritmo vem destacado em vermelho.\n"
+                "Fique de olho: bookings no ritmo com churn precoce alto = vender mais não resolve — a alavanca está "
+                "na aquisição/retenção daquele plano (abra o Raio-X e leia a seção 1 e 4).")
+        + "<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px'>"
+        + out + "</div></section>")
+
+
 @router.get("/raiox", response_class=HTMLResponse)
-def raiox(request: Request, b: str = Query("TODOS")):
+def raiox(request: Request, b: str = Query("TODOS"), j: int = Query(120)):
     A = _deps()
     s = A._session(request)
     if not s:
@@ -579,12 +691,18 @@ def raiox(request: Request, b: str = Query("TODOS")):
     b = b.upper()
     if b not in _BUNDLES:
         b = "TODOS"
+    if j not in (30, 90, 120):
+        j = 120
     with A._conn() as c:
         with c.cursor() as cur:
             cur.execute("INSERT INTO audit_log (actor, action, scope) VALUES (%s,'view',%s)",
                         (user, f"raiox/{b}"))
-        d = _dados_bundle(c, b)
+        d = _dados_bundle(c, b, janela=j)
         fatos = _fatos(d)
-        llm = _leitura_llm(c, b, fatos) if fatos else None
-    leitura = llm or _leitura_heuristica(d)
-    return HTMLResponse(A._render_hub_page(user, _render(d, leitura, via_llm=bool(llm)), active="raiox"))
+        # leitura via IA só na janela padrão (cache por bundle; janelas curtas
+        # usam a heurística p/ não multiplicar chamadas)
+        llm = _leitura_llm(c, b, fatos) if (fatos and j == 120) else None
+    heur = _leitura_heuristica(d)
+    leitura = llm or heur
+    return HTMLResponse(A._render_hub_page(
+        user, _render(d, leitura, via_llm=bool(llm), alt_leitura=heur if llm else ""), active="raiox"))

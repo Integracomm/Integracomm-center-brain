@@ -525,10 +525,29 @@ def hub(request: Request):
         except Exception:  # noqa: BLE001
             pass
         users = list_users(c)
-        impactos = _hub_impactos(c, mkt, sales)
-        lags = _hub_lags(c)
+        # coorte do Ciclo computada UMA vez por load (impactos + lags + mini-raio-x)
+        try:
+            from .marketing.ui import _ciclo_coorte
+            coorte = _ciclo_coorte(c)[0]
+        except Exception:  # noqa: BLE001
+            coorte = None
+        impactos = _hub_impactos(c, mkt, sales, coorte=coorte)
+        lags = _hub_lags(c, coorte=coorte)
+        # Camada 0 (foco da semana) + Camada 3 (raio-x compacto) do Cockpit
+        try:
+            from .semana import foco_hub_html
+            foco_html, foco_kw = foco_hub_html(c)
+        except Exception:  # noqa: BLE001
+            foco_html, foco_kw = "", []
+        try:
+            from .raiox import mini_cards_html
+            raiox_mini = mini_cards_html(c, coorte or [])
+        except Exception:  # noqa: BLE001
+            raiox_mini = ""
     return HTMLResponse(_render_hub(user, stats, users, mkt, sales=sales, ops=ops,
-                                    mudancas=mudancas, impactos=impactos, lags=lags))
+                                    mudancas=mudancas, impactos=impactos, lags=lags,
+                                    foco_html=foco_html, raiox_mini=raiox_mini,
+                                    foco_kw=foco_kw))
 
 
 @app.get("/admin", response_class=HTMLResponse)
@@ -966,6 +985,13 @@ def _hub_sales_stats(conn: Any) -> dict | None:
 
 def _growth_help(view: str, content: str) -> str:
     from .help_texts import inject_help
+    # 'seu foco desta semana' no topo do Growth (Ações da Semana, 17/07)
+    try:
+        from .semana import foco_time_html
+        with _conn() as c:
+            content = foco_time_html(c, "growth") + content
+    except Exception:  # noqa: BLE001 — banner nunca derruba a área
+        pass
     return inject_help("growth", view, content)
 
 
@@ -1539,7 +1565,7 @@ def _hub_mudancas(conn: Any) -> str:
             + f"<div class=central>{lis}</div></section>")
 
 
-def _hub_lags(conn: Any) -> dict:
+def _hub_lags(conn: Any, coorte: list[dict] | None = None) -> dict:
     """Defasagens REAIS do histórico (medianas) — Integração Causal #4: quanto
     tempo uma correção numa área leva p/ aparecer na outra. Onde não há base
     (série de risco começou 14/07), o valor fica None e a tela DIZ isso."""
@@ -1563,8 +1589,9 @@ def _hub_lags(conn: Any) -> dict:
             v, n = cur.fetchone()
             if n and n >= 10:
                 out["oport_book"], out["n_oport"] = float(v), int(n)
-        from .marketing.ui import _ciclo_coorte
-        coorte, _g, _c = _ciclo_coorte(conn)
+        if coorte is None:
+            from .marketing.ui import _ciclo_coorte
+            coorte, _g, _c = _ciclo_coorte(conn)
         # deltas <=0 são artefato (data de saída em granularidade de MÊS pode
         # cair antes do fechamento) — ficam fora da mediana
         dias = [(r["saida"] - r["won"]).days for r in coorte
@@ -1578,7 +1605,8 @@ def _hub_lags(conn: Any) -> dict:
     return out
 
 
-def _hub_impactos(conn: Any, mkt: dict | None, sales: dict | None) -> dict:
+def _hub_impactos(conn: Any, mkt: dict | None, sales: dict | None,
+                  coorte: list[dict] | None = None) -> dict:
     """Impacto estimado em R$/MÊS por tipo de gargalo (Integração Causal #2) —
     faixa conservador–otimista + PREMISSA explícita. São estimativas de
     potencial p/ PRIORIZAR entre áreas, não promessas."""
@@ -1622,8 +1650,9 @@ def _hub_impactos(conn: Any, mkt: dict | None, sales: dict | None) -> dict:
         pass
     # CHURN PRECOCE por canal (Ciclo de Vida)
     try:
-        from .marketing.ui import _ciclo_coorte
-        coorte, _g, _c = _ciclo_coorte(conn)
+        if coorte is None:
+            from .marketing.ui import _ciclo_coorte
+            coorte, _g, _c = _ciclo_coorte(conn)
         por_canal: dict[str, list] = {}
         for r in coorte:
             por_canal.setdefault(r["canal"], []).append(r)
@@ -1682,7 +1711,8 @@ def _render_hub(role: str, st: dict, users: list[dict] | None = None,
                 teams_html: str = "", ops: dict | None = None,
                 mudancas: str = "", body_override: str | None = None,
                 active_page: str = "", impactos: dict | None = None,
-                lags: dict | None = None) -> str:
+                lags: dict | None = None, foco_html: str = "",
+                raiox_mini: str = "", foco_kw: list[str] | None = None) -> str:
     n_alerts = sum(st["sev"].values())
     crit = st["sev"].get("critico", 0)
 
@@ -1816,11 +1846,34 @@ def _render_hub(role: str, st: dict, users: list[dict] | None = None,
     for t, d, var, href, tipo in initiatives:
         e = imp.get(tipo) if tipo else None
         chave_j = (e or {}).get("janela") if e else {"retencao": None, "conversao": "lead_book"}.get(tipo)
-        decoradas.append((t, d, var, href, e, chave_j))
+        decoradas.append((t, d, var, href, e, chave_j, tipo))
     # ordena por impacto estimado (máx. da faixa); sem estimativa vai ao final
     decoradas.sort(key=lambda x: -(x[4]["faixa"][1] if x[4] else -1))
 
-    def _init_html(t, d, var, href, e, chave_j):
+    # selo 'foco desta semana' (Cockpit, 17/07): amarra a priorização por R$ ao
+    # combinado da semana — casamento HEURÍSTICO por palavras-chave do tipo do
+    # gargalo e por menção ao mesmo bundle nos objetivos CONFIRMADOS
+    _FOCO_KW = {"leads": ("lead",), "bookings": ("booking", "fechar", "vender", "meta"),
+                "ciclo": ("churn", "cancel", "reten"), "ponte": ("sla", "qualifica", "contato"),
+                "exec": ("execu", "atraso", "entrega"), "retencao": ("churn", "reten", "risco", "cancel"),
+                "conversao": ("convers", "reuni", "agend")}
+
+    def _eh_foco(tipo, titulo, descr):
+        if not foco_kw:
+            return False
+        alvo = (titulo + " " + descr).lower()
+        for txt in foco_kw:
+            if any(kw in txt for kw in _FOCO_KW.get(tipo or "", ())):
+                return True
+            m_b = re.search(r"b[1-5]", txt)
+            if m_b and m_b.group(0) in alvo:
+                return True
+        return False
+
+    def _init_html(t, d, var, href, e, chave_j, tipo):
+        selo = (" <span class=chip style='--c:var(--brand)' title='este gargalo casa com um objetivo "
+                "confirmado da semana (Ações da Semana)'>foco desta semana</span>"
+                if _eh_foco(tipo, t, d) else "")
         extra = ""
         if e:
             lo, hi = e["faixa"]
@@ -1831,7 +1884,7 @@ def _render_hub(role: str, st: dict, users: list[dict] | None = None,
             extra = f"<div class='id_' style='margin-top:4px'>{escape(_janela_txt(chave_j))}</div>"
         return (f"<a class='init' href='{href}' title='abrir os dados desta iniciativa'>"
                 f"<span class='sdot' style='--c:var({var})'></span>"
-                f"<div><div class='it'>{escape(t)}</div><div class='id_'>{escape(d)}</div>{extra}</div>"
+                f"<div><div class='it'>{escape(t)}{selo}</div><div class='id_'>{escape(d)}</div>{extra}</div>"
                 f"<span class='ig'>→</span></a>")
 
     init_html = "".join(_init_html(*x) for x in decoradas) \
@@ -2089,6 +2142,9 @@ nav{padding:10px 12px;display:flex;flex-direction:column;gap:2px;flex:1}
 .nav-item:hover{background:var(--surface-2);color:var(--text-2)}
 .nav-item.active{background:var(--surface-2);color:var(--text);box-shadow:inset 2px 0 0 var(--brand)}
 .nav-item.soon{opacity:.55} .nav-item .tag{font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-faint)}
+/* cabeçalho de GRUPO no sidebar (não clicável): Áreas × Visões da empresa —
+   área = lugar da empresa; visão = corte transversal dos dados (17/07) */
+.nav-h{font-size:9.5px;text-transform:uppercase;letter-spacing:.14em;color:var(--text-faint);padding:14px 12px 4px}
 .rail-foot{padding:12px 16px;border-top:1px solid var(--border);font-size:var(--fs-2xs);color:var(--text-muted);line-height:1.5}
 main{flex:1;min-width:0;padding:26px 32px 48px;max-width:var(--content-max)}
 h1{font-family:var(--font-display);font-weight:700;font-size:var(--fs-h1);letter-spacing:var(--tracking-tight);margin:0}
@@ -2138,14 +2194,17 @@ a.init:hover .ig{color:var(--brand)}
    <div class=brand><div class=logo></div><div><div class=bt>Integracomm IA</div><div class=bs>Central</div></div></div>
    <nav>
      <a class="nav-item__HOME_ON__" href="/">Início</a>
-     <a class="nav-item__RX_ON__" href="/raiox">Raio-X por Bundle</a>
      <a class="nav-item__ADM_ON__" href="/admin">Painel Administrativo</a>
+     <div class="nav-h">Áreas</div>
      <a class="nav-item" href="/growth">Growth / Assessoria</a>
      <a class="nav-item" href="/marketing">Marketing</a>
      <a class="nav-item" href="/prevendas">Pré-vendas</a>
      <a class="nav-item" href="/vendas">Vendas</a>
-     <a class="nav-item" href="/financeiro">Financeiro</a>
      <a class="nav-item" href="/operacoes">Operações</a>
+     <a class="nav-item" href="/financeiro">Financeiro</a>
+     <div class="nav-h">Visões da empresa</div>
+     <a class="nav-item__SM_ON__" href="/semana">Ações da Semana</a>
+     <a class="nav-item__RX_ON__" href="/raiox">Raio-X por Bundle</a>
    </nav>
    <div class=rail-foot><b>__USERMAIL__</b> · <a href="/logout" style="color:var(--text-muted);text-decoration:underline">sair</a><br>humano no loop — a IA só sinaliza</div>
  </aside>
@@ -2164,35 +2223,50 @@ __BODY__
             "<p class=secsub>pendentes primeiro · os interruptores aplicam NA HORA (vale em até 60s) · busca por nome/e-mail</p>"
             + _admin_html(users or []))
     else:
+        # COCKPIT (17/07): camadas em ordem de atenção — foco da semana → o que
+        # mudou → saúde → raio-x compacto → cards de área → iniciativas →
+        # defasagem (recolhida). Cada bloco resume e LINKA; nada recalculado.
         body = (
             "<h1>Visão central</h1>"
-            "<p class=sub>Painel de saúde da empresa: Growth, Marketing, Pré-vendas, Vendas, Operações e Financeiro ativas. A pior área do momento aparece primeiro na faixa de saúde.</p>"
-            f"<div class=kpis>{kpi_html}</div>"
+            "<p class=sub>o cockpit da empresa: o foco da semana e o que mudou primeiro; abaixo, o estado de cada "
+            "bundle e de cada área, as iniciativas priorizadas por R$ e as defasagens — cada bloco abre a visão completa.</p>"
+            + foco_html
             + mudancas +
+            f"<div class=kpis>{kpi_html}</div>"
             "<section><h2>Saúde por área</h2>"
             "<p class=secsub>diagnóstico automático do mês corrente, ordenado da área que mais demanda atenção para a mais saudável — clique para abrir</p>"
             f"<div class=hbar>{hbar}</div></section>"
+            + raiox_mini +
+            "<section><h2>Áreas</h2>"
+            "<p class=secsub>resumo do andamento de cada área — clique para abrir o painel completo; verde = no ritmo/meta, vermelho = atenção</p>"
+            f"<div class=areas>{area_cards}</div></section>"
             "<section><h2>Iniciativas sugeridas</h2>"
             "<p class=secsub>derivadas dos sinais das áreas ativas e ORDENADAS pelo impacto estimado em R$/mês "
-            "(faixa conservador–otimista, premissa explícita) — priorização da empresa, não de uma área só</p>"
+            "(faixa conservador–otimista, premissa explícita) — priorização da empresa, não de uma área só · "
+            "selo amarelo = casa com um objetivo confirmado da semana</p>"
             + _hint("Iniciativas sugeridas",
                     "O que mostra: onde agir primeiro, com o valor estimado de cada gargalo em R$/mês — a moeda "
                     "comum que permite comparar áreas diferentes (lead, SLA, churn, execução).\n"
                     "Como ler: a faixa (conservador–otimista) e a PREMISSA de cada estimativa estão escritas no item — "
                     "são potenciais, não promessas; número sem premissa engana. A lista vem ordenada do maior para o "
                     "menor impacto. Cada item traz também a defasagem esperada: quanto tempo a correção leva para "
-                    "aparecer no resultado (mediana histórica).\n"
+                    "aparecer no resultado (mediana histórica). O selo 'foco desta semana' marca a iniciativa que "
+                    "aponta para o mesmo lugar que um objetivo confirmado na Ações da Semana (casamento por "
+                    "palavras-chave — heurístico).\n"
                     "Fique de olho: (1) valide as premissas com o gestor da área antes de mexer em processo; "
                     "(2) não reavalie uma correção antes da janela de maturação — reverter decisão certa cedo demais "
                     "é o erro mais caro; (3) 'exposição' (execução crítica) é risco exposto, não perda certa.")
             + f"<div class=central>{init_html}</div></section>"
-            "<section><h2>Defasagem esperada das correções</h2>"
-            "<p class=secsub>medida no NOSSO histórico (medianas) — quando cobrar resultado de cada tipo de correção; "
-            "onde não há base, está dito</p>"
-            f"<div class=central>{defasagem_html}</div></section>"
-            "<section><h2>Áreas</h2>"
-            "<p class=secsub>resumo do andamento de cada área — clique para abrir o painel completo; verde = no ritmo/meta, vermelho = atenção</p>"
-            f"<div class=areas>{area_cards}</div></section>"
+            # defasagem RECOLHIDA por padrão (Cockpit): é referência de consulta
+            # ('quando cobrar'), não leitura diária
+            "<details style='margin-top:var(--space-8)'>"
+            "<summary style='cursor:pointer;font-family:var(--font-display);font-weight:600;"
+            "font-size:var(--fs-lg);list-style:none'>Defasagem esperada das correções "
+            "<span style='font-size:var(--fs-2xs);color:var(--text-faint);font-weight:400'>"
+            "(referência — clique para abrir)</span></summary>"
+            "<p class=secsub style='margin-top:6px'>medida no NOSSO histórico (medianas) — quando cobrar resultado "
+            "de cada tipo de correção; onde não há base, está dito</p>"
+            f"<div class=central>{defasagem_html}</div></details>"
             # botão All Hands ao FINAL da página (Otávio 15/07: uso 1x/mês —
             # posição discreta, mas com cara de botão)
             "<p class=note style='margin-top:18px'><a href='/allhands' style='display:inline-block;"
@@ -2208,6 +2282,7 @@ __BODY__
             .replace("__HOME_ON__", " active" if page != "admin" and body_override is None else "")
             .replace("__ADM_ON__", " active" if page == "admin" else "")
             .replace("__RX_ON__", " active" if active_page == "raiox" else "")
+            .replace("__SM_ON__", " active" if active_page == "semana" else "")
             .replace("__BODY__", body))
 
 
@@ -3923,6 +3998,7 @@ from .marketing.ui import router as _marketing_router  # noqa: E402
 from .operacoes.ui import router as _operacoes_router  # noqa: E402
 from .raiox import router as _raiox_router  # noqa: E402
 from .sales.ui import router as _sales_router  # noqa: E402
+from .semana import router as _semana_router  # noqa: E402
 
 app.include_router(_report_router)
 app.include_router(_marketing_router)
@@ -3931,3 +4007,4 @@ app.include_router(_operacoes_router)
 app.include_router(_financeiro_router)
 app.include_router(_allhands_router)
 app.include_router(_raiox_router)
+app.include_router(_semana_router)
