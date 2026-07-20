@@ -4082,6 +4082,30 @@ def _relatorios_content(rep: dict, scores: list[dict]) -> str:
         ".then(function(x){m.textContent=x[0]?'enviado ao grupo ✓':(x[1].error||'falha no envio');b.disabled=false;})"
         ".catch(function(){m.textContent='falha de rede';b.disabled=false;});}</script>"
         + _assessoria_block(scores)
+        # Relatório de Churn por Bundle (Otávio 20/07: dossiê do caso B3
+        # produtizado — gerado sob demanda p/ qualquer bundle)
+        + ("<section><div class=sec-head><h2>Relatório de Churn por Bundle"
+           + _hint("Relatório de Churn por Bundle",
+                   "O que mostra: o dossiê completo do churn de um plano — o número em contexto (taxa da "
+                   "janela vs média histórica), o padrão de RELACIONAMENTO da equipe no WhatsApp antes de "
+                   "cada pedido (respostas em 24h, quem inicia a conversa, silêncios longos) contra um grupo "
+                   "de controle saudável, o padrão de ENTREGA no ClickUp (30 dias pré-pedido vs a média da "
+                   "própria conta), os casos um a um e o churn precoce por canal de aquisição.\n"
+                   "Como ler: é um documento imprimível (Exportar/Imprimir vira PDF) pensado para levar a "
+                   "uma conversa de diretoria. Ressalvas aparecem SEMPRE junto do número — amostra pequena, "
+                   "análise de mensagens parcial, motivo não preenchido.\n"
+                   "Fique de olho: a primeira geração leva alguns minutos (mensagens do WhatsApp); depois "
+                   "fica em cache por 20h — Regerar força a análise de novo. Associação não é causa "
+                   "comprovada: use como pauta de investigação e ação, não como veredito.")
+           + "</h2><span class=sub>dossiê apresentável por plano — casos, relacionamento, entrega e canal</span></div>"
+           f"<div style='{_CARD}'><div style='display:flex;gap:10px;align-items:center;flex-wrap:wrap'>"
+           + "".join(f"<a href='/growth/churn-report?b={x}' target=_blank rel=noopener "
+                     "style='display:inline-block;padding:8px 18px;border-radius:999px;font-weight:600;"
+                     "font-size:var(--fs-sm);background:var(--surface-2);color:var(--text);"
+                     "border:1px solid var(--border-strong);text-decoration:none'>"
+                     f"Gerar {x}</a>" for x in ("B1", "B2", "B3", "B4", "B5"))
+           + "<span class=note style='margin-left:6px'>abre em nova aba · 1ª geração demora alguns minutos "
+             "(mensagens); depois é instantâneo (cache 20h)</span></div></div></section>")
         + block("Resumo executivo", _fmt_date_br(rep["data"]), resumo)
         + block("Piores contas", "menor score = pior; MRR quando conhecido", piores)
         + block("Distribuições", "faixa · estágio · trajetória", dists)
@@ -4098,6 +4122,7 @@ def _relatorios_content(rep: dict, scores: list[dict]) -> str:
 # capturar as rotas fixas /api/reports/summary e /send-slack definidas acima
 # (FastAPI casa na ordem de registro). Import tardio evita ciclo.
 from .report_api import router as _report_router  # noqa: E402
+from .churn_report import router as _churn_router  # noqa: E402
 from .allhands import router as _allhands_router  # noqa: E402
 from .financeiro.ui import router as _financeiro_router  # noqa: E402
 from .marketing.ui import router as _marketing_router  # noqa: E402
@@ -4107,6 +4132,7 @@ from .sales.ui import router as _sales_router  # noqa: E402
 from .semana import router as _semana_router  # noqa: E402
 
 app.include_router(_report_router)
+app.include_router(_churn_router)
 app.include_router(_marketing_router)
 app.include_router(_sales_router)
 app.include_router(_operacoes_router)
