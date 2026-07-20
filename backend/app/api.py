@@ -2499,7 +2499,7 @@ def _carga_content(scores: list[dict], mirror: dict | None) -> str:
     # tarefas recorrentes (semanais+) fazem squads com MENOS contas carregarem
     # MAIS trabalho; a carga real é o nº de tarefas ativas no ClickUp
     try:
-        from .sources.clickup_activities import open_tasks_count as _open_fn
+        from .sources.clickup_activities import open_task_ids as _open_fn
     except Exception:  # noqa: BLE001
         _open_fn = None
     # clientes pausados por inadimplência/concluídos ficam FORA das contagens
@@ -2512,16 +2512,26 @@ def _carga_content(scores: list[dict], mirror: dict | None) -> str:
 
     def _inativo(nm: str) -> str | None:
         return _inat_fn(nm) if _inat_fn else None
+    # dedupe por ID de tarefa (caso LUFRAN 20/07): cliente com 2+ contas no
+    # painel (bundle + ADS, ou grupo duplicado) casa com o MESMO card do
+    # ClickUp e a tarefa contava 2x. A conta 'principal' (não-ADS) entra
+    # primeiro e fica com a atribuição.
+    def _ordem_dedup(s):
+        return (s["name"].upper().lstrip("[ ").startswith("ADS"), s["name"])
     tarefas_sq: dict[str, int] = {}
+    _abertas_vistas: set[str] = set()
     if _open_fn is not None:
-        for s in scores:
+        for s in sorted(scores, key=_ordem_dedup):
             k_sq = _resolve_squad(s["name"], mirror)
             if k_sq is None or _inativo(s["name"]):
                 continue
             try:
-                tarefas_sq[k_sq] = tarefas_sq.get(k_sq, 0) + (_open_fn(s["name"]) or 0)
+                ids = _open_fn(s["name"]) or set()
             except Exception:  # noqa: BLE001 — conta sem match não derruba a aba
-                pass
+                continue
+            novas = ids - _abertas_vistas
+            _abertas_vistas |= novas
+            tarefas_sq[k_sq] = tarefas_sq.get(k_sq, 0) + len(novas)
     medias = [d["n"] / p for _k, p, d in cap_rows if p]
     med_cp = (sum(medias) / len(medias)) if medias else None
     _tps = [tarefas_sq.get(k, 0) / p for k, p, _d in cap_rows if p] if tarefas_sq else []
@@ -2597,9 +2607,11 @@ def _carga_content(scores: list[dict], mirror: dict | None) -> str:
     atr_sem_squad = 0
     atr_inativos = 0        # tarefas vencidas de clientes pausados/concluídos
     atr_inativos_contas = 0  # (fora da conta — serviço suspenso; Otávio 20/07)
+    atr_dup = 0             # mesma tarefa em 2+ contas do MESMO cliente (LUFRAN)
+    _atr_vistas: set[str] = set()
     if _atr_fn is not None:
         _agora = dt.datetime.now(dt.timezone.utc)
-        for s in scores:
+        for s in sorted(scores, key=_ordem_dedup):
             try:
                 tasks = _atr_fn(s["name"], _agora) or []
             except Exception:  # noqa: BLE001 — conta sem match não derruba a seção
@@ -2609,6 +2621,12 @@ def _carga_content(scores: list[dict], mirror: dict | None) -> str:
             if _inativo(s["name"]):
                 atr_inativos += len(tasks)
                 atr_inativos_contas += 1
+                continue
+            ineditas = [t for t in tasks if t["url"] not in _atr_vistas]
+            atr_dup += len(tasks) - len(ineditas)
+            _atr_vistas.update(t["url"] for t in ineditas)
+            tasks = ineditas
+            if not tasks:
                 continue
             sq = _resolve_squad(s["name"], mirror)
             if sq is None:
@@ -2769,6 +2787,10 @@ def _carga_content(scores: list[dict], mirror: dict | None) -> str:
                      f"{atr_inativos_contas} cliente(s) <b>pausado(s) por inadimplência ou concluído(s)</b> no ClickUp "
                      "ficaram fora das contagens — serviço suspenso não é cobrança do squad. "
                      "Voltam a contar se o cliente reativar.</p>")
+    if atr_dup:
+        nota_atr += (f"<p class=note style='margin-top:4px'>{atr_dup} tarefa(s) apareciam em <b>mais de uma conta "
+                     "do mesmo cliente</b> (ex.: conta do bundle + conta ADS) e foram contadas UMA vez, na conta "
+                     "principal — se o cliente tem grupos duplicados no painel, vale unificar.</p>")
     resto_resp = (f"<p class=note style='margin-top:8px'>+ {len(resp_ord) - 15} responsável(is) com menos atrasos "
                   "fora do top 15.</p>" if len(resp_ord) > 15 else "")
     atrasos_html = (

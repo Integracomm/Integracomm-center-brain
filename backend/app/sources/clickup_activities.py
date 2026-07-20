@@ -566,6 +566,22 @@ def client_inactive_status(account_name: str) -> str | None:
         return None
 
 
+def open_task_ids(account_name: str) -> set[str] | None:
+    """Ids das tarefas ABERTAS da conta — versão com id do open_tasks_count,
+    p/ o chamador DEDUPLICAR entre contas do MESMO cliente (caso LUFRAN 20/07:
+    conta do bundle + conta ADS casam com o mesmo card e a tarefa contava 2x
+    na capacidade/atrasos do squad). None = API não configurada."""
+    s = get_settings()
+    if not (s.clickup_api_token and s.clickup_list_assessoria):
+        return None
+    out: set[str] = set()
+    for lst in _report_lists(s):
+        for t in _subs_lookup(s.clickup_api_token, lst, norm_account(account_name)):
+            if not (t.get("date_done") or t.get("date_closed")):
+                out.add(t["id"])
+    return out
+
+
 def open_tasks_count(account_name: str) -> int | None:
     """Tarefas ABERTAS da conta (sem conclusão/fechamento) nos índices já
     cacheados — carga REAL de trabalho p/ a Capacidade por squad (Otávio 16/07:
