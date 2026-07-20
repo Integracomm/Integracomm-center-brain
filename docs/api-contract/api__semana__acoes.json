@@ -1,0 +1,171 @@
+{
+  "week": "2026-07-20",
+  "acoes": [
+    {
+      "id": "74bc0f47-3639-446d-a6af-634c09dfa309",
+      "team": "marketing",
+      "texto": "Destrave a geração: 590 de 1506 leads da meta com 65% do mês — 382 leads atrás do ritmo · semana anterior: 244 leads entraram na semana (alvo: +275). Revise verba/campanhas nas Metas do Semestre e o CPL diário na aba Mídia.",
+      "refs": {
+        "links": [
+          [
+            "/marketing?view=metas",
+            "Metas do Semestre"
+          ],
+          [
+            "/marketing?view=midia",
+            "Mídia diária"
+          ]
+        ]
+      },
+      "lag": "lead novo→contrato ~4 dia(s) (mediana histórica)",
+      "objetivo": "Recuperar o ritmo de leads"
+    },
+    {
+      "id": "dc636e62-8573-4276-8de2-ad28407ceadd",
+      "team": "prevendas",
+      "texto": "Não desperdice o que já entrou: 65 leads do mês sem 1º contato — lead parado esfria e anula o esforço de geração.",
+      "refs": {
+        "links": [
+          [
+            "/prevendas?view=speed",
+            "Speed-to-Lead"
+          ]
+        ]
+      },
+      "lag": "efeito em contratos ~4 dia(s) (mediana histórica)",
+      "objetivo": "Recuperar o ritmo de leads"
+    },
+    {
+      "id": "614c0a7f-619f-4060-9518-79fe03cde317",
+      "team": "vendas",
+      "texto": "Feche nas oportunidades B1 JÁ abertas: 8 no pipe (~R$ 71.994) — ex.: Lead 1 - 24718, Lead 2 - 24744, Lead 3 - 24751. Fechar 6 destas cumpre o objetivo.",
+      "refs": {
+        "deals": [
+          "Lead 1 - 24718",
+          "Lead 2 - 24744",
+          "Lead 3 - 24751",
+          "Lead 4 - 24741",
+          "Lead 5 - 24695",
+          "Lead 6 - 24729",
+          "Lead 7 - 24713",
+          "fernando - 24585"
+        ],
+        "links": [
+          [
+            "/vendas?view=forecast",
+            "Forecast de Vendas"
+          ]
+        ]
+      },
+      "lag": "oportunidade→contrato ~3 dia(s) (mediana histórica)",
+      "objetivo": "Fechar +6 B1"
+    },
+    {
+      "id": "492b0984-5bb0-4621-82ed-f06ecb7c7eb9",
+      "team": "prevendas",
+      "texto": "Priorize o 1º contato em ≤15min: oportunidade B1 atendida rápido fechou 12% vs 7% acima de 1h (120d) — zere a fila sem contato.",
+      "refs": {
+        "links": [
+          [
+            "/prevendas?view=speed",
+            "Speed-to-Lead"
+          ]
+        ]
+      },
+      "lag": "efeito no fechamento ~3 dia(s) (mediana histórica)",
+      "objetivo": "Fechar +6 B1"
+    },
+    {
+      "id": "fa591350-b1e7-437e-b141-db4675f35bd5",
+      "team": "marketing",
+      "texto": "Priorize a geração para B1 no CLIENTE 202 com melhor retenção: Orgânico/Outros (79% dos 24 clientes B1 seguem ativos). Atenção: parte do efeito cai nas próximas semanas.",
+      "refs": {
+        "links": [
+          [
+            "/marketing?view=ciclo",
+            "Ciclo de CLIENTE 101"
+          ],
+          [
+            "/raiox?b=B1",
+            "Raio-X B1"
+          ]
+        ]
+      },
+      "lag": "lead novo→contrato ~4 dia(s) (mediana histórica)",
+      "objetivo": "Fechar +6 B1"
+    },
+    {
+      "id": "1d88721f-7b63-4dcc-8655-676ffbfcae00",
+      "team": "growth",
+      "texto": "Proteja os B1 ativos em risco (6 contas — ex.: [ST-B1-S2] CLIENTE 055 CLIENTE 055, [ST-B1-S1] TOP NEW LU VA, [ST-B1-S2] FR CLIENTE 142 | IN): perder pelo outro lado anula o esforço de aquisição da semana.",
+      "refs": {
+        "links": [
+          [
+            "/growth?view=contas&ids=40b79563-c385-461d-9436-1f0b6c816856,9f1874fe-fdb8-4fcb-b0d2-2d69e520d047,b6b869b7-8f09-42d1-919c-d6db31bf65e7,edb15598-1da0-4383-be26-0c0cf06a0445,ec120d83-5f40-41d2-8520-b28b918aa06a,2fa04620-431f-4d0c-b861-6443d247bcd1",
+            "contas em risco"
+          ]
+        ],
+        "contas": [
+          "[ST-B1-S2] CLIENTE 055",
+          "[ST-B1-S1] CLIENTE 144",
+          "[ST-B1-S2] CLIENTE 165 - ID: 15882",
+          "[ST-B1-S1] CLIENTE 227 - ID: 15085",
+          "[ST-B1-S2] CLIENTE 224 - ID: 17195",
+          "[ST-B1-S1] CLIENTE 039 - ID: 17234"
+        ]
+      },
+      "lag": "efeito imediato (retenção)",
+      "objetivo": "Fechar +6 B1"
+    },
+    {
+      "id": "57df4876-e91b-483b-abf4-3df928acc345",
+      "team": "growth",
+      "texto": "Intervenha esta semana nas 8 contas B3 em risco crítico/alto — ex.: [S-B3-S1] SJ CLIENTE 045 SÃO P, [S-B3-S1] contato-26 CLIENTE 195 CLIENTE 162, [S-B3-S2] CLIENTE 076 DE CLIENTE 076 , [S-B3-S1] CLIENTE 020 TREN. A fila com dor dominante e plano de ação está na aba Contas/Alertas.",
+      "refs": {
+        "links": [
+          [
+            "/growth?view=contas&ids=eb4e8881-6b4e-4fa1-b07f-d0f57634ac51,cfbefe68-a6da-4b39-8e5d-423d4c11d292,57cf50ed-aefa-49fc-a630-001adeb814d8,19aa4b70-67db-40d1-beda-b26faabbc89a,7039a7cf-58d7-4cfa-96bc-a923917c0bf7,2e2d8785-fb56-41e5-bda2-88d65e1336d3,8385a0a0-c183-4db9-a0f4-8e96a871c74b,47708cfa-1d3c-437f-857d-e0aaeeb64e11",
+            "contas em risco"
+          ]
+        ],
+        "contas": [
+          "[S-B3-S1] CLIENTE 223 - ID: 17230",
+          "[S-B3-S1] CLIENTE 195 - ID: 18998",
+          "[S-B3-S2] CLIENTE 076 - ID: 15970",
+          "[S-B3-S1] CLIENTE 020 - ID: 17738",
+          "[S-B3-S2] CLIENTE 099",
+          "[S-B3-S2] CLIENTE 036 - ID: 16240",
+          "[S- B3-S2] CLIENTE 113 - ID: 15601",
+          "[S-B3-S2] CLIENTE 065 - ID: 15966"
+        ]
+      },
+      "lag": "efeito imediato (retenção)",
+      "objetivo": "Reduzir o churn do B3"
+    },
+    {
+      "id": "0e55ffd1-d99d-4da5-82b8-0da3cad01ed8",
+      "team": "vendas",
+      "texto": "Feche nas oportunidades B2 JÁ abertas: 8 no pipe (~R$ 24.500) — ex.: Lead 8 - 24778, Lead 9 - 23708, Lead 10 - 24737. Fechar 8 destas cumpre o objetivo.",
+      "refs": {
+        "deals": [
+          "Lead 8 - 24778",
+          "Lead 9 - 23708",
+          "Lead 10 - 24737",
+          "Graziele Sant'Lead 11 - 24438",
+          "Lead 12 - 24491",
+          "João CLIENTE 223 do Lead 13 - 24597",
+          "Lead 14 - 24631",
+          "Liara nunes - 24581"
+        ],
+        "links": [
+          [
+            "/vendas?view=forecast",
+            "Forecast de Vendas"
+          ]
+        ]
+      },
+      "lag": "oportunidade→contrato ~3 dia(s) (mediana histórica)",
+      "objetivo": "Fechar +8 B2"
+    }
+  ]
+}

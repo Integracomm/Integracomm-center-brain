@@ -1,0 +1,41 @@
+{
+  "week": "2026-07-20",
+  "objetivos": [
+    {
+      "id": "4d64c5ea-b0a0-45b8-b2e8-566b73a73780",
+      "title": "Recuperar o ritmo de leads",
+      "metric": "leads",
+      "target": 382.0,
+      "rationale": "590 de 1506 leads da meta com 65% do mês — 382 leads atrás do ritmo · semana anterior: 244 leads entraram na semana (alvo: +275)",
+      "source": "sistema",
+      "status": "confirmado"
+    },
+    {
+      "id": "31f24f7e-2547-418a-add6-8b89565d8ab6",
+      "title": "Fechar +6 B1",
+      "metric": "B1:bookings",
+      "target": 6.0,
+      "rationale": "meta mensal 16, fechados 8 (50% da meta com 65% do mês) — faltam 8 em 11 dias (~6/semana no ritmo necessário)",
+      "source": "sistema",
+      "status": "confirmado"
+    },
+    {
+      "id": "ca8abfa2-3d8c-4190-ad1b-07c82bb38d28",
+      "title": "Reduzir o churn do B3",
+      "metric": "B3:churn",
+      "target": 32.0,
+      "rationale": "32 contas B3 em risco crítico/alto — R$ 51.148 de MRR em jogo · semana anterior: nenhum desfecho registrado na semana — resultado ainda em maturação (defasagem ~60 dias); não leia como falha da semana",
+      "source": "sistema",
+      "status": "confirmado"
+    },
+    {
+      "id": "37e5d1e7-4325-44a0-87df-32703e2d0f1a",
+      "title": "Fechar +8 B2",
+      "metric": "B2:bookings",
+      "target": 8.0,
+      "rationale": "meta mensal 16, fechados 4 (25% da meta com 65% do mês) — faltam 12 em 11 dias (~8/semana no ritmo necessário) · semana anterior: 0 de 6 B2 fechados na semana",
+      "source": "sistema",
+      "status": "confirmado"
+    }
+  ]
+}

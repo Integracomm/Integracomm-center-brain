@@ -1,0 +1,153 @@
+{
+  "data": "2026-07-20",
+  "monitoradas": 249,
+  "avaliaveis": 246,
+  "sem_dados": 3,
+  "alertas": {
+    "critico": 10,
+    "alto": 155,
+    "atencao": 37
+  },
+  "alertas_total": 202,
+  "mrr_risco": 177872.99,
+  "mrr_critico": 12250.0,
+  "faixa": {
+    "alto": 19,
+    "medio": 155,
+    "baixo": 72,
+    "sem_dados": 3
+  },
+  "estagio": {
+    "insatisfacao_latente": 34,
+    "desengajamento_inicial": 135,
+    "insatisfacao_ativa": 20,
+    "saudavel": 50,
+    "intencao_de_saida": 10
+  },
+  "trajetoria": {
+    "caindo": 190,
+    "subindo": 26,
+    "estavel": 33
+  },
+  "piores": [
+    {
+      "nome": "CLIENTE 234 - ID: 11750",
+      "score": 37.8,
+      "estagio": "insatisfacao_ativa",
+      "mrr": null
+    },
+    {
+      "nome": "[S-B3-S1] CLIENTE 195 - ID: 18998",
+      "score": 39.5,
+      "estagio": "intencao_de_saida",
+      "mrr": 5800.0
+    },
+    {
+      "nome": "CLIENTE 040 - ID: 182",
+      "score": 40.0,
+      "estagio": "intencao_de_saida",
+      "mrr": null
+    },
+    {
+      "nome": "CLIENTE 206",
+      "score": 40.5,
+      "estagio": "insatisfacao_ativa",
+      "mrr": null
+    },
+    {
+      "nome": "CLIENTE 069",
+      "score": 42.0,
+      "estagio": "insatisfacao_ativa",
+      "mrr": null
+    },
+    {
+      "nome": "[S-B4-S1] CLIENTE 150 - ID: 23105",
+      "score": 43.5,
+      "estagio": "insatisfacao_ativa",
+      "mrr": null
+    },
+    {
+      "nome": "CLIENTE 218",
+      "score": 43.5,
+      "estagio": "desengajamento_inicial",
+      "mrr": null
+    },
+    {
+      "nome": "CLIENTE 064 - ID: 21684",
+      "score": 44.6,
+      "estagio": "insatisfacao_ativa",
+      "mrr": null
+    },
+    {
+      "nome": "CLIENTE 170 - ID: 202",
+      "score": 45.3,
+      "estagio": "insatisfacao_latente",
+      "mrr": null
+    },
+    {
+      "nome": "CLIENTE 129 - ID: 132",
+      "score": 46.0,
+      "estagio": "insatisfacao_latente",
+      "mrr": null
+    }
+  ],
+  "criticos": [
+    {
+      "nome": "[S-B3-S1] CLIENTE 020 - ID: 17738",
+      "mrr": 5800.0
+    },
+    {
+      "nome": "[S- B3-S2] CLIENTE 031 - ID: 15207",
+      "mrr": null
+    },
+    {
+      "nome": "CLIENTE 040 - ID: 182",
+      "mrr": null
+    },
+    {
+      "nome": "CLIENTE 095 - ID: 163",
+      "mrr": null
+    },
+    {
+      "nome": "CLIENTE 121 - ID: 114",
+      "mrr": 650.0
+    },
+    {
+      "nome": "CLIENTE 137 - ID: 133",
+      "mrr": null
+    },
+    {
+      "nome": "CLIENTE 168 - ID: 18361",
+      "mrr": null
+    },
+    {
+      "nome": "CLIENTE 174 - ID: 116",
+      "mrr": null
+    },
+    {
+      "nome": "[S-B3-S1] CLIENTE 195 - ID: 18998",
+      "mrr": 5800.0
+    },
+    {
+      "nome": "CLIENTE 245 - ID: 19306",
+      "mrr": null
+    }
+  ],
+  "nao_avaliaveis": [
+    "CLIENTE 045 - ID: 24134",
+    "[ST-B1-S1] CLIENTE 125 - ID: 24018",
+    "[ST-B1-S2] CLIENTE 163 - ID: 24494"
+  ],
+  "alertas_por_squad": {
+    "B1-S2": 43,
+    "B1-S1": 28,
+    "B4-S1": 27,
+    "B2-S1": 22,
+    "B5-S3": 19,
+    "B3-S2": 19,
+    "B3-S1": 18,
+    "B2-S2": 17,
+    "sem squad": 9
+  },
+  "exec_atrasada": 7
+}

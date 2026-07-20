@@ -1,0 +1,120 @@
+{
+  "header": {
+    "account_id": "00fa15ed-d32f-4c4c-abe5-959fe3e55a1e",
+    "account_name": "CLIENTE 001 - ID: 206",
+    "cliente": "CLIENTE 001 - ID: 206",
+    "plano": null,
+    "gc": null,
+    "equipe": null,
+    "reference_month": "2026-06",
+    "reference_month_label": "junho/2026",
+    "prev_month": "2026-05",
+    "prev_month_label": "maio/2026",
+    "clickup_url": null
+  },
+  "equipe_squad": null,
+  "faturamento": {
+    "available": true,
+    "aviso": "Atenção: a planilha linkada na mestre declara outro cliente (“Max Titanium”) — o faturamento abaixo pode não ser desta conta; verificar o link na coluna C da mestre.",
+    "comparativo": [
+      {
+        "cnpj": "1",
+        "rows": [
+          {
+            "marketplace": "Mercado Livre",
+            "ref": null,
+            "prev": 578949.0,
+            "delta_abs": null,
+            "delta_pct": null
+          },
+          {
+            "marketplace": "Shopee",
+            "ref": null,
+            "prev": 20888.44,
+            "delta_abs": null,
+            "delta_pct": null
+          },
+          {
+            "marketplace": "Amazon",
+            "ref": null,
+            "prev": 8464.35,
+            "delta_abs": null,
+            "delta_pct": null
+          },
+          {
+            "marketplace": "Magalu",
+            "ref": null,
+            "prev": 0.0,
+            "delta_abs": null,
+            "delta_pct": null
+          }
+        ],
+        "total_ref": 0.0,
+        "total_prev": 608301.7899999999,
+        "ref_lancado": false,
+        "prev_antes_inicio": false
+      }
+    ],
+    "match_note": "match parcial (contém) com “CLIENTE 001 | CLIENTE 187” ⚠ planilha declara outro cliente",
+    "sheet_link": "https://docs.google.com/spreadsheets/d/EXEMPLO",
+    "months_meta": "rótulo 2025 na coluna 1 (ancora o bloco 1)",
+    "conf": false
+  },
+  "atividades": {
+    "source": "clickup_api",
+    "aviso": null,
+    "total": 0,
+    "total_hist": 0,
+    "grupos": [],
+    "atrasadas": {
+      "source": "clickup_api",
+      "aviso": null,
+      "tasks": []
+    },
+    "proximas": {
+      "source": "clickup_api",
+      "aviso": null,
+      "tasks": [],
+      "geradas_em": "2026-07-20"
+    }
+  },
+  "saude": {
+    "score": 47.1,
+    "faixa": "alto",
+    "estagio": "insatisfação latente",
+    "trajetoria": "piorando",
+    "evaluable": true,
+    "motivos": [
+      "iniciativa_cliente: risco 89% (tendência piorando)",
+      "silencio: risco 64% (tendência piorando)",
+      "tom_claude: risco 100% (tendência piorando)",
+      "comprimento_msg: risco 89% (tendência piorando)"
+    ],
+    "tom": {
+      "rotulo": "estável",
+      "detalhe": "apenas 4% dos dias de conversa com tom negativo"
+    },
+    "exec_score": null,
+    "exec_motivo": null,
+    "sinais_do_mes": false,
+    "score_computado_em": "2026-07-16"
+  },
+  "observacoes": {
+    "texto": "A conta encerrou junho/2026 com score de relacionamento 47.1/100 (faixa alto, insatisfação latente), com trajetória piorando. O faturamento de junho/2026 ainda não estava lançado na planilha na data de geração (a planilha é atualizada todo dia 1º) — regerar o relatório após a atualização. Nenhuma atividade concluída registrada no período.",
+    "sugestoes": [
+      "Sem entregas concluídas no mês — revisar o plano de ação no ClickUp e comunicar o andamento ao cliente.",
+      "Reunião de alinhamento — insatisfação latente; agir antes que escale. Dor principal: queda de INICIATIVA — o cliente não procura mais a gente. Traga valor proativamente para reativar o diálogo; não espere ele chamar."
+    ],
+    "gerado_por": "template determinístico (LLM entra quando os créditos de API forem liberados)"
+  },
+  "case_updates": [],
+  "historico": [],
+  "plano_acao": {
+    "texto": "### Diagnóstico\nA operação CLIENTE 001 (ID 206) está em estado crítico apesar do tom aparentemente estável: score 47.1/100 (faixa alta de risco), trajetória piorando, estágio de \"insatisfação latente\". Os quatro motivos de risco apontam para o mesmo padrão — **desengajamento silencioso**: iniciativa do cliente caindo (89%, piorando), silêncio crescente (64%, piorando), comprimento de mensagens reduzindo (89%, piorando) e tom_claude no limite máximo (100%, piorando). Isso é mais grave do que reclamações abertas: o cliente está se afastando sem dar sinais explícitos de insatisfação. Agrava o quadro **zero atividades concluídas no mês** — sinal de que a conta está sem cadência de acompanhamento — e faturamento de junho ainda não lançado, o que impede avaliar se a operação também está perdendo receita.\n\n### Objetivo da próxima reunião\nReabrir o diálogo, entender a causa do afastamento e reengajar o cliente antes que a insatisfação latente vire churn explícito ou não-renovação.\n\n### Plano de ação (próximas 2 semanas)\n1. Levantar o faturamento de junho/2026 do CNPJ antes da reunião — comparar com R$ 608.302 de maio para saber se há queda de performance associada ao silêncio.\n2. Revisar histórico de trocas recentes para identificar quando a iniciativa do cliente começou a cair e o que mudou (mudança de contato, expectativa não atendida, resposta lenta nossa?).\n3. Agendar reunião de \"check-in\" (não operacional) com o principal contato da CLIENTE 001, com pauta aberta para ouvir percepções.\n4. Retomar cadência mínima de atividades — nenhuma foi concluída no mês; criar ao menos 2-3 touchpoints estruturados (relatório de performance, sugestão de ação em Mercado Livre/Shopee, follow-up).\n5. Preparar um \"plano de valor\" com 1-2 ações concretas de melhoria para apresentar proativamente, mostrando iniciativa nossa para compensar a baixa do cliente.\n\n### Condução da reunião\nAbrir perguntando abertamente como estão avaliando a parceria e os resultados recentes — sem pressupor problema, mas dando espaço para desabafo. Apresentar dados de faturamento e reforçar disponibilidade. Evitar tom comercial; focar em escuta ativa dado o padrão de silêncio.\n\n### Riscos e sinais para acompanhar\n- Silêncio contínuo mesmo após tentativa de contato (risco de não-resposta a convites).\n- Queda de faturamento em junho confirmando desengajamento com resultado.\n- Ausência de atividades novas no próximo ciclo, indicando abandono da conta pelo lado do gestor também.\n- Trajetória \"piorando\" em todos os 4 indicadores simultaneamente é alerta de urgência máxima.",
+    "gerado_por": "Claude (gestor de CS sênior)",
+    "gerado_em": "2026-07-20T12:10:22.746470+00:00"
+  },
+  "report_id": "65934e6b-4567-4063-aed8-a4373b4d5bf4",
+  "generated_at": "2026-07-20T12:10:23.041791+00:00",
+  "generated_by": "admin"
+}

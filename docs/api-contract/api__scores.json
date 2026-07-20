@@ -1,0 +1,571 @@
+{
+  "agents": [
+    "growth"
+  ],
+  "scores": [
+    {
+      "id": "91a77674-4d41-4015-976c-19b039d71ea4",
+      "account_id": "00fa15ed-d32f-4c4c-abe5-959fe3e55a1e",
+      "name": "CLIENTE 001 - ID: 206",
+      "score": 47.1,
+      "risk_band": "alto",
+      "stage": "insatisfacao_latente",
+      "trajectory": "caindo",
+      "confidence": 1.0,
+      "coverage_weeks": 16,
+      "evaluable": true,
+      "recommendation": "Investigar insatisfação latente: revisar entregas e tom recente; ligar para o cliente.",
+      "computed_at": "2026-07-16T23:59:59.999999+00:00",
+      "recurring_revenue": null,
+      "is_legacy": false,
+      "exec_score": null,
+      "exec_motivo": null,
+      "alert_sev": "alto",
+      "reasons": [
+        {
+          "text": "iniciativa_cliente: risco 89% (tendência piorando)",
+          "leading": true,
+          "weight": 40.3
+        },
+        {
+          "text": "silencio: risco 64% (tendência piorando)",
+          "leading": true,
+          "weight": 28.6
+        },
+        {
+          "text": "tom_claude: risco 100% (tendência piorando)",
+          "leading": true,
+          "weight": 25.0
+        },
+        {
+          "text": "comprimento_msg: risco 89% (tendência piorando)",
+          "leading": true,
+          "weight": 22.1
+        }
+      ]
+    },
+    {
+      "id": "dd5d8ff3-5edb-4202-8c19-17d20e2b94c6",
+      "account_id": "0149f304-fea2-4e19-8bcc-73c99855ada4",
+      "name": "CLIENTE 002",
+      "score": 67.9,
+      "risk_band": "medio",
+      "stage": "desengajamento_inicial",
+      "trajectory": "caindo",
+      "confidence": 1.0,
+      "coverage_weeks": 16,
+      "evaluable": true,
+      "recommendation": "Reengajar proativamente: o cliente está reduzindo iniciativa/conversa. Buscar contato de valor (resultado recente, próximos passos).",
+      "computed_at": "2026-07-16T23:59:59.999999+00:00",
+      "recurring_revenue": null,
+      "is_legacy": false,
+      "exec_score": null,
+      "exec_motivo": null,
+      "alert_sev": "alto",
+      "reasons": [
+        {
+          "text": "tom_claude: risco 100% (tendência piorando)",
+          "leading": true,
+          "weight": 25.0
+        },
+        {
+          "text": "silencio: risco 56% (tendência piorando)",
+          "leading": true,
+          "weight": 25.0
+        }
+      ]
+    },
+    {
+      "id": "d79a3fdc-2c85-4965-b7d3-6188147cbf09",
+      "account_id": "02557378-fd19-409d-9e6f-34feaef309d1",
+      "name": "CLIENTE 003",
+      "score": 77.2,
+      "risk_band": "baixo",
+      "stage": "desengajamento_inicial",
+      "trajectory": "caindo",
+      "confidence": 1.0,
+      "coverage_weeks": 14,
+      "evaluable": true,
+      "recommendation": "Reengajar proativamente: o cliente está reduzindo iniciativa/conversa. Buscar contato de valor (resultado recente, próximos passos).",
+      "computed_at": "2026-07-16T23:59:59.999999+00:00",
+      "recurring_revenue": null,
+      "is_legacy": false,
+      "exec_score": null,
+      "exec_motivo": null,
+      "alert_sev": "atencao",
+      "reasons": [
+        {
+          "text": "silencio: risco 35% (tendência piorando)",
+          "leading": true,
+          "weight": 15.9
+        },
+        {
+          "text": "tom_negativo: risco 42% (tendência piorando)",
+          "leading": true,
+          "weight": 10.5
+        },
+        {
+          "text": "comprimento_msg: risco 40% (tendência piorando)",
+          "leading": true,
+          "weight": 10.0
+        }
+      ]
+    },
+    {
+      "id": "e42d4010-9f00-4661-88c8-740e0b856455",
+      "account_id": "3a617b37-1c7b-4fda-b976-1506d6e9adba",
+      "name": "CLIENTE 045 - ID: 24134",
+      "score": 88.4,
+      "risk_band": "sem_dados",
+      "stage": "saudavel",
+      "trajectory": "estavel",
+      "confidence": 0.1,
+      "coverage_weeks": 1,
+      "evaluable": false,
+      "recommendation": "Sem dados suficientes de WhatsApp (1 semana(s) de cobertura, mínimo 2) — NÃO avaliável automaticamente. Revisar manualmente.",
+      "computed_at": "2026-07-16T23:59:59.999999+00:00",
+      "recurring_revenue": null,
+      "is_legacy": false,
+      "exec_score": 90.0,
+      "exec_motivo": "−10: apenas 2 atividade(s) movimentada(s) nas últimas 2 semanas (cliente pouco trabalhado).",
+      "alert_sev": null,
+      "reasons": [
+        {
+          "text": "silencio: risco 30% (tendência estável)",
+          "leading": true,
+          "weight": 13.5
+        }
+      ]
+    },
+    {
+      "id": "50d7b2f7-2455-4962-ad2d-489428e6404d",
+      "account_id": "03a58747-d148-4b54-b529-78cac3119951",
+      "name": "[ST-B2-S2] CLIENTE 005",
+      "score": 58.8,
+      "risk_band": "medio",
+      "stage": "insatisfacao_ativa",
+      "trajectory": "caindo",
+      "confidence": 1.0,
+      "coverage_weeks": 16,
+      "evaluable": true,
+      "recommendation": "Insatisfação ativa: escalar para o gestor da conta; plano de recuperação com prazos.",
+      "computed_at": "2026-07-16T23:59:59.999999+00:00",
+      "recurring_revenue": 1833.17,
+      "is_legacy": false,
+      "exec_score": 81.0,
+      "exec_motivo": "−5: 1 atividade(s) concluída(s) com atraso nas últimas 2 semanas. | −10: apenas 1 atividade(s) movimentada(s) nas últimas 2 semanas (cliente pouco trabalhado). | −4: apenas 45% das atividades com vencimento foram entregues no prazo.",
+      "alert_sev": "alto",
+      "reasons": [
+        {
+          "text": "tom_claude: risco 100% (tendência piorando)",
+          "leading": true,
+          "weight": 25.0
+        },
+        {
+          "text": "silencio: risco 33% (tendência piorando)",
+          "leading": true,
+          "weight": 15.0
+        },
+        {
+          "text": "critico_recente: risco 90% (tendência estável)",
+          "leading": false,
+          "weight": 13.5
+        },
+        {
+          "text": "comprimento_msg: risco 47% (tendência piorando)",
+          "leading": true,
+          "weight": 11.8
+        },
+        {
+          "text": "tom_negativo: risco 26% (tendência piorando)",
+          "leading": true,
+          "weight": 6.5
+        },
+        {
+          "text": "execucao: risco 19% (tendência estável)",
+          "leading": false,
+          "weight": 2.9
+        }
+      ]
+    },
+    {
+      "id": "e7605068-33ec-45d7-8a73-41a4d381103c",
+      "account_id": "0677a51e-523b-4478-b8a9-0172bd8b5411",
+      "name": "CLIENTE 007 - ID: 19084",
+      "score": 80.4,
+      "risk_band": "baixo",
+      "stage": "saudavel",
+      "trajectory": "estavel",
+      "confidence": 1.0,
+      "coverage_weeks": 13,
+      "evaluable": true,
+      "recommendation": "Sem ação — manter acompanhamento padrão.",
+      "computed_at": "2026-07-16T23:59:59.999999+00:00",
+      "recurring_revenue": null,
+      "is_legacy": false,
+      "exec_score": 99.0,
+      "exec_motivo": "+5: cadência saudável — entregas distribuídas em vários dias. | −6: apenas 36% das atividades com vencimento foram entregues no prazo.",
+      "alert_sev": null,
+      "reasons": [
+        {
+          "text": "silencio: risco 41% (tendência piorando)",
+          "leading": true,
+          "weight": 18.4
+        },
+        {
+          "text": "iniciativa_cliente: risco 40% (tendência piorando)",
+          "leading": true,
+          "weight": 18.0
+        }
+      ]
+    },
+    {
+      "id": "cf0ef43e-258c-4fb5-9ea5-12c73960e910",
+      "account_id": "19aa4b70-67db-40d1-beda-b26faabbc89a",
+      "name": "[S-B3-S1] CLIENTE 020 - ID: 17738",
+      "score": 56.9,
+      "risk_band": "medio",
+      "stage": "intencao_de_saida",
+      "trajectory": "estavel",
+      "confidence": 1.0,
+      "coverage_weeks": 13,
+      "evaluable": true,
+      "recommendation": "Risco de saída iminente: intervenção do líder de Growth; proposta de retenção concreta.",
+      "computed_at": "2026-07-02T23:59:59.999999+00:00",
+      "recurring_revenue": 5800.0,
+      "is_legacy": false,
+      "exec_score": 82.0,
+      "exec_motivo": "−10: apenas 1 atividade(s) movimentada(s) nas últimas 2 semanas (cliente pouco trabalhado). | −8: nenhuma atividade concluída nas últimas 2 semanas (sem entregas recentes).",
+      "alert_sev": "critico",
+      "reasons": [
+        {
+          "text": "iniciativa_cliente: risco 78% (tendência piorando)",
+          "leading": true,
+          "weight": 34.9
+        },
+        {
+          "text": "comprimento_msg: risco 75% (tendência piorando)",
+          "leading": true,
+          "weight": 18.6
+        },
+        {
+          "text": "fala_em_cancelar: risco 90% (tendência estável)",
+          "leading": false,
+          "weight": 13.5
+        },
+        {
+          "text": "tom_negativo: risco 45% (tendência piorando)",
+          "leading": true,
+          "weight": 11.3
+        },
+        {
+          "text": "execucao: risco 18% (tendência estável)",
+          "leading": false,
+          "weight": 2.7
+        }
+      ]
+    },
+    {
+      "id": "ee354d53-302c-4116-b7e2-b73a8de0acb3",
+      "account_id": "05b118ca-4870-4ca5-b47d-18e1f342375f",
+      "name": "CLIENTE 006 - ID: 16718",
+      "score": 57.7,
+      "risk_band": "medio",
+      "stage": "insatisfacao_ativa",
+      "trajectory": "subindo",
+      "confidence": 0.93,
+      "coverage_weeks": 9,
+      "evaluable": true,
+      "recommendation": "Insatisfação ativa: escalar para o gestor da conta; plano de recuperação com prazos.",
+      "computed_at": "2026-07-16T23:59:59.999999+00:00",
+      "recurring_revenue": 1833.17,
+      "is_legacy": false,
+      "exec_score": 85.0,
+      "exec_motivo": "−10: apenas 0 atividade(s) movimentada(s) nas últimas 2 semanas (cliente pouco trabalhado). | −5: apenas 42% das atividades com vencimento foram entregues no prazo.",
+      "alert_sev": "alto",
+      "reasons": [
+        {
+          "text": "tom_claude: risco 63% (tendência piorando)",
+          "leading": true,
+          "weight": 15.7
+        },
+        {
+          "text": "silencio: risco 33% (tendência piorando)",
+          "leading": true,
+          "weight": 14.8
+        },
+        {
+          "text": "critico_recente: risco 90% (tendência estável)",
+          "leading": false,
+          "weight": 13.5
+        },
+        {
+          "text": "tom_negativo: risco 49% (tendência piorando)",
+          "leading": true,
+          "weight": 12.2
+        }
+      ]
+    },
+    {
+      "id": "23d75c90-9cf5-4b1c-ba8c-da2707b1eaf3",
+      "account_id": "0697ace6-6056-4ff7-8166-201345906d2c",
+      "name": "CLIENTE 008 - ID: 23947",
+      "score": 57.0,
+      "risk_band": "medio",
+      "stage": "insatisfacao_latente",
+      "trajectory": "caindo",
+      "confidence": 0.24,
+      "coverage_weeks": 5,
+      "evaluable": true,
+      "recommendation": "Investigar insatisfação latente: revisar entregas e tom recente; ligar para o cliente.",
+      "computed_at": "2026-07-16T23:59:59.999999+00:00",
+      "recurring_revenue": null,
+      "is_legacy": false,
+      "exec_score": 82.0,
+      "exec_motivo": "−16: 2 atividade(s) em aberto e atrasada(s). | −2: apenas 50% das atividades com vencimento foram entregues no prazo.",
+      "alert_sev": "alto",
+      "reasons": [
+        {
+          "text": "iniciativa_cliente: risco 79% (tendência piorando)",
+          "leading": true,
+          "weight": 35.4
+        },
+        {
+          "text": "silencio: risco 65% (tendência piorando)",
+          "leading": true,
+          "weight": 29.4
+        },
+        {
+          "text": "tom_claude: risco 100% (tendência piorando)",
+          "leading": true,
+          "weight": 25.0
+        },
+        {
+          "text": "execucao: risco 18% (tendência estável)",
+          "leading": false,
+          "weight": 2.7
+        }
+      ]
+    },
+    {
+      "id": "f93cfc26-9615-426f-8c31-3692b0cb0c37",
+      "account_id": "072bac92-3787-425b-8db0-355546476193",
+      "name": "CLIENTE 009 - ID: 19653",
+      "score": 70.2,
+      "risk_band": "baixo",
+      "stage": "desengajamento_inicial",
+      "trajectory": "caindo",
+      "confidence": 1.0,
+      "coverage_weeks": 14,
+      "evaluable": true,
+      "recommendation": "Reengajar proativamente: o cliente está reduzindo iniciativa/conversa. Buscar contato de valor (resultado recente, próximos passos).",
+      "computed_at": "2026-07-16T23:59:59.999999+00:00",
+      "recurring_revenue": null,
+      "is_legacy": false,
+      "exec_score": 100.0,
+      "exec_motivo": "Cliente sem ocorrências negativas no período avaliado.",
+      "alert_sev": "atencao",
+      "reasons": [
+        {
+          "text": "iniciativa_cliente: risco 71% (tendência piorando)",
+          "leading": true,
+          "weight": 31.9
+        },
+        {
+          "text": "tom_claude: risco 100% (tendência piorando)",
+          "leading": true,
+          "weight": 25.0
+        },
+        {
+          "text": "silencio: risco 28% (tendência piorando)",
+          "leading": true,
+          "weight": 12.7
+        },
+        {
+          "text": "tom_negativo: risco 32% (tendência piorando)",
+          "leading": true,
+          "weight": 7.9
+        }
+      ]
+    },
+    {
+      "id": "7f06ae15-85a2-4a80-8ad0-13b49a00f88f",
+      "account_id": "0f700151-7712-4425-83b6-e099db87d1d9",
+      "name": "[ST-B1-S1] CLIENTE 012 - ID: 14352",
+      "score": 56.1,
+      "risk_band": "medio",
+      "stage": "insatisfacao_latente",
+      "trajectory": "caindo",
+      "confidence": 1.0,
+      "coverage_weeks": 16,
+      "evaluable": true,
+      "recommendation": "Investigar insatisfação latente: revisar entregas e tom recente; ligar para o cliente.",
+      "computed_at": "2026-07-16T23:59:59.999999+00:00",
+      "recurring_revenue": 1233.33,
+      "is_legacy": false,
+      "exec_score": 92.0,
+      "exec_motivo": "−8: nenhuma atividade concluída nas últimas 2 semanas (sem entregas recentes).",
+      "alert_sev": "alto",
+      "reasons": [
+        {
+          "text": "iniciativa_cliente: risco 87% (tendência piorando)",
+          "leading": true,
+          "weight": 39.3
+        },
+        {
+          "text": "tom_claude: risco 100% (tendência piorando)",
+          "leading": true,
+          "weight": 25.0
+        },
+        {
+          "text": "silencio: risco 52% (tendência piorando)",
+          "leading": true,
+          "weight": 23.3
+        },
+        {
+          "text": "comprimento_msg: risco 71% (tendência piorando)",
+          "leading": true,
+          "weight": 17.8
+        },
+        {
+          "text": "tom_negativo: risco 33% (tendência piorando)",
+          "leading": true,
+          "weight": 8.2
+        }
+      ]
+    },
+    {
+      "id": "250813e3-d0f3-48e0-a8b3-bcc560cbc8f8",
+      "account_id": "163ed742-85a0-4a33-8810-5ccfab01c78a",
+      "name": "CLIENTE 018 - ID: 16743",
+      "score": 63.8,
+      "risk_band": "medio",
+      "stage": "desengajamento_inicial",
+      "trajectory": "caindo",
+      "confidence": 1.0,
+      "coverage_weeks": 14,
+      "evaluable": true,
+      "recommendation": "Reengajar proativamente: o cliente está reduzindo iniciativa/conversa. Buscar contato de valor (resultado recente, próximos passos).",
+      "computed_at": "2026-07-16T23:59:59.999999+00:00",
+      "recurring_revenue": 3500.0,
+      "is_legacy": false,
+      "exec_score": 87.0,
+      "exec_motivo": "−8: 1 atividade(s) em aberto e atrasada(s). | −5: 1 atividade(s) concluída(s) com atraso nas últimas 2 semanas.",
+      "alert_sev": "alto",
+      "reasons": [
+        {
+          "text": "tom_claude: risco 100% (tendência piorando)",
+          "leading": true,
+          "weight": 25.0
+        },
+        {
+          "text": "silencio: risco 36% (tendência piorando)",
+          "leading": true,
+          "weight": 16.1
+        },
+        {
+          "text": "comprimento_msg: risco 40% (tendência piorando)",
+          "leading": true,
+          "weight": 10.0
+        },
+        {
+          "text": "tom_negativo: risco 37% (tendência piorando)",
+          "leading": true,
+          "weight": 9.3
+        },
+        {
+          "text": "critico_recente: risco 50% (tendência estável)",
+          "leading": false,
+          "weight": 7.5
+        }
+      ]
+    },
+    {
+      "id": "47cbcf11-e402-4d62-a60f-3b79849eba86",
+      "account_id": "16acc6e6-5ea1-4bc4-b839-0c292c05723c",
+      "name": "[S-B3-S1] CLIENTE 019 - ID: 122",
+      "score": 79.6,
+      "risk_band": "baixo",
+      "stage": "saudavel",
+      "trajectory": "subindo",
+      "confidence": 1.0,
+      "coverage_weeks": 14,
+      "evaluable": true,
+      "recommendation": "Sem ação — manter acompanhamento padrão.",
+      "computed_at": "2026-07-16T23:59:59.999999+00:00",
+      "recurring_revenue": null,
+      "is_legacy": false,
+      "exec_score": 76.0,
+      "exec_motivo": "−16: 2 atividade(s) em aberto e atrasada(s). | −8: nenhuma atividade concluída nas últimas 2 semanas (sem entregas recentes).",
+      "alert_sev": null,
+      "reasons": [
+        {
+          "text": "comprimento_msg: risco 64% (tendência piorando)",
+          "leading": true,
+          "weight": 16.1
+        },
+        {
+          "text": "silencio: risco 31% (tendência piorando)",
+          "leading": true,
+          "weight": 14.0
+        },
+        {
+          "text": "tom_negativo: risco 25% (tendência piorando)",
+          "leading": true,
+          "weight": 6.3
+        },
+        {
+          "text": "execucao: risco 24% (tendência estável)",
+          "leading": false,
+          "weight": 3.6
+        }
+      ]
+    },
+    {
+      "id": "301b6a0e-e5a4-41af-bcb5-7aaf65c49179",
+      "account_id": "1dfa9852-f2f7-4ce7-ac44-8ef2fc234322",
+      "name": "CLIENTE 021 - ID: 15927",
+      "score": 69.3,
+      "risk_band": "medio",
+      "stage": "desengajamento_inicial",
+      "trajectory": "caindo",
+      "confidence": 1.0,
+      "coverage_weeks": 16,
+      "evaluable": true,
+      "recommendation": "Reengajar proativamente: o cliente está reduzindo iniciativa/conversa. Buscar contato de valor (resultado recente, próximos passos).",
+      "computed_at": "2026-07-16T23:59:59.999999+00:00",
+      "recurring_revenue": null,
+      "is_legacy": false,
+      "exec_score": 72.0,
+      "exec_motivo": "−24: 3 atividade(s) em aberto e atrasada(s). | −5: 1 atividade(s) concluída(s) com atraso nas últimas 2 semanas. | +5: cadência saudável — entregas distribuídas em vários dias. | −4: apenas 44% das atividades com vencimento foram entregues no prazo.",
+      "alert_sev": "alto",
+      "reasons": [
+        {
+          "text": "tom_claude: risco 100% (tendência piorando)",
+          "leading": true,
+          "weight": 25.0
+        },
+        {
+          "text": "iniciativa_cliente: risco 40% (tendência piorando)",
+          "leading": true,
+          "weight": 18.0
+        },
+        {
+          "text": "silencio: risco 30% (tendência piorando)",
+          "leading": true,
+          "weight": 13.5
+        },
+        {
+          "text": "tom_negativo: risco 24% (tendência piorando)",
+          "leading": true,
+          "weight": 6.0
+        },
+        {
+          "text": "execucao: risco 28% (tendência estável)",
+          "leading": false,
+          "weight": 4.2
+        }
+      ]
+    }
+  ]
+}

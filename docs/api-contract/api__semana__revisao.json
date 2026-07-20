@@ -1,0 +1,26 @@
+{
+  "week": "2026-07-13",
+  "revisao": [
+    {
+      "objetivo": "Recuperar o ritmo de leads",
+      "metric": "leads",
+      "valor": 249.0,
+      "nota": "249 leads entraram na semana (alvo: +275)",
+      "maturacao": false
+    },
+    {
+      "objetivo": "Reduzir o churn do B3",
+      "metric": "B3:churn",
+      "valor": 0.0,
+      "nota": "nenhum desfecho registrado na semana — resultado ainda em maturação (defasagem ~60 dias); não leia como falha da semana",
+      "maturacao": true
+    },
+    {
+      "objetivo": "Fechar +6 B2",
+      "metric": "B2:bookings",
+      "valor": 0.0,
+      "nota": "0 de 6 B2 fechados na semana",
+      "maturacao": false
+    }
+  ]
+}
