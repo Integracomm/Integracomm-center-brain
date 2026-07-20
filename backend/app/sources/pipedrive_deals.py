@@ -494,6 +494,67 @@ CREATE TABLE IF NOT EXISTS sales_first_touch (
 """
 
 
+# ---------------------------------------------------------------------------
+# TODAS as atividades concluídas (não só o 1º toque) — base da TAXA de
+# agendamento por horário do Melhor Horário (Otávio 20/07: contagem de
+# agendamentos sozinha engana — um mutirão de ligações num dia infla o
+# horário; a taxa agendamentos/ligações normaliza o esforço).
+# Mesmo padrão incremental do sync_first_touch (paginação por add_time DESC).
+# ---------------------------------------------------------------------------
+_ACT_DDL = """
+CREATE TABLE IF NOT EXISTS sales_activities (
+    activity_id BIGINT PRIMARY KEY,
+    deal_id     BIGINT,
+    tipo        TEXT,                   -- call|meeting|fluxo_de_cadencia|...
+    add_at      TIMESTAMPTZ,            -- criação/agendamento da atividade
+    done_at     TIMESTAMPTZ,            -- conclusão = proxy do momento da ligação
+    quem        TEXT,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_sales_act_tipo_done ON sales_activities(tipo, done_at);
+"""
+
+
+def sync_activities(conn: Any, since: dt.date | None = None,
+                    max_pages: int = 200) -> int:
+    """Varre /activities (concluídas) e guarda TODAS — id próprio da atividade,
+    upsert idempotente; para na página inteira anterior a `since` (default:
+    10 dias — incremental diário)."""
+    corte = (since or (dt.date.today() - dt.timedelta(days=10))).isoformat()
+    n, start, paginas = 0, 0, 0
+    with conn.cursor() as cur:
+        cur.execute(_ACT_DDL)
+        while start is not None and paginas < max_pages:
+            paginas += 1
+            j = _get("activities", {"user_id": 0, "limit": 500, "start": start,
+                                    "done": 1, "sort": "add_time DESC"})
+            data = j.get("data") or []
+            page_old = True
+            for a in data:
+                add = a.get("add_time")
+                if not add:
+                    continue
+                if add[:10] >= corte:
+                    page_old = False
+                if not a.get("id"):
+                    continue
+                cur.execute(
+                    """INSERT INTO sales_activities (activity_id, deal_id, tipo, add_at, done_at, quem, updated_at)
+                       VALUES (%s,%s,%s,%s,%s,%s,now())
+                       ON CONFLICT (activity_id) DO UPDATE SET
+                            deal_id=EXCLUDED.deal_id, tipo=EXCLUDED.tipo,
+                            add_at=EXCLUDED.add_at, done_at=EXCLUDED.done_at,
+                            quem=EXCLUDED.quem, updated_at=now()""",
+                    (a["id"], a.get("deal_id"), a.get("type"), add,
+                     a.get("marked_as_done_time") or None, (a.get("owner_name") or "")))
+                n += 1
+            p = (j.get("additional_data") or {}).get("pagination") or {}
+            if page_old and data:
+                break
+            start = p.get("next_start") if p.get("more_items_in_collection") else None
+    return n
+
+
 def sync_first_touch(conn: Any, since: dt.date | None = None,
                      max_pages: int = 200) -> int:
     """Varre atividades (desc) e registra o 1º contato de cada deal; para na

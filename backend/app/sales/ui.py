@@ -701,7 +701,52 @@ def _horarios_calc(conn, ini: dt.date, fim: dt.date, bundle: str) -> dict:
         por_colab: dict[str, dict[int, int]] = {}
         for nome, h, n in cur.fetchall():
             por_colab.setdefault(nome, {})[h] = n
+        # por ORIGEM do lead (Otávio 20/07: o melhor horário p/ lead de Meta
+        # pode ser diferente do de prospecção) — canal canônico do Marketing,
+        # independente do filtro de bundle (mesma regra do bloco por bundle)
+        from ..marketing.analysis import canal_de
+        cur.execute("""
+            WITH primeira AS (
+                SELECT e.deal_id, min(e.entered_at) AS entered_at,
+                       min(d.origem) AS origem
+                  FROM mkt_stage_events e
+                  JOIN mkt_deals_attribution d ON d.deal_id = e.deal_id
+                 WHERE e.stage_id = ANY(%s) AND e.entered_at >= %s AND e.entered_at < %s
+                 GROUP BY e.deal_id)
+            SELECT origem, extract(dow  FROM entered_at AT TIME ZONE 'America/Sao_Paulo')::int,
+                   extract(hour FROM entered_at AT TIME ZONE 'America/Sao_Paulo')::int, count(*)
+              FROM primeira GROUP BY 1, 2, 3""", (list(_ST_AGENDA), a, b))
+        por_origem: dict[str, dict[tuple[int, int], int]] = {}
+        for org, dow, h, n in cur.fetchall():
+            por_origem.setdefault(canal_de(org), {})
+            por_origem[canal_de(org)][(dow, h)] = por_origem[canal_de(org)].get((dow, h), 0) + n
+        # LIGAÇÕES feitas por célula (atividades 'call' CONCLUÍDAS no Pipedrive;
+        # horário = conclusão) — denominador da taxa de agendamento (Otávio
+        # 20/07: volume alto num horário pode ser mutirão, não horário melhor)
+        ligacoes: dict[tuple[int, int], int] = {}
+        try:
+            if filtro_b:  # com filtro de bundle, o denominador segue o MESMO recorte
+                cur.execute(f"""
+                    SELECT extract(dow  FROM s.done_at AT TIME ZONE 'America/Sao_Paulo')::int,
+                           extract(hour FROM s.done_at AT TIME ZONE 'America/Sao_Paulo')::int,
+                           count(*)
+                      FROM sales_activities s
+                      JOIN mkt_deals_attribution d ON d.deal_id = s.deal_id
+                     WHERE s.tipo = 'call' AND s.done_at >= %s AND s.done_at < %s{filtro_b}
+                     GROUP BY 1, 2""", args)
+            else:
+                cur.execute("""
+                    SELECT extract(dow  FROM done_at AT TIME ZONE 'America/Sao_Paulo')::int,
+                           extract(hour FROM done_at AT TIME ZONE 'America/Sao_Paulo')::int,
+                           count(*)
+                      FROM sales_activities
+                     WHERE tipo = 'call' AND done_at >= %s AND done_at < %s
+                     GROUP BY 1, 2""", (a, b))
+            ligacoes = {(dow, h): n for dow, h, n in cur.fetchall()}
+        except Exception:  # noqa: BLE001 — tabela nova; sem sync ainda = sem taxa
+            conn.rollback()
     return {"celulas": celulas, "por_bundle": por_bundle, "por_colab": por_colab,
+            "por_origem": por_origem, "ligacoes": ligacoes,
             "total": sum(celulas.values())}
 
 
@@ -813,6 +858,54 @@ def _pv_horarios(conn, request: Request) -> str:
                   f"<td style='{_TD}'>{escape(' · '.join(melhores) or '—')}</td>"
                   f"<td style='{_TD};text-align:right'>{'<span class=note>amostra pequena</span>' if tot_p < 30 else ''}</td></tr>")
 
+    # --- TAXA de agendamento por horário: agendamentos ÷ ligações concluídas
+    # (Otávio 20/07: contagem sozinha engana — mutirão infla o horário) ---
+    ligas = dados.get("ligacoes") or {}
+    _MIN_LIG = 5  # abaixo disso a célula é amostra pequena (marcada, não some)
+    if not ligas:
+        heat_taxa = ("<div class=warn>sem ligações registradas no período — a taxa usa as atividades "
+                     "de LIGAÇÃO concluídas no Pipedrive (sincronização nova; entra na rodada diária). "
+                     "Assim que a coleta rodar, esta seção passa a mostrar agendamentos ÷ ligações.</div>")
+        sub_taxa = ""
+    else:
+        tot_lig = sum(ligas.values())
+        taxas_ok = [celulas.get(k, 0) / v for k, v in ligas.items() if v >= _MIN_LIG]
+        tmax = max(taxas_ok) if taxas_ok else 1.0
+        linhas_tx = ""
+        for h in horas:
+            tds = ""
+            for d in dows:
+                lig = ligas.get((d, h), 0)
+                ag = celulas.get((d, h), 0)
+                if not lig:
+                    tds += (f"<td title='{_DOW_NOME[d]} {h:02d}h — {ag} agendamento(s), nenhuma ligação "
+                            f"concluída registrada' style='{_TD};text-align:center;color:var(--text-faint)'>"
+                            f"{'—' if not ag else '∅'}</td>")
+                    continue
+                tx = ag / lig
+                alpha = int(8 + 62 * min(tx / tmax, 1.0)) if tx and tmax else 0
+                bg = f"background:color-mix(in srgb,var(--brand) {alpha}%,transparent);" if tx else ""
+                peq = lig < _MIN_LIG
+                tds += (f"<td title='{_DOW_NOME[d]} {h:02d}h — {ag} agendamento(s) em {lig} ligação(ões) "
+                        f"= {tx * 100:.0f}%{' · amostra pequena — interpretar com cautela' if peq else ''}' "
+                        f"style='{_TD};text-align:center;{bg}{'opacity:.55;' if peq else ''}'>"
+                        f"{tx * 100:.0f}%{'*' if peq else ''}</td>")
+            linhas_tx += f"<tr><td style='{_TD};color:var(--text-muted)'>{h:02d}h</td>{tds}</tr>"
+        heat_taxa = _tbl([("", "left")] + [(_DOW_NOME[d], "left") for d in dows], linhas_tx)
+        sub_taxa = (f" · {tot_lig} ligação(ões) concluída(s) no período · taxa geral "
+                    f"{total / tot_lig * 100:.0f}%" if tot_lig else "")
+
+    # --- melhores janelas por ORIGEM do lead (Meta vs prospecção etc.) ---
+    orows = ""
+    for org, cel in sorted((dados.get("por_origem") or {}).items(), key=lambda x: -sum(x[1].values())):
+        tot_o = sum(cel.values())
+        melhores = [f"{_DOW_NOME[d]} {h:02d}h ({n})"
+                    for (d, h), n in sorted(cel.items(), key=lambda x: -x[1])[:3] if n >= 2]
+        orows += (f"<tr><td style='{_TD}'><b>{escape(org)}</b></td>"
+                  f"<td style='{_TD};text-align:right'>{tot_o}</td>"
+                  f"<td style='{_TD}'>{escape(' · '.join(melhores) or '—')}</td>"
+                  f"<td style='{_TD};text-align:right'>{'<span class=note>amostra pequena</span>' if tot_o < 30 else ''}</td></tr>")
+
     opts_b = "".join(f"<option value='{v}' {'selected' if bundle == v else ''}>{lbl}</option>"
                      for v, lbl in [("todos", "todos os bundles"), ("B1", "B1"), ("B2", "B2"),
                                     ("B3", "B3"), ("B4", "B4"), ("B5", "B5")])
@@ -837,6 +930,12 @@ def _pv_horarios(conn, request: Request) -> str:
             f"<p class=secsub>período {ini.strftime('%d-%m-%Y')} a {fim.strftime('%d-%m-%Y')}"
             f"{' · bundle ' + bundle if bundle != 'todos' else ''} · quanto mais escuro, mais agendamentos</p>"
             + _card(heat) + "</section>"
+            "<section><h2>Taxa de agendamento por horário — agendamentos ÷ ligações</h2>"
+            "<p class=secsub>normaliza o esforço: um horário pode ter muitos agendamentos porque houve MUTIRÃO de "
+            "ligações naquele dia, não porque converte melhor · ligações = atividades de ligação CONCLUÍDAS no "
+            "Pipedrive (horário da conclusão) · * = menos de 5 ligações na célula (amostra pequena) · ∅ = houve "
+            f"agendamento sem ligação registrada{sub_taxa}</p>"
+            + _card(heat_taxa) + "</section>"
             "<section><h2>Agendamentos por colaborador × hora</h2>"
             "<p class=secsub>atribuição pelo campo SDR do deal · cada linha sombreada na PRÓPRIA escala — o horário forte de cada pessoa, independente do volume · célula contornada = pico da pessoa · * = amostra pequena (&lt;30)</p>"
             + _card(heat_colab) + "</section>"
@@ -844,7 +943,12 @@ def _pv_horarios(conn, request: Request) -> str:
             "<section><h2>Melhores janelas por bundle</h2>"
             "<p class=secsub>até 3 janelas com mais agendamentos por bundle no período — bundles com poucas "
             "amostras merecem cautela antes de mudar escala de time</p>"
-            + _card(_tbl([("Bundle", "left"), ("Agendamentos", "right"), ("Melhores janelas", "left"), ("", "right")], brows)) + "</section>")
+            + _card(_tbl([("Bundle", "left"), ("Agendamentos", "right"), ("Melhores janelas", "left"), ("", "right")], brows)) + "</section>"
+            "<section><h2>Melhores janelas por origem do lead</h2>"
+            "<p class=secsub>o melhor horário pode variar pela origem — lead de Meta chega por formulário e "
+            "atende num padrão; prospecção ativa depende da agenda de quem é prospectado · canais do Marketing "
+            "(mesma régua da Origem de Leads) · independe do filtro de bundle</p>"
+            + _card(_tbl([("Origem", "left"), ("Agendamentos", "right"), ("Melhores janelas", "left"), ("", "right")], orows)) + "</section>")
 
 
 def _horarios_relatorio_html(dados: dict, ini: dt.date, fim: dt.date,

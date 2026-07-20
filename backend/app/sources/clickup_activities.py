@@ -512,6 +512,60 @@ def _overdue_from_clickup(account_name: str, now: dt.datetime, limit: int = 20) 
     return sorted(out, key=lambda x: -x["dias_atraso"])[:limit]
 
 
+# --- clientes INATIVOS: pausados por inadimplência / concluídos -------------
+# Tarefa vencida de cliente com serviço SUSPENSO não é cobrança do squad e
+# inflava as contagens de atraso/capacidade (caso real Otávio 20/07: pausados
+# por inadimplência contando em 'Atividades em atraso'). Fonte do status:
+# card do cliente na lista Clientes Ativos (ativo/concluído/pausada por
+# inatividade/aguardando documentos) + card de assessoria (só a pausa — lá
+# 'concluído' é status do TRABALHO, não do cliente) + espelho como complemento.
+# 'aguardando documentos' segue ATIVO: onboarding é trabalho real a cobrar.
+_ST_INATIVOS = ("pausada por inatividade", "concluído", "concluido")
+
+
+def inactive_clients() -> dict[str, str]:
+    """{nome_normalizado: status} dos clientes inativos. Cacheado (30 min)."""
+    def build():
+        out: dict[str, str] = {}
+        s = get_settings()
+        if s.clickup_api_token:
+            for lst in (s.clickup_list_clientes_ativos, s.clickup_list_assessoria):
+                if not lst:
+                    continue
+                so_pausa = (lst == s.clickup_list_assessoria)
+                try:
+                    for t in _clickup_list_tasks(s.clickup_api_token, lst):
+                        if t.get("parent"):
+                            continue  # status de cliente vive no card-RAIZ
+                        st = ((t.get("status") or {}).get("status") or "").strip().lower()
+                        if st in _ST_INATIVOS and not (so_pausa and st != "pausada por inatividade"):
+                            n = norm_account(t.get("name") or "")
+                            if n:
+                                out.setdefault(n, st)
+                except Exception:  # noqa: BLE001 — lista indisponível não derruba o filtro
+                    pass
+        try:
+            for n, c in _mirror_clientes().items():
+                st = (c.get("status") or "").strip().lower()
+                if st in _ST_INATIVOS:
+                    out.setdefault(n, st)
+        except Exception:  # noqa: BLE001
+            pass
+        return out
+    return _cached("cu-inativos", build, ttl=_LIST_TTL)
+
+
+def client_inactive_status(account_name: str) -> str | None:
+    """Status ('pausada por inatividade' | 'concluído') se o cliente está
+    inativo; None = ativo/desconhecido. Match EXATO do nome-base — sem o
+    fallback por inclusão das subtarefas (marcar cliente ativo como pausado
+    por parecença de nome seria pior que o bug original)."""
+    try:
+        return inactive_clients().get(norm_account(account_name))
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def open_tasks_count(account_name: str) -> int | None:
     """Tarefas ABERTAS da conta (sem conclusão/fechamento) nos índices já
     cacheados — carga REAL de trabalho p/ a Capacidade por squad (Otávio 16/07:

@@ -2502,11 +2502,21 @@ def _carga_content(scores: list[dict], mirror: dict | None) -> str:
         from .sources.clickup_activities import open_tasks_count as _open_fn
     except Exception:  # noqa: BLE001
         _open_fn = None
+    # clientes pausados por inadimplência/concluídos ficam FORA das contagens
+    # de tarefas (capacidade e atrasos): serviço suspenso não é carga nem
+    # cobrança do squad (Otávio 20/07 — pausados inflavam os números)
+    try:
+        from .sources.clickup_activities import client_inactive_status as _inat_fn
+    except Exception:  # noqa: BLE001
+        _inat_fn = None
+
+    def _inativo(nm: str) -> str | None:
+        return _inat_fn(nm) if _inat_fn else None
     tarefas_sq: dict[str, int] = {}
     if _open_fn is not None:
         for s in scores:
             k_sq = _resolve_squad(s["name"], mirror)
-            if k_sq is None:
+            if k_sq is None or _inativo(s["name"]):
                 continue
             try:
                 tarefas_sq[k_sq] = tarefas_sq.get(k_sq, 0) + (_open_fn(s["name"]) or 0)
@@ -2585,6 +2595,8 @@ def _carga_content(scores: list[dict], mirror: dict | None) -> str:
     atr_sq: dict[str, dict] = {}
     atr_resp: dict[str, dict] = {}
     atr_sem_squad = 0
+    atr_inativos = 0        # tarefas vencidas de clientes pausados/concluídos
+    atr_inativos_contas = 0  # (fora da conta — serviço suspenso; Otávio 20/07)
     if _atr_fn is not None:
         _agora = dt.datetime.now(dt.timezone.utc)
         for s in scores:
@@ -2593,6 +2605,10 @@ def _carga_content(scores: list[dict], mirror: dict | None) -> str:
             except Exception:  # noqa: BLE001 — conta sem match não derruba a seção
                 tasks = []
             if not tasks:
+                continue
+            if _inativo(s["name"]):
+                atr_inativos += len(tasks)
+                atr_inativos_contas += 1
                 continue
             sq = _resolve_squad(s["name"], mirror)
             if sq is None:
@@ -2748,13 +2764,19 @@ def _carga_content(scores: list[dict], mirror: dict | None) -> str:
         leitura_atr = " ".join(partes)
     nota_atr = (f"<p class=note style='margin-top:8px'>{atr_sem_squad} tarefa(s) atrasada(s) em contas sem squad "
                 "identificado ficaram fora da tabela.</p>" if atr_sem_squad else "")
+    if atr_inativos:
+        nota_atr += (f"<p class=note style='margin-top:4px'>{atr_inativos} tarefa(s) vencida(s) de "
+                     f"{atr_inativos_contas} cliente(s) <b>pausado(s) por inadimplência ou concluído(s)</b> no ClickUp "
+                     "ficaram fora das contagens — serviço suspenso não é cobrança do squad. "
+                     "Voltam a contar se o cliente reativar.</p>")
     resto_resp = (f"<p class=note style='margin-top:8px'>+ {len(resp_ord) - 15} responsável(is) com menos atrasos "
                   "fora do top 15.</p>" if len(resp_ord) > 15 else "")
     atrasos_html = (
         "<section><h2>Atividades em atraso</h2>"
         "<p class=secsub>tarefas ABERTAS com vencimento estourado no ClickUp (as mesmas da coluna 'Atrasos' da aba Contas), "
         "agregadas por squad e por responsável — 'atrasos/pessoa' ao lado de 'contas/pessoa' responde se o atraso vem de "
-        "sobrecarga (capacidade) ou de ritmo/processo · <b>clique num squad ou responsável</b> para abrir a lista das "
+        "sobrecarga (capacidade) ou de ritmo/processo · clientes pausados por inadimplência/concluídos ficam fora · "
+        "<b>clique num squad ou responsável</b> para abrir a lista das "
         "tarefas, cada uma com link direto no ClickUp</p>"
         "<script>function atrTgl(id){var e=document.getElementById(id);"
         "e.style.display=(e.style.display==='none')?'':'none';}</script>"
@@ -2827,6 +2849,13 @@ def _render(role: str, scores: list[dict], alerts: list[dict],
     except Exception:  # noqa: BLE001
         def _n_atrasadas(nm: str) -> int:
             return 0
+    # cliente pausado por inadimplência/concluído: chip próprio no lugar de
+    # 'X atrasada(s)' — vencidas de serviço suspenso não são atraso do squad
+    try:
+        from .sources.clickup_activities import client_inactive_status as _inat_chip
+    except Exception:  # noqa: BLE001
+        def _inat_chip(nm: str):  # type: ignore[misc]
+            return None
     squads = sorted({_squad_label(s["name"], _mirror) for s in ordered})
 
     def reason_txt(s):
@@ -2850,9 +2879,15 @@ def _render(role: str, scores: list[dict], alerts: list[dict],
         if cu_url and exec_cell != _DASH:
             exec_cell = (f"<a href='{cu_url}' target=_blank rel=noopener "
                          f"style='text-decoration:none' title='abrir o card no ClickUp'>{exec_cell}</a>")
-        n_atr = _n_atrasadas(s["name"])
+        inat = _inat_chip(s["name"])
+        n_atr = 0 if inat else _n_atrasadas(s["name"])
         if exec_cell == _DASH:
             atr_cell = _DASH
+        elif inat:
+            rot_inat = "pausado" if "pausada" in inat else "concluído"
+            atr_cell = (f"<span class='chip' style='--c:var(--status-semdados)' "
+                        f"title='cliente {escape(inat)} no ClickUp — serviço suspenso: tarefas vencidas "
+                        f"não contam como atraso do squad; voltam a contar se reativar'>{rot_inat}</span>")
         elif n_atr:
             atr_cell = (f"<span class='chip' style='--c:var(--status-critico)' "
                         f"title='entregas abertas com vencimento estourado — nomes e responsáveis no relatório'>"

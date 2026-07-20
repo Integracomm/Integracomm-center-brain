@@ -354,6 +354,15 @@ def build_report(conn: Any, account_id: str, ref_month: str, generated_by: str |
     # em ATRASO: abertas com vencimento vencido — a fila de cobrança do gestor
     # (tarefa vencida não é 'próxima' nem 'concluída' e ficava invisível)
     atrasadas = CU.overdue_activities(acc["name"])
+    # cliente pausado por inadimplência/concluído: as vencidas continuam
+    # LISTADAS (nenhum dado some), mas com a ressalva de que não são cobrança
+    # ativa do squad — nas visões agregadas elas ficam fora (Otávio 20/07)
+    _st_inat = CU.client_inactive_status(acc["name"])
+    if _st_inat and atrasadas.get("tasks"):
+        _avs = [a for a in (atrasadas.get("aviso"),) if a]
+        _avs.append(f"cliente '{_st_inat}' no ClickUp — serviço suspenso: as tarefas vencidas "
+                    "abaixo não contam como atraso do squad nas visões agregadas")
+        atrasadas["aviso"] = " · ".join(_avs)
     atv["atrasadas"] = atrasadas
     clickup_url = CU.card_url(acc["name"])
 

@@ -310,6 +310,102 @@ def _leitura_heuristica(d: dict) -> str:
     return f"Cadeia d{_rotulo(b)}: " + "; ".join(partes) + "."
 
 
+def _insights_areas(d: dict) -> list[tuple[str, str, str, list[str]]]:
+    """(área, href, rótulo do link, bullets) — o que cada área leva deste
+    bundle (Otávio 20/07). COMPÕE os números já calculados nas seções 1-6;
+    nada é recalculado. Área sem sinal forte diz isso explicitamente —
+    honestidade vale mais que preencher espaço."""
+    from html import escape as esc
+    b = d["b"]
+    quem = "da empresa" if d.get("todos") else f"do {b}"
+    out: list[tuple[str, str, str, list[str]]] = []
+
+    # ---- Marketing: mix de canais e custo ajustado pela retenção ----
+    mkt: list[str] = []
+    canais = [(c, x) for c, x in d["por_canal"].items() if x["n"] >= 5]
+    if canais:
+        pior = max(canais, key=lambda kv: kv[1]["prec"])
+        melhor = min(canais, key=lambda kv: kv[1]["prec"])
+        if pior[1]["prec"] - melhor[1]["prec"] >= 0.15:
+            mkt.append(f"<b>{esc(pior[0])}</b> traz cliente {quem} que sai cedo ({_pct(pior[1]['prec'])} "
+                       f"de churn precoce, {pior[1]['n']} clientes) vs {_pct(melhor[1]['prec'])} de "
+                       f"{esc(melhor[0])} — rever o mix e endurecer a qualificação do canal fraco.")
+        com_cac = [(c, x) for c, x in canais if x.get("cac_aj") and x.get("cac")]
+        if com_cac:
+            caro = max(com_cac, key=lambda kv: kv[1]["cac_aj"])
+            if caro[1]["cac"] and caro[1]["cac_aj"] >= caro[1]["cac"] * 1.3:
+                mkt.append(f"O churn precoce encarece {esc(caro[0])}: CAC ajustado pela retenção "
+                           f"{_brl(caro[1]['cac_aj'])} vs {_brl(caro[1]['cac'])} nominal — o custo real "
+                           "do canal é o ajustado.")
+    out.append(("Marketing", "/marketing?view=ciclo", "Ciclo de Vida",
+                mkt or ["Sem sinal forte nos canais deste recorte (amostras pequenas ou canais parecidos)."]))
+
+    # ---- Pré-vendas: SLA do 1º contato ----
+    pv: list[str] = []
+    if d["tx_sla_ok"] is not None and d["tx_sla_ruim"] is not None and d["tx_sla_ok"] - d["tx_sla_ruim"] >= 0.05:
+        n_ok, n_ruim = d.get("n_sla_ok") or 0, d.get("n_sla_ruim") or 0
+        peq = " <span class=note>(amostra pequena)</span>" if min(n_ok, n_ruim) < 20 else ""
+        pv.append(f"Oportunidade {quem} atendida em ≤15min fecha {_pct(d['tx_sla_ok'])} vs "
+                  f"{_pct(d['tx_sla_ruim'])} quando o 1º contato passa de 1h ({n_ok} × {n_ruim} oportunidades){peq} "
+                  "— zerar a fila de 1º contato destes leads primeiro.")
+    out.append(("Pré-vendas", "/prevendas?view=speed", "Speed-to-Lead",
+                pv or ["SLA sem diferença relevante de fechamento neste recorte — manter a rotina atual."]))
+
+    # ---- Vendas: fechamento e ticket ----
+    vd: list[str] = []
+    if d["taxa"] is not None:
+        peq = " <span class=note>(amostra pequena)</span>" if d["dec_n"] < 15 else ""
+        tk = f" · ticket médio {_brl(d['ticket'])}" if d.get("ticket") else ""
+        vd.append(f"Fechamento {d['janela']}d {quem}: {_pct(d['taxa'])} ({d['won_n']} de {d['dec_n']} "
+                  f"decididas){tk}{peq}.")
+    if d["meta_q"]:
+        atras = d["real_q"] / d["meta_q"] < d["frac"] * 0.85
+        if atras:
+            vd.append(f"Mês atual ATRÁS do ritmo da meta ({d['real_q']}/{d['meta_q']:.0f} bookings com "
+                      f"{d['frac'] * 100:.0f}% do mês decorrido) — priorizar o pipe deste plano.")
+    out.append(("Vendas", "/vendas?view=ponte", "Ponte PV → Vendas",
+                vd or ["Sem oportunidades decididas suficientes na janela — sem leitura de fechamento."]))
+
+    # ---- Growth/Assessoria: risco da base ----
+    gw: list[str] = []
+    if d["alertas_b"]:
+        gw.append(f"{d['alertas_b']} conta(s) {quem} em alerta aberto — {_brl(d['mrr_risco_b'])} de MRR "
+                  "em risco; a fila com dor dominante está em Contas/Alertas.")
+    if d["precoce_pct"] is not None and d["coorte_n"] >= 8:
+        gw.append(f"Churn precoce da coorte: {_pct(d['precoce_pct'])} saem em ≤3 meses "
+                  f"({d['coorte_n']} clientes rastreados) — onboarding/primeiros 90 dias é o campo de batalha.")
+    if d.get("canc_sem_motivo"):
+        gw.append(f"{d['canc_sem_motivo']} cancelamento(s) sem motivo preenchido na planilha — sem motivo "
+                  "não há aprendizado; cobrar o registro no formalizar.")
+    out.append(("Growth / Assessoria", "/growth?view=contas", "Contas",
+                gw or ["Base sem alerta aberto neste recorte."]))
+
+    # ---- Operação (squads): concentração e execução ----
+    op: list[str] = []
+    if d["squads"]:
+        top_sq, x = next(iter(d["squads"].items()))
+        carga = f", {x['cp_geral']:.1f} contas/pessoa no total" if x.get("cp_geral") else ""
+        op.append(f"{esc(top_sq)} concentra {x['n']} conta(s) {quem}{carga}"
+                  + (f" — {x['exec']} com execução crítica" if x.get("exec") else "") + ".")
+    if d["exec_b"]:
+        op.append(f"{d['exec_b']} conta(s) do recorte com execução crítica no ClickUp — fila e prazos "
+                  "antes de promessa nova.")
+    out.append(("Operação (squads)", "/growth?view=carga", "Análise dos Squads",
+                op or ["Sem concentração nem execução crítica relevante no recorte."]))
+
+    # ---- Financeiro: entra × sai ----
+    fin: list[str] = []
+    ult = d["entra_sai"][-2] if len(d["entra_sai"]) >= 2 else None  # último mês FECHADO
+    if ult:
+        saldo = ult[2] - ult[4]
+        fin.append(f"Último mês fechado ({ult[0]}): entrou {_brl(ult[2])} em bookings × saiu "
+                   f"{_brl(ult[4])} em cancelamentos — saldo {'positivo' if saldo >= 0 else '<b>NEGATIVO</b>'} "
+                   f"de {_brl(abs(saldo))}.")
+    out.append(("Financeiro", "/financeiro?view=receita", "Receita Recorrente",
+                fin or ["Sem série de entra×sai fechada para este recorte."]))
+    return out
+
+
 def _leitura_llm(conn, b: str, fatos: list[str]) -> str | None:
     """Claude com guarda de orçamento + cache 20h; None = usar heurística."""
     from .config import get_settings
@@ -584,6 +680,30 @@ def _render(d: dict, leitura: str, via_llm: bool, alt_leitura: str = "") -> str:
                  ("Saídas", "right"), ("Sai (MRR)", "right"), ("Saldo", "right")], rows)
           + "</section>")
 
+    # 7. o que cada área leva (Otávio 20/07): os MESMOS elos das seções 1-6,
+    # recortados pela ÁREA que age sobre eles — cada card com link rotulado
+    area_cards = ""
+    for titulo_a, href, rot_link, bullets in _insights_areas(d):
+        bl = "".join(f"<div class=sug-item>→ {t}</div>" for t in bullets)
+        area_cards += (f"<div class=card style='flex:1 1 320px;min-width:290px'>"
+                       f"<div style='display:flex;align-items:baseline;gap:10px;margin-bottom:4px'>"
+                       f"<span style='font-weight:700;font-size:var(--fs-md)'>{titulo_a}</span>"
+                       f"<a href='{href}' style='font-size:var(--fs-2xs);color:var(--brand);"
+                       f"font-weight:600;text-decoration:none'>{rot_link} →</a></div>{bl}</div>")
+    s7 = ("<section><h2>7 · O que cada área leva deste raio-x</h2>"
+          "<p class=secsub>os mesmos elos das seções acima, recortados pela área que age sobre eles — "
+          "nada novo é calculado; é o insight de cada time para a rotina da semana</p>"
+          + _hint("Insights por área",
+                  "O que mostra: a cadeia deste plano fatiada pela ÁREA responsável — o que Marketing, "
+                  "Pré-vendas, Vendas, Growth, Operação e Financeiro levam deste raio-x.\n"
+                  "Como ler: cada card traz 1-3 achados COM número e um link rotulado para a tela da área "
+                  "onde o detalhe mora. Área sem sinal forte diz isso explicitamente — é informação, "
+                  "não espaço vazio.\n"
+                  "Fique de olho: os achados são os mesmos das seções 1-6 (nada é recalculado); se um "
+                  "número parecer diferente do da tela da área, confira o filtro de bundle e a janela — "
+                  "o raio-x recorta pelo plano selecionado.")
+          + f"<div style='display:flex;gap:12px;flex-wrap:wrap;align-items:stretch'>{area_cards}</div></section>")
+
     # A3 (17/07): a leitura é HIPÓTESE bem-informada, não veredito — título
     # explícito, nota de correlação≠causa, hipótese alternativa e aviso com peso
     titulo_l = ("Hipótese principal (gerada por IA)" if via_llm
@@ -606,7 +726,7 @@ def _render(d: dict, leitura: str, via_llm: bool, alt_leitura: str = "") -> str:
         "<p class=secsub>síntese dos elos medidos acima — hipótese para investigar, não conclusão fechada</p>"
         f"<div class=central><div class=sug-item style='font-size:var(--fs-md);line-height:1.65'>→ {escape(leitura)}</div>"
         + alt_html + aviso + "</div></section>"
-        + s1 + s2 + s3 + s4 + s5 + s6 +
+        + s1 + s2 + s3 + s4 + s5 + s6 + s7 +
         f"<p class=note style='margin-top:14px'>Cobertura do vínculo aquisição↔retenção: "
         f"{d['cobertura']['canc_casados']}/{d['cobertura']['n_cancs']} cancelamentos casados com um booking rastreado. "
         "Onde a amostra do bundle é pequena, a tabela avisa — não conclua por meia dúzia de casos.</p>")

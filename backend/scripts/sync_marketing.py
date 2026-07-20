@@ -80,6 +80,9 @@ def main() -> None:
         conn, full=args.backfill))
     step("pipedrive 1º contato (speed-to-lead)", lambda: pipedrive_deals.sync_first_touch(
         conn, since=dt.date(2026, 1, 1) if args.backfill else None))
+    step("pipedrive atividades (taxa do Melhor Horário)", lambda: pipedrive_deals.sync_activities(
+        conn, since=dt.date(2026, 1, 1) if args.backfill else None,
+        max_pages=400 if args.backfill else 200))
     from app.sources import notion_initiatives
     step("iniciativas (Notion → Operações)", lambda: notion_initiatives.sync_all_configured(conn))
     if args.weekly or args.backfill:
