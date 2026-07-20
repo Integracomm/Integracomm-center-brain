@@ -516,19 +516,22 @@ CREATE INDEX IF NOT EXISTS idx_sales_act_tipo_done ON sales_activities(tipo, don
 
 
 def sync_activities(conn: Any, since: dt.date | None = None,
-                    max_pages: int = 200) -> int:
+                    max_pages: int = 200, pausa: float = 0.4) -> int:
     """Varre /activities (concluídas) e guarda TODAS — id próprio da atividade,
     upsert idempotente; para na página inteira anterior a `since` (default:
-    10 dias — incremental diário)."""
+    10 dias — incremental diário). `pausa` = segundos entre páginas (regra
+    Otávio 20/07: o orçamento de requests do Pipedrive é COMPARTILHADO com
+    aplicações de produção em tempo real — sequencial sempre, backfill só em
+    madrugada aprovada e com pausa maior)."""
     corte = (since or (dt.date.today() - dt.timedelta(days=10))).isoformat()
     n, start, paginas = 0, 0, 0
     with conn.cursor() as cur:
         cur.execute(_ACT_DDL)
         while start is not None and paginas < max_pages:
             paginas += 1
-            if paginas > 1:  # gentileza com o rate limit do Pipedrive (regra
-                import time as _t  # Otávio 20/07: NUNCA travar o Pipedrive) —
-                _t.sleep(0.4)      # sequencial + pausa; o time usa a ferramenta
+            if paginas > 1 and pausa > 0:
+                import time as _t
+                _t.sleep(pausa)
             j = _get("activities", {"user_id": 0, "limit": 500, "start": start,
                                     "done": 1, "sort": "add_time DESC"})
             data = j.get("data") or []
