@@ -80,9 +80,13 @@ def main() -> None:
         conn, full=args.backfill))
     step("pipedrive 1º contato (speed-to-lead)", lambda: pipedrive_deals.sync_first_touch(
         conn, since=dt.date(2026, 1, 1) if args.backfill else None))
+    # ATENÇÃO (regra Otávio 20/07): o orçamento de requests do Pipedrive é
+    # COMPARTILHADO com aplicações de produção em tempo real. O incremental
+    # diário é pequeno (janela ~10d, teto 40 páginas); --backfill só roda com
+    # aprovação explícita do Otávio, em janela combinada (madrugada).
     step("pipedrive atividades (taxa do Melhor Horário)", lambda: pipedrive_deals.sync_activities(
         conn, since=dt.date(2026, 1, 1) if args.backfill else None,
-        max_pages=400 if args.backfill else 200))
+        max_pages=300 if args.backfill else 40))
     from app.sources import notion_initiatives
     step("iniciativas (Notion → Operações)", lambda: notion_initiatives.sync_all_configured(conn))
     if args.weekly or args.backfill:
