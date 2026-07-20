@@ -92,6 +92,21 @@ def _link_html(lk) -> str:
     return f"<a href='{url}' style='color:var(--brand);font-size:var(--fs-2xs)'>{escape(str(lbl))} →</a>"
 
 
+def _acao_split(texto: str) -> tuple[str, str]:
+    """Divide a ação em MANCHETE (o que fazer) + detalhe (os dados) — pedido
+    20/07: a linha corrida era difícil de absorver; o título curto em destaque
+    e o dado embaixo tornam o foco escaneável."""
+    if ": " in texto[:90]:
+        cab, resto = texto.split(": ", 1)
+        return cab, resto
+    for sep in (" — ", ". "):
+        if sep in texto:
+            a, b = texto.split(sep, 1)
+            if len(a) <= 95:
+                return a, b
+    return texto, ""
+
+
 def _ddl(conn):
     with conn.cursor() as cur:
         cur.execute(_DDL)
@@ -133,7 +148,10 @@ def _propor(conn, week: dt.date, force: bool = False) -> int:
     if n_conf or (n_tot and not force):
         return 0
     with conn.cursor() as cur:
-        cur.execute("DELETE FROM weekly_objectives WHERE week_start=%s AND status='proposto'", (week,))
+        # repropor NUNCA apaga objetivo adicionado manualmente pela gestão —
+        # só as propostas do sistema são regeneradas (20/07)
+        cur.execute("DELETE FROM weekly_objectives WHERE week_start=%s AND status='proposto' "
+                    "AND source='sistema'", (week,))
     A = _deps()
     hoje = dt.date.today()
     mes = hoje.replace(day=1)
@@ -368,11 +386,15 @@ def _gerar_acoes(conn, objs: list[dict]) -> list[tuple]:
                                              [f"/raiox?b={b}", f"Raio-X {b}"]]},
                                   lag_txt("book_churn", "efeito no churn precoce")))
             with conn.cursor() as cur:  # Vendas/PV: alinhar expectativa no motivo dominante
-                cur.execute("""SELECT motivo, count(*) FROM grw_cancelamentos
-                                WHERE tipo='cancelamento' AND motivo IS NOT NULL AND meses <= 3
-                                  AND (upper(COALESCE(equipe,'')) LIKE %s OR upper(COALESCE(plano,'')) LIKE %s)
-                                GROUP BY 1 ORDER BY 2 DESC LIMIT 1""", (f"%{b}%", f"%{b}%"))
-                mot = cur.fetchone()
+                # bundle pelo PLANO via _canc_bundle (correção 20/07 — o LIKE na
+                # equipe classificava cliente ADS do squad Bx como churn do Bx)
+                cur.execute("""SELECT motivo, plano, equipe FROM grw_cancelamentos
+                                WHERE tipo='cancelamento' AND motivo IS NOT NULL AND meses <= 3""")
+                from collections import Counter
+                cont_m = Counter(
+                    str(mo).strip()[:60] for mo, pl, eq in cur.fetchall()
+                    if A._canc_bundle({"plano": pl, "equipe": eq}) == b)
+                mot = cont_m.most_common(1)[0] if cont_m else None
             if mot and mot[1] >= 3:
                 acoes.append((o["id"], "vendas",
                               f"Ao fechar {b}, alinhe a expectativa sobre “{escape(str(mot[0])[:60])}” — motivo "
@@ -459,8 +481,179 @@ def _revisar(conn, week: dt.date) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# integrações: camada 0 da central + banner por área
+# integrações: 'Prioridades da Semana' na central (fusão Foco+Iniciativas,
+# 17/07 noite) + banner por área
 # ---------------------------------------------------------------------------
+def _impacto_objetivo(conn, obj: dict, impactos: dict) -> dict | None:
+    """Impacto em R$/mês do objetivo — MESMO cálculo/premissas das Iniciativas
+    (a fusão só muda ONDE o número aparece). None = sem estimativa (manual)."""
+    import calendar
+    m = re.match(r"(B[1-5]):(bookings|churn)", obj.get("metric") or "")
+    if obj.get("metric") == "leads":
+        e = (impactos or {}).get("leads")
+        return dict(e, janela="lead_book") if e else None
+    if not m:
+        return None
+    b, tipo = m.group(1), m.group(2)
+    hoje = dt.date.today()
+    mes = hoje.replace(day=1)
+    frac = hoje.day / calendar.monthrange(hoje.year, hoje.month)[1]
+    try:
+        if tipo == "bookings":
+            from .sources import planejamento_financeiro as PF
+            pf = PF.carrega()
+            iso = f"{mes.year:04d}-{mes.month:02d}"
+            if not pf or iso not in pf["meses"]:
+                return None
+            meta_r = PF.linha(pf, f"{b} - Meta: Booking [R$]")[pf["meses"].index(iso)]
+            if not meta_r:
+                return None
+            with conn.cursor() as cur:
+                cur.execute("""SELECT COALESCE(sum(COALESCE(valor_custom, valor)), 0)
+                                 FROM mkt_deals_attribution
+                                WHERE status='won' AND won_time >= %s
+                                  AND upper(COALESCE(produto,'')) LIKE %s""",
+                            (f"{mes} 00:00-03", f"{b}%"))
+                real_r = float(cur.fetchone()[0])
+            cons = max(0.0, meta_r * frac - real_r)
+            otim = max(cons, meta_r - (real_r / frac if frac else real_r))
+            if cons <= 0:
+                return None
+            return {"faixa": (cons, otim), "janela": "oport_book",
+                    "premissa": (f"gap de receita do {b} vs o ritmo da meta (conservador) e o gap projetado "
+                                 "p/ o fim do mês (otimista) — mesmo cálculo do Financeiro")}
+        if tipo == "churn":
+            with conn.cursor() as cur:
+                cur.execute("""SELECT COALESCE(sum(a.recurring_revenue), 0) FROM accounts a
+                                WHERE substring(a.name FROM 'B[1-5]') = %s
+                                  AND EXISTS (SELECT 1 FROM alerts al WHERE al.account_id=a.id
+                                                AND al.status='aberto' AND al.severity IN ('critico','alto'))""", (b,))
+                mrr = float(cur.fetchone()[0] or 0)
+                cur.execute("""SELECT count(*) FROM grw_cancelamentos
+                                WHERE tipo='cancelamento'
+                                  AND mes >= date_trunc('month', now()) - interval '3 months'
+                                  AND mes < date_trunc('month', now())
+                                  AND upper(COALESCE(plano, '')) NOT LIKE '%%START%%'""")
+                canc3 = int(cur.fetchone()[0])
+                cur.execute("SELECT count(*) FROM accounts WHERE substring(name FROM 'B[1-5]') IS DISTINCT FROM 'B1'")
+                base_rec = int(cur.fetchone()[0])
+            if mrr <= 0:
+                return None
+            tx = (canc3 / 3.0 / base_rec) if base_rec else 0.10
+            return {"faixa": (mrr * tx, mrr), "janela": None,
+                    "premissa": (f"EXPOSIÇÃO: {_brl(mrr)} de MRR do {b} em risco crítico/alto — conservador aplica "
+                                 f"o churn mensal médio dos recorrentes ({tx * 100:.1f}%), otimista = exposição total; "
+                                 "risco, não perda certa")}
+    except Exception:  # noqa: BLE001 — sem estimativa, o card sai sem chip de R$
+        return None
+    return None
+
+
+def prioridades_hub_html(conn, impactos: dict | None, lags: dict | None) -> tuple[str, list[str]]:
+    """Seção 'Prioridades da Semana' da central: os objetivos CONFIRMADOS como
+    cards ordenados por impacto em R$, com o foco por time legível dentro de
+    cada card. Retorna (html, foco_kw p/ absorver iniciativas equivalentes)."""
+    from .help_texts import _hint
+    lg = lags or {}
+    try:
+        week = _seg()
+        objs = [o for o in _objetivos(conn, week) if o["status"] == "confirmado"]
+        acs = _acoes(conn, week) if objs else []
+    except Exception:  # noqa: BLE001 — a seção nunca derruba a central
+        return "", []
+    hint = _hint("Prioridades da Semana",
+                 "O que mostra: os objetivos confirmados da semana ORDENADOS pelo impacto estimado em R$/mês — a "
+                 "lógica de dinheiro das antigas 'Iniciativas sugeridas' agora organiza e justifica o foco da semana "
+                 "(uma lista só, não duas).\n"
+                 "Como ler: cada card é um objetivo, com a faixa de R$ em jogo (conservador–otimista, premissa por "
+                 "extenso), a defasagem esperada e a origem (proposto pelo sistema × adicionado pela gestão). Dentro, "
+                 "o foco de cada time com o link de execução. Gargalos que não cabem na semana ficam no bloco "
+                 "'Iniciativas de maior horizonte', mais abaixo.\n"
+                 "Fique de olho: (1) as faixas são potencial estimado, não promessa — valide premissas com o gestor "
+                 "da área; (2) não reavalie antes da defasagem; (3) a definição e o fechamento moram na Ações da "
+                 "Semana — aqui é o resumo executivo.")
+    if not objs:
+        html = ("<section><h2>Prioridades da Semana</h2>" + hint +
+                "<div class=warn style='margin-top:4px'>⚠ Objetivos da semana pendentes de confirmação — "
+                "<a href='/semana' style='color:var(--brand);font-weight:600'>revisar a proposta e confirmar →</a> "
+                "<span style='color:var(--text-muted)'>· enquanto isso, os gargalos seguem listados em "
+                "'Iniciativas de maior horizonte' abaixo</span></div></section>")
+        return html, []
+
+    def _janela_chip(e):
+        ch = (e or {}).get("janela")
+        if e and ch is None and "EXPOSIÇÃO" in (e.get("premissa") or ""):
+            return "efeito imediato (retenção)"
+        v = lg.get(ch) if ch else None
+        if v is None:
+            return "defasagem sem base histórica"
+        return f"efeito em ~{max(1, round(v))} dia(s)"
+
+    por_obj: dict[str, list[dict]] = {}
+    for a in acs:
+        por_obj.setdefault(a["objetivo"], []).append(a)
+    decorados = []
+    for o in objs:
+        e = _impacto_objetivo(conn, o, impactos or {})
+        decorados.append((e["faixa"][1] if e else -1.0, o, e))
+    decorados.sort(key=lambda x: -x[0])
+
+    cards = ""
+    for idx, (_s, o, e) in enumerate(decorados, 1):
+        chip_rs = (f"<span class=chip style='--c:var(--brand)'>"
+                   f"≈ {_brl(e['faixa'][0])}–{_brl(e['faixa'][1])}/mês em jogo</span>" if e else
+                   "<span class=chip style='--c:var(--status-semdados)'>impacto não estimado</span>")
+        meta_l = (f"<span style='font-size:var(--fs-2xs);color:var(--text-muted)'>{escape(_janela_chip(e))} · "
+                  + ("proposto pelo sistema, confirmado pela gestão" if o["source"] == "sistema"
+                     else "adicionado pela gestão") + "</span>")
+        times = ""
+        for a in por_obj.get(o["title"], []):
+            links = " · ".join(_link_html(lk) for lk in (a["refs"].get("links") or [])[:2])
+            manchete, detalhe = _acao_split(a["texto"])
+            times += (
+                "<div style='display:flex;gap:12px;align-items:flex-start;padding:9px 0;"
+                "border-top:1px solid var(--border)'>"
+                f"<span style='flex-shrink:0;min-width:118px;background:var(--surface-3);"
+                f"border:1px solid var(--border-strong);border-radius:var(--radius-sm);padding:4px 9px;"
+                f"font-size:var(--fs-2xs);font-weight:600;text-align:center;margin-top:1px'>"
+                f"{_TEAM_LBL.get(a['team'], a['team'])}</span>"
+                f"<span style='flex:1'>"
+                f"<span style='display:block;font-size:var(--fs-sm);font-weight:600;line-height:1.4'>"
+                f"{manchete}</span>"
+                + (f"<span style='display:block;font-size:var(--fs-xs);color:var(--text-muted);"
+                   f"line-height:1.55;margin-top:2px'>{detalhe} {links}</span>" if detalhe else
+                   f"<span style='display:block;margin-top:2px'>{links}</span>")
+                + "</span></div>")
+        prem = (f"<details style='margin-top:6px'><summary style='cursor:pointer;font-size:var(--fs-2xs);"
+                f"color:var(--text-muted)'>▸ como estimamos o valor (premissa)</summary>"
+                f"<div style='font-size:var(--fs-xs);color:var(--text-muted);margin-top:4px;line-height:1.55'>"
+                f"{escape(e['premissa'])} · potencial estimado, não promessa</div></details>" if e else "")
+        cards += (
+            "<div class=central style='margin-top:12px'>"
+            "<div style='display:flex;gap:12px;flex-wrap:wrap;align-items:baseline'>"
+            f"<span style='font-family:var(--font-display);font-weight:700;font-size:var(--fs-lg);"
+            f"color:var(--text-faint)'>{idx}º</span>"
+            f"<span style='font-family:var(--font-display);font-weight:700;font-size:var(--fs-lg)'>"
+            f"{escape(o['title'])}</span>{chip_rs}{meta_l}</div>"
+            + prem
+            + (f"<div style='margin-top:8px'>{times}</div>" if times else
+               "<div style='margin-top:8px;font-size:var(--fs-sm);color:var(--text-muted)'>"
+               "sem área com alavanca direta — objetivo estratégico</div>")
+            + "</div>")
+
+    resumo = " · ".join(escape(o["title"]) for _s, o, _e in decorados[:4])
+    week_lbl = week.strftime("%d/%m")
+    html = (
+        f"<section><h2>Prioridades da Semana "
+        f"<span style='font-size:var(--fs-2xs);color:var(--text-faint);font-weight:400'>"
+        f"(semana de {week_lbl} · confirmada)</span></h2>"
+        + hint +
+        f"<p class=secsub>Esta semana, em ordem de impacto: <b>{resumo}</b> · "
+        "<a href='/semana' style='color:var(--brand)'>abrir Ações da Semana →</a></p>"
+        + cards + "</section>")
+    return html, [o["title"].lower() for o in objs]
+
+
 def foco_hub_html(conn) -> tuple[str, list[str]]:
     from .help_texts import _hint
     try:
@@ -515,12 +708,16 @@ def foco_time_html(conn, team: str) -> str:
         return ""
     if not acs:
         return ""
-    itens = "".join(
-        f"<div style='padding:5px 0;font-size:var(--fs-sm);line-height:1.55;color:var(--text-2)'>"
-        f"→ {a['texto']}"
-        + (f" <span style='color:var(--text-faint);font-size:var(--fs-2xs)'>({escape(a['lag'])})</span>"
-           if a.get("lag") else "") + "</div>"
-        for a in acs[:2])
+    def _item_banner(a):
+        manchete, detalhe = _acao_split(a["texto"])
+        return ("<div style='padding:5px 0;font-size:var(--fs-sm);line-height:1.55;color:var(--text-2)'>"
+                f"→ <b>{manchete}</b>"
+                + (f"<span style='color:var(--text-muted);font-size:var(--fs-xs)'> — {detalhe}</span>"
+                   if detalhe else "")
+                + (f" <span style='color:var(--text-faint);font-size:var(--fs-2xs)'>({escape(a['lag'])})</span>"
+                   if a.get("lag") else "") + "</div>")
+
+    itens = "".join(_item_banner(a) for a in acs[:2])
     return ("<div class=central style='margin:14px 0'>"
             "<div style='font-size:var(--fs-2xs);font-weight:600;text-transform:uppercase;"
             "letter-spacing:var(--tracking-label);color:var(--brand)'>Seu foco desta semana"
@@ -633,15 +830,21 @@ def semana_page(request: Request):
     for t in ("marketing", "prevendas", "vendas", "growth"):
         if t not in por_time:
             continue
-        linhas = "".join(
-            f"<div style='padding:7px 0;border-top:1px solid var(--border);font-size:var(--fs-sm);line-height:1.6'>"
-            f"<div style='font-size:var(--fs-2xs);color:var(--brand);text-transform:uppercase;"
-            f"letter-spacing:var(--tracking-label)'>contribui para: {escape(a['objetivo'])}</div>"
-            f"→ {a['texto']} "
-            + " · ".join(_link_html(lk) for lk in (a["refs"].get("links") or [])[:2])
-            + (f"<div style='color:var(--text-faint);font-size:var(--fs-2xs);margin-top:2px'>defasagem: "
-               f"{escape(a['lag'])}</div>" if a.get("lag") else "")
-            + "</div>" for a in por_time[t])
+        def _linha_acao(a):
+            manchete, detalhe = _acao_split(a["texto"])
+            links = " · ".join(_link_html(lk) for lk in (a["refs"].get("links") or [])[:2])
+            return (
+                "<div style='padding:9px 0;border-top:1px solid var(--border)'>"
+                f"<div style='font-size:var(--fs-2xs);color:var(--brand);text-transform:uppercase;"
+                f"letter-spacing:var(--tracking-label)'>contribui para: {escape(a['objetivo'])}</div>"
+                f"<div style='font-size:var(--fs-sm);font-weight:600;line-height:1.45;margin-top:2px'>{manchete}</div>"
+                + (f"<div style='font-size:var(--fs-xs);color:var(--text-muted);line-height:1.55;margin-top:2px'>"
+                   f"{detalhe} {links}</div>" if detalhe else f"<div style='margin-top:2px'>{links}</div>")
+                + (f"<div style='color:var(--text-faint);font-size:var(--fs-2xs);margin-top:3px'>defasagem: "
+                   f"{escape(a['lag'])}</div>" if a.get("lag") else "")
+                + "</div>")
+
+        linhas = "".join(_linha_acao(a) for a in por_time[t])
         times_html += (f"<div class=central style='margin-top:10px'>"
                        f"<b style='font-family:var(--font-display)'>{_TEAM_LBL[t]}</b>{linhas}</div>")
     if not times_html and objs:

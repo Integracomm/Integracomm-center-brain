@@ -97,9 +97,13 @@ nav{padding:10px 12px;display:flex;flex-direction:column;gap:2px;flex:1}
 main{flex:1;min-width:0;padding:26px 32px 48px;max-width:var(--content-max)}
 h1{font-family:var(--font-display);font-weight:700;font-size:var(--fs-h1);letter-spacing:var(--tracking-tight);margin:0}
 .sub{font-size:var(--fs-sm);color:var(--text-muted);margin-top:6px}
-section{margin-top:var(--space-8)}
-h2{font-family:var(--font-display);font-weight:600;font-size:var(--fs-lg);margin:0 0 4px}
-.secsub{font-size:var(--fs-sm);color:var(--text-muted);margin:0 0 12px}
+/* seções com separação clara + acento no título (redesenho 20/07 — mesmo
+   padrão da central e do Growth; vale p/ Marketing/PV/Vendas/Fin/Operações) */
+section{margin-top:32px;padding-top:22px;border-top:1px solid var(--border)}
+section:first-of-type{border-top:none;padding-top:0}
+h2{font-family:var(--font-display);font-weight:600;font-size:var(--fs-lg);margin:0 0 4px;position:relative;padding-left:12px}
+h2::before{content:"";position:absolute;left:0;top:4px;bottom:4px;width:3px;border-radius:2px;background:var(--brand)}
+.secsub{font-size:var(--fs-sm);color:var(--text-muted);margin:0 0 12px;line-height:1.55;max-width:980px}
 .card{background:var(--surface-1);border:1px solid var(--border-mid);border-radius:var(--radius-md);padding:16px 18px}
 .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-top:20px}
 .kpi{background:var(--surface-1);border:1px solid var(--border-mid);border-radius:var(--radius-md);padding:14px 16px}
@@ -234,8 +238,15 @@ def _canais(conn, request: Request) -> str:
     dias = (fim - ini).days + 1
     prev = AN.ranking_canais(conn, ini - dt.timedelta(days=dias), ini - dt.timedelta(days=1))
     prev_map = {r["canal"]: r for r in prev}
+    # data bars nas células (Parte A): o gestor compara muitas métricas de uma
+    # vez — mini-barra acelera o "quem é maior" sem perder nenhum número
+    from ..viz import data_bar as _vz_db
+    rk = AN.ranking_canais(conn, ini, fim)
+    _mx_leads = max((r["leads"] or 0 for r in rk), default=1) or 1
+    _mx_book = max((r["bookings"] or 0 for r in rk), default=1) or 1
+    _mx_rec = max((float(r["receita"] or 0) for r in rk), default=1.0) or 1.0
     rows = ""
-    for r in AN.ranking_canais(conn, ini, fim):
+    for r in rk:
         p = prev_map.get(r["canal"], {})
         d_leads = ""
         if p.get("leads"):
@@ -243,9 +254,12 @@ def _canais(conn, request: Request) -> str:
             d_leads = f" <span class='{'pos' if var >= 0 else 'neg'}' style='font-size:var(--fs-2xs)'>({'+' if var >= 0 else ''}{var:.0f}%)</span>"
         roas = f"{r['roas']:.1f}x" if r["roas"] else "—"
         rows += (f"<tr><td><b>{escape(r['canal'])}</b></td><td class=num>{_fmt(r['gasto'], 'brl')}</td>"
-                 f"<td class=num>{r['leads']}{d_leads}</td><td class=num>{_fmt(r['cpl'], 'brl')}</td>"
-                 f"<td class=num>{_fmt(r['conv_lead_oport'], 'pct')}</td><td class=num>{r['bookings']}</td>"
-                 f"<td class=num>{_fmt(r['conv_lead_book'], 'pct')}</td><td class=num>{_fmt(r['receita'], 'brl')}</td>"
+                 f"<td class=num>{r['leads']}{d_leads}{_vz_db(r['leads'] or 0, _mx_leads, largura=46)}</td>"
+                 f"<td class=num>{_fmt(r['cpl'], 'brl')}</td>"
+                 f"<td class=num>{_fmt(r['conv_lead_oport'], 'pct')}</td>"
+                 f"<td class=num>{r['bookings']}{_vz_db(r['bookings'] or 0, _mx_book, cor='var(--status-baixo)', largura=40)}</td>"
+                 f"<td class=num>{_fmt(r['conv_lead_book'], 'pct')}</td>"
+                 f"<td class=num>{_fmt(r['receita'], 'brl')}{_vz_db(float(r['receita'] or 0), _mx_rec, cor='var(--status-baixo)', largura=40)}</td>"
                  f"<td class=num>{_fmt(r['cac'], 'brl')}</td><td class=num>{roas}</td></tr>")
     # ---- evolução mensal (6m) dos canais PAGOS: leads, CPL, CAC (14/07) ----
     with conn.cursor() as cur:

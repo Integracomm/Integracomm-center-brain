@@ -533,10 +533,11 @@ def hub(request: Request):
             coorte = None
         impactos = _hub_impactos(c, mkt, sales, coorte=coorte)
         lags = _hub_lags(c, coorte=coorte)
-        # Camada 0 (foco da semana) + Camada 3 (raio-x compacto) do Cockpit
+        # 'Prioridades da Semana' (fusão Foco+Iniciativas, 17/07 noite) +
+        # Camada 3 (raio-x compacto) do Cockpit
         try:
-            from .semana import foco_hub_html
-            foco_html, foco_kw = foco_hub_html(c)
+            from .semana import prioridades_hub_html
+            foco_html, foco_kw = prioridades_hub_html(c, impactos, lags)
         except Exception:  # noqa: BLE001
             foco_html, foco_kw = "", []
         try:
@@ -1871,9 +1872,6 @@ def _render_hub(role: str, st: dict, users: list[dict] | None = None,
         return False
 
     def _init_html(t, d, var, href, e, chave_j, tipo):
-        selo = (" <span class=chip style='--c:var(--brand)' title='este gargalo casa com um objetivo "
-                "confirmado da semana (Ações da Semana)'>foco desta semana</span>"
-                if _eh_foco(tipo, t, d) else "")
         extra = ""
         if e:
             lo, hi = e["faixa"]
@@ -1884,11 +1882,16 @@ def _render_hub(role: str, st: dict, users: list[dict] | None = None,
             extra = f"<div class='id_' style='margin-top:4px'>{escape(_janela_txt(chave_j))}</div>"
         return (f"<a class='init' href='{href}' title='abrir os dados desta iniciativa'>"
                 f"<span class='sdot' style='--c:var({var})'></span>"
-                f"<div><div class='it'>{escape(t)}{selo}</div><div class='id_'>{escape(d)}</div>{extra}</div>"
+                f"<div><div class='it'>{escape(t)}</div><div class='id_'>{escape(d)}</div>{extra}</div>"
                 f"<span class='ig'>→</span></a>")
 
-    init_html = "".join(_init_html(*x) for x in decoradas) \
-        or "<div class='init'><div class='id_'>sem iniciativas pendentes</div></div>"
+    # fusão (17/07 noite): iniciativa que casa com um objetivo CONFIRMADO da
+    # semana foi ABSORVIDA pelos cards de 'Prioridades da Semana' — o que sobra
+    # é o horizonte maior que a semana (estrutural), num bloco menor
+    restantes = [x for x in decoradas if not _eh_foco(x[6], x[0], x[1])]
+    init_html = "".join(_init_html(*x) for x in restantes) \
+        or ("<div class='init'><div class='id_'>nenhuma iniciativa além das prioridades da semana — "
+            "os gargalos atuais já viraram objetivos confirmados</div></div>")
 
     # ---- defasagem esperada (Integração Causal #4): protege decisão certa de
     # ser revertida cedo demais — quando cobrar resultado de cada correção
@@ -2153,9 +2156,13 @@ h1{font-family:var(--font-display);font-weight:700;font-size:var(--fs-h1);letter
 .kpi{background:var(--surface-1);border:1px solid var(--border-mid);border-radius:var(--radius-md);padding:16px 18px}
 .kpi .n{font-family:var(--font-display);font-weight:700;font-size:28px;line-height:1}
 .kpi .l{font-size:var(--fs-2xs);color:var(--text-muted);text-transform:uppercase;letter-spacing:var(--tracking-label);margin-top:8px}
-section{margin-top:var(--space-8)}
-h2{font-family:var(--font-display);font-weight:600;font-size:var(--fs-lg);margin:0 0 4px}
-.secsub{font-size:var(--fs-sm);color:var(--text-muted);margin:0 0 14px}
+/* camadas do cockpit com SEPARAÇÃO clara (20/07): divisor entre seções +
+   acento dourado no título — hierarquia visual, não blocos soltos */
+section{margin-top:32px;padding-top:22px;border-top:1px solid var(--border)}
+section:first-of-type{border-top:none;padding-top:0}
+h2{font-family:var(--font-display);font-weight:600;font-size:var(--fs-lg);margin:0 0 4px;position:relative;padding-left:12px}
+h2::before{content:"";position:absolute;left:0;top:4px;bottom:4px;width:3px;border-radius:2px;background:var(--brand)}
+.secsub{font-size:var(--fs-sm);color:var(--text-muted);margin:0 0 14px;line-height:1.55;max-width:980px}
 .areas{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px}
 .area{display:block;background:var(--surface-1);border:1px solid var(--border-mid);border-radius:var(--radius-md);padding:16px 18px}
 .area:hover{background:var(--surface-2);border-color:var(--border-strong)}
@@ -2232,7 +2239,9 @@ __BODY__
             "bundle e de cada área, as iniciativas priorizadas por R$ e as defasagens — cada bloco abre a visão completa.</p>"
             + foco_html
             + mudancas +
-            f"<div class=kpis>{kpi_html}</div>"
+            "<section><h2>Números-chave do mês</h2>"
+            "<p class=secsub>retenção (Growth) e aquisição (Marketing/Vendas) — o termômetro rápido antes do detalhe por área</p>"
+            f"<div class=kpis style='margin-top:0'>{kpi_html}</div></section>"
             "<section><h2>Saúde por área</h2>"
             "<p class=secsub>diagnóstico automático do mês corrente, ordenado da área que mais demanda atenção para a mais saudável — clique para abrir</p>"
             f"<div class=hbar>{hbar}</div></section>"
@@ -2240,22 +2249,19 @@ __BODY__
             "<section><h2>Áreas</h2>"
             "<p class=secsub>resumo do andamento de cada área — clique para abrir o painel completo; verde = no ritmo/meta, vermelho = atenção</p>"
             f"<div class=areas>{area_cards}</div></section>"
-            "<section><h2>Iniciativas sugeridas</h2>"
-            "<p class=secsub>derivadas dos sinais das áreas ativas e ORDENADAS pelo impacto estimado em R$/mês "
-            "(faixa conservador–otimista, premissa explícita) — priorização da empresa, não de uma área só · "
-            "selo amarelo = casa com um objetivo confirmado da semana</p>"
-            + _hint("Iniciativas sugeridas",
-                    "O que mostra: onde agir primeiro, com o valor estimado de cada gargalo em R$/mês — a moeda "
-                    "comum que permite comparar áreas diferentes (lead, SLA, churn, execução).\n"
+            "<section><h2>Iniciativas de maior horizonte</h2>"
+            "<p class=secsub>gargalos medidos que NÃO viraram objetivo desta semana (estruturais ou de prazo maior) — "
+            "ordenados pelo impacto estimado em R$/mês, com premissa e defasagem; candidatos naturais às próximas semanas</p>"
+            + _hint("Iniciativas de maior horizonte",
+                    "O que mostra: os gargalos com impacto em R$/mês que não couberam nos objetivos DESTA semana — "
+                    "o que casa com um objetivo confirmado é absorvido pelos cards de 'Prioridades da Semana' lá em "
+                    "cima; aqui fica o horizonte maior.\n"
                     "Como ler: a faixa (conservador–otimista) e a PREMISSA de cada estimativa estão escritas no item — "
-                    "são potenciais, não promessas; número sem premissa engana. A lista vem ordenada do maior para o "
-                    "menor impacto. Cada item traz também a defasagem esperada: quanto tempo a correção leva para "
-                    "aparecer no resultado (mediana histórica). O selo 'foco desta semana' marca a iniciativa que "
-                    "aponta para o mesmo lugar que um objetivo confirmado na Ações da Semana (casamento por "
-                    "palavras-chave — heurístico).\n"
-                    "Fique de olho: (1) valide as premissas com o gestor da área antes de mexer em processo; "
-                    "(2) não reavalie uma correção antes da janela de maturação — reverter decisão certa cedo demais "
-                    "é o erro mais caro; (3) 'exposição' (execução crítica) é risco exposto, não perda certa.")
+                    "são potenciais, não promessas. Cada item traz a defasagem esperada (quando cobrar resultado) e "
+                    "abre a tela com os dados.\n"
+                    "Fique de olho: (1) item que passa semanas aqui sem virar objetivo = gargalo estrutural — merece "
+                    "projeto próprio, não semana; (2) valide as premissas com o gestor da área; (3) 'exposição' "
+                    "(execução crítica) é risco exposto, não perda certa.")
             + f"<div class=central>{init_html}</div></section>"
             # defasagem RECOLHIDA por padrão (Cockpit): é referência de consulta
             # ('quando cobrar'), não leitura diária
@@ -2958,10 +2964,15 @@ h1{font-family:var(--font-display);font-weight:700;font-size:var(--fs-h1);letter
 .kpi .n{font-family:var(--font-display);font-weight:700;font-size:var(--fs-kpi);line-height:1}
 .kpi .l{font-size:var(--fs-2xs);color:var(--text-muted);text-transform:uppercase;letter-spacing:var(--tracking-label);margin-top:8px}
 .kpi .s{font-size:var(--fs-xs);color:var(--text-faint);margin-top:3px}
-section{margin-top:var(--space-8)}
-.sec-head{display:flex;align-items:baseline;gap:10px;margin-bottom:10px}
-.sec-head h2{font-family:var(--font-display);font-weight:600;font-size:var(--fs-lg);margin:0}
-.sec-head .sub{font-size:var(--fs-sm);color:var(--text-muted)}
+/* seções com SEPARAÇÃO clara + acento no título (redesenho 20/07: cabeçalho
+   em BLOCO — título em cima, descrição embaixo; nada espremido numa linha) */
+section{margin-top:32px;padding-top:22px;border-top:1px solid var(--border)}
+section:first-of-type{border-top:none;padding-top:0}
+.sec-head{display:flex;flex-direction:column;gap:4px;margin-bottom:12px}
+.sec-head h2{font-family:var(--font-display);font-weight:600;font-size:var(--fs-lg);margin:0;position:relative;padding-left:12px}
+.sec-head h2::before,section>h2::before{content:"";position:absolute;left:0;top:4px;bottom:4px;width:3px;border-radius:2px;background:var(--brand)}
+section>h2{position:relative;padding-left:12px}
+.sec-head .sub{font-size:var(--fs-sm);color:var(--text-muted);line-height:1.55;max-width:980px}
 .note{font-size:var(--fs-sm);color:var(--text-muted);margin:0 0 10px}
 .note b{color:var(--text-2)}
 /* --- tabelas em grid --- */
@@ -3665,19 +3676,28 @@ _PLANOS_LEGADO = ("ASS", "ADS", "ESTRAT", "CONSULT", "ANTIGO", "MASTER + ADS")
 
 
 def _canc_bundle(r: dict) -> str | None:
-    """Bundle (B1-B5) do cancelamento: pela equipe (B2-S1) ou pelo plano."""
+    """Bundle (B1-B5) do cancelamento — pelo PLANO do cliente (correção Otávio
+    20/07: a equipe vinha PRIMEIRO e o squad atende clientes de vários tipos —
+    ex.: cliente ADS do squad B5-S3 contava como churn do B5/Elite). Ordem:
+    (1) Bx explícito no plano; (2) nome do plano novo (START→B1 … ELITE→B5,
+    régua oficial das barras de vendas); (3) plano lançado que NÃO é bundle
+    (ADS, Estratégia, Assessoria antiga…) → None ('antigos/ADS' — NUNCA
+    classificar pelo squad); (4) só SEM plano lançado a equipe entra como
+    último recurso (aproximação)."""
     import re as _re
-    for campo in ("equipe", "plano"):
-        m = _re.search(r"B[1-5]", str(r.get(campo) or ""))
-        if m:
-            return m.group(0)
-    pl = str(r.get("plano") or "").upper()
-    mapa = {"START": "B1", "SMART": "B1", "TRACTION": "B2", "SCALE": "B3",
-            "MASTER": "B4", "PLATINUM": "B5"}
-    for k, b in mapa.items():
-        if k in pl and "ADS" not in pl.split("+")[0]:
+    principal = str(r.get("plano") or "").upper().split("+")[0].strip()
+    m = _re.search(r"B[1-5](?!\w)", principal)  # Bx explícito (não casa 'BUNDLES')
+    if m:
+        return m.group(0)
+    for k, b in (("START", "B1"), ("TRACTION", "B2"), ("SCALE", "B3"),
+                 ("PLATINUM", "B4"), ("ELITE", "B5")):
+        if k in principal:
             return b
-    return None
+    if principal and "BUNDLE" not in principal:
+        return None  # plano específico não-bundle: ADS/Estratégia/antigos
+    # sem plano OU plano genérico 'BUNDLES': a equipe é a única pista do bundle
+    m = _re.search(r"B[1-5]", str(r.get("equipe") or ""))
+    return m.group(0) if m else None
 
 
 def _canc_legado(r: dict) -> bool:
@@ -3785,14 +3805,17 @@ def _cancel_content(rows: list[dict], request: Request, base_bundle: dict | None
     th_t = "".join(f"<th style='text-align:left;padding:7px;border-bottom:1px solid var(--border-strong);color:var(--text-muted);font-size:var(--fs-2xs);text-transform:uppercase'>{h}</th>"
                    for h in ("Cliente", "GC/Squad", "Plano", "Situação"))
 
-    # ---- por plano e por equipe (todo o período)
+    # ---- por plano e por equipe (todo o período) — barras comparativas com a
+    # tabela completa preservada em details (Redesenho Parte A)
     def grupo(campo, titulo):
+        from .viz import barras_h as _vzb, detalhe_tabela as _vzd
         agg: dict[str, list] = {}
         for r in canc:
             k = (r[campo] or "—").strip().upper()[:24]
             agg.setdefault(k, []).append(r)
+        tops = sorted(agg.items(), key=lambda x: -len(x[1]))[:12]
         linhas = ""
-        for k, rs in sorted(agg.items(), key=lambda x: -len(x[1]))[:12]:
+        for k, rs in tops:
             mrr = sum(_f(r['valor']) or 0 for r in rs)
             tps = [_f(r['meses']) for r in rs if r['meses'] is not None]
             td = "text-align:right;padding:6px 7px;border-bottom:1px solid var(--border);font-variant-numeric:tabular-nums"
@@ -3802,9 +3825,20 @@ def _cancel_content(rows: list[dict], request: Request, base_bundle: dict | None
         th_g = ("<tr><th style='text-align:left;padding:6px 7px;border-bottom:1px solid var(--border-strong);color:var(--text-muted);font-size:var(--fs-2xs);text-transform:uppercase'>" + titulo + "</th>"
                 + "".join(f"<th style='text-align:right;padding:6px 7px;border-bottom:1px solid var(--border-strong);color:var(--text-muted);font-size:var(--fs-2xs);text-transform:uppercase'>{h}</th>"
                           for h in ("Saídas", "MRR", "Tempo (med.)")) + "</tr>")
-        return tbl(th_g, linhas)
+        graf = _vzb([(k, len(rs), _fmt_brl(sum(_f(r['valor']) or 0 for r in rs))) for k, rs in tops[:8]],
+                    largura_rotulo=130)
+        return graf + _vzd(tbl(th_g, linhas), f"ver tabela completa ({titulo.lower()}, MRR e tempo de casa)")
 
-    # ---- motivos recentes
+    # ---- motivos: PARETO agregado (Parte A) + casos recentes em details
+    from .viz import barras_h as _vz_barras_m, detalhe_tabela as _vz_det_m
+
+    def _pareto_motivos(rows_m):
+        from collections import Counter
+        cont = Counter((r["motivo"] or "").strip()[:48] for r in rows_m if r["motivo"])
+        tops = cont.most_common(8)
+        return _vz_barras_m([(m, n, None) for m, n in tops], largura_rotulo=240,
+                            cores=["var(--status-critico)"] + ["var(--brand)"] * 7)
+
     com_motivo = [r for r in canc if r["motivo"]]
     linhas_mo = ""
     for r in sorted(com_motivo, key=lambda x: x["mes"], reverse=True)[:15]:
@@ -3826,7 +3860,9 @@ def _cancel_content(rows: list[dict], request: Request, base_bundle: dict | None
         canc_bund.setdefault(_canc_bundle(r) or "outros", []).append(r)
     n_meses = max(1, len({r["mes"] for r in canc}) or 1)
 
-    def _linha_tx(rotulo, bb, mrr_par, rs, chip="", negrito=False):
+    graf_tx: list[tuple] = []  # (rótulo plano, taxa clientes, sublabel faturamento)
+
+    def _linha_tx(rotulo, bb, mrr_par, rs, chip="", negrito=False, plain=""):
         mrr_b, mrr_cnt = mrr_par
         cb = len(rs)
         mrr_p = sum(_f(r["valor"]) or 0 for r in rs)
@@ -3846,6 +3882,16 @@ def _cancel_content(rows: list[dict], request: Request, base_bundle: dict | None
                              f"({mrr_cnt} de {bb} têm valor)'>{mrr_b_txt}</span>")
         else:
             mrr_b_txt = "—"
+        if plain and tx_c is not None:
+            # contexto NA BARRA (20/07, caso B5): taxa = média do período ÷ base
+            # ATUAL — quando a base encolheu, a taxa fica alta mesmo sem saídas
+            # recentes; o sublabel conta a história e avisa
+            sub_bits = [f"{cb} saída(s) em {n_meses}m · base atual {bb or 0}"]
+            if tx_f is not None:
+                sub_bits.append(f"faturamento: {pre}{tx_f * 100:.1f}%/mês")
+            if bb and bb < 12:
+                sub_bits.append("⚠ base pequena/encolheu — taxa pouco confiável")
+            graf_tx.append((plain, tx_c * 100, " · ".join(sub_bits)))
         td = "text-align:right;padding:7px;border-bottom:1px solid var(--border);font-variant-numeric:tabular-nums"
         b = "font-weight:700" if negrito else ""
         borda = "border-top:2px solid var(--border-strong)" if negrito else ""
@@ -3861,22 +3907,32 @@ def _cancel_content(rows: list[dict], request: Request, base_bundle: dict | None
                "— não recorrente; entra na visão por plano mas fica FORA da taxa geral'>não recorrente</span>")
     _sem_mrr = (0.0, 0)
     tx_rows = _linha_tx("<b>B1</b>", base_bundle.get("B1", 0), mrr_bundle.get("B1", _sem_mrr),
-                        canc_bund.get("B1", []), chip=chip_b1)
+                        canc_bund.get("B1", []), chip=chip_b1, plain="B1 (não recorrente)")
     for b in ("B2", "B3", "B4", "B5"):
-        tx_rows += _linha_tx(f"<b>{b}</b>", base_bundle.get(b, 0), mrr_bundle.get(b, _sem_mrr), canc_bund.get(b, []))
+        tx_rows += _linha_tx(f"<b>{b}</b>", base_bundle.get(b, 0), mrr_bundle.get(b, _sem_mrr),
+                             canc_bund.get(b, []), plain=b)
     tx_rows += _linha_tx("antigos/ADS (sem Bx no nome)", base_bundle.get("outros", 0),
-                         mrr_bundle.get("outros", _sem_mrr), canc_bund.get("outros", []))
+                         mrr_bundle.get("outros", _sem_mrr), canc_bund.get("outros", []), plain="antigos/ADS")
     rec_base = sum(v for k, v in base_bundle.items() if k != "B1")
     rec_mrr = (sum(v[0] for k, v in mrr_bundle.items() if k != "B1"),
                sum(v[1] for k, v in mrr_bundle.items() if k != "B1"))
     rec_canc = [r for k, rs in canc_bund.items() if k != "B1" for r in rs]
-    tx_rows += _linha_tx("Taxa GERAL — recorrentes (sem B1)", rec_base, rec_mrr, rec_canc, negrito=True)
+    tx_rows += _linha_tx("Taxa GERAL — recorrentes (sem B1)", rec_base, rec_mrr, rec_canc,
+                         negrito=True, plain="GERAL (recorrentes)")
+    # visual primeiro (barras comparativas), tabela completa preservada em
+    # details (Redesenho Parte A — nenhum dado some)
+    from .viz import barras_h as _vz_barras, detalhe_tabela as _vz_det
+    graf_ordenado = sorted(graf_tx, key=lambda x: -x[1])
+    cores_tx = ["var(--status-critico)" if "GERAL" in r else "var(--brand)" for r, _v, _s in graf_ordenado]
     taxa_html = ("<section><div class=sec-head><h2>Taxa de cancelamento por bundle</h2>"
                  f"<span class=sub>média mensal do período filtrado ({n_meses} m) ÷ base monitorada ATUAL (aproximação: sem base histórica mês a mês) · "
                  "taxa GERAL = só planos recorrentes — B1 fora (semestral, não recorrente) · "
                  "duas visões: por clientes e por faturamento (MRR) · ≈ = base de MRR estimada "
                  "(nem toda conta tem valor lançado; média das preenchidas × total)</span></div>"
-                 + card(tbl("<tr>" + "".join(f"<th style='text-align:{al};padding:7px;border-bottom:1px solid var(--border-strong);color:var(--text-muted);font-size:var(--fs-2xs);text-transform:uppercase'>{h}</th>" for h, al in (("Bundle", "left"), ("Base ativa", "right"), ("MRR da base", "right"), ("Saídas no período", "right"), ("MRR perdido", "right"), ("Taxa clientes", "right"), ("Taxa faturamento", "right"))) + "</tr>", tx_rows))
+                 + card(_vz_barras(graf_ordenado, fmt=lambda v: f"{v:.1f}%/mês", cores=cores_tx,
+                                   largura_valor=250)
+                        + _vz_det(tbl("<tr>" + "".join(f"<th style='text-align:{al};padding:7px;border-bottom:1px solid var(--border-strong);color:var(--text-muted);font-size:var(--fs-2xs);text-transform:uppercase'>{h}</th>" for h, al in (("Bundle", "left"), ("Base ativa", "right"), ("MRR da base", "right"), ("Saídas no período", "right"), ("MRR perdido", "right"), ("Taxa clientes", "right"), ("Taxa faturamento", "right"))) + "</tr>", tx_rows),
+                                  "ver tabela completa (base, MRR, saídas, taxa por faturamento)"))
                  + "</section>")
 
     # ---- gráfico de evolução mensal (total × novos × antigos) + MRR
@@ -3908,9 +3964,21 @@ def _cancel_content(rows: list[dict], request: Request, base_bundle: dict | None
                     f"<td style='{td}'>{sum(1 for x in tps if x <= 3) / len(tps) * 100:.0f}%</td></tr>")
     tempo_html = ""
     if tc_rows:
+        # barra EMPILHADA precoce×tardio por bundle (proporção — Parte A);
+        # tabela com mediana preservada em details
+        from .viz import detalhe_tabela as _vz_det2, empilhada as _vz_emp
+        itens_emp = []
+        for b in ("B1", "B2", "B3", "B4", "B5", "outros"):
+            tps = [_f(r["meses"]) for r in canc_bund.get(b, []) if r.get("meses") is not None]
+            if tps:
+                prec = sum(1 for x in tps if x <= 3)
+                itens_emp.append((b, {"precoce (≤3 meses)": prec, "tardio": len(tps) - prec}))
+        emp = _vz_emp(itens_emp, [("precoce (≤3 meses)", "var(--status-critico)"),
+                                  ("tardio", "var(--status-medio)")], largura_rotulo=90)
         tempo_html = ("<section><div class=sec-head><h2>Tempo de casa na saída, por bundle</h2>"
-                      "<span class=sub>mediana e % de churn PRECOCE (≤3 meses) — churn precoce = problema de onboarding/expectativa, não de entrega</span></div>"
-                      + card(tbl("<tr>" + "".join(f"<th style='text-align:{al};padding:7px;border-bottom:1px solid var(--border-strong);color:var(--text-muted);font-size:var(--fs-2xs);text-transform:uppercase'>{h}</th>" for h, al in (("Bundle", "left"), ("Saídas c/ dado", "right"), ("Mediana", "right"), ("≤3 meses", "right"))) + "</tr>", tc_rows)) + "</section>")
+                      "<span class=sub>proporção precoce (≤3 meses) × tardio — churn precoce = problema de onboarding/expectativa, não de entrega · nº à direita = saídas com dado</span></div>"
+                      + card(emp + _vz_det2(tbl("<tr>" + "".join(f"<th style='text-align:{al};padding:7px;border-bottom:1px solid var(--border-strong);color:var(--text-muted);font-size:var(--fs-2xs);text-transform:uppercase'>{h}</th>" for h, al in (("Bundle", "left"), ("Saídas c/ dado", "right"), ("Mediana", "right"), ("≤3 meses", "right"))) + "</tr>", tc_rows),
+                                            "ver tabela (mediana de tempo de casa)")) + "</section>")
 
     return (
         "<div class=page-head><h1>Cancelamentos</h1>"
@@ -3926,8 +3994,11 @@ def _cancel_content(rows: list[dict], request: Request, base_bundle: dict | None
         "<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px'>"
         + card(grupo("plano", "Plano")) + card(grupo("equipe", "Equipe/Squad")) + "</div></section>"
         + tempo_html +
-        f"<section><div class=sec-head><h2>Motivos informados</h2><span class=sub>{len(com_motivo)} saídas com motivo registrado — 15 mais recentes</span></div>"
-        + card(tbl("<tr>" + "".join(f"<th style='text-align:left;padding:7px;border-bottom:1px solid var(--border-strong);color:var(--text-muted);font-size:var(--fs-2xs);text-transform:uppercase'>{h}</th>" for h in ("Mês", "Cliente", "Plano", "Motivo")) + "</tr>", linhas_mo)) +
+        f"<section><div class=sec-head><h2>Motivos informados</h2><span class=sub>{len(com_motivo)} saídas com motivo registrado — Pareto dos motivos (o nº1 é o playbook prioritário); casos recentes na tabela recolhida</span></div>"
+        + card(_pareto_motivos(com_motivo)
+               + _vz_det_m(
+                   tbl("<tr>" + "".join(f"<th style='text-align:left;padding:7px;border-bottom:1px solid var(--border-strong);color:var(--text-muted);font-size:var(--fs-2xs);text-transform:uppercase'>{h}</th>" for h in ("Mês", "Cliente", "Plano", "Motivo")) + "</tr>", linhas_mo),
+                   "ver os 15 casos mais recentes (cliente e plano)")) +
         "</section>"
         "<p class=note style='margin-top:14px'>Duas réguas conciliadas: as ABAS MENSAIS (listas operacionais, histórico completo "
         "incl. ADS/ASS antigos) + a aba CONSOLIDADA do processo anti-churn (mar/26+, status oficial) — cliente marcado "

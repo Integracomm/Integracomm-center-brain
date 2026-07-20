@@ -94,6 +94,31 @@ def _card(inner: str) -> str:
     return f"<div class=card>{inner}</div>"
 
 
+# visuais compartilhados (Redesenho Parte A, 17/07) — tabela original sempre
+# preservada num details logo abaixo do gráfico
+from ..viz import barras_h as _vz_barras  # noqa: E402
+from ..viz import detalhe_tabela as _vz_det  # noqa: E402
+
+
+def _viz_dias(ddados: dict) -> str:
+    """Barras da conversão por dia da semana — melhor dia em verde, pior em
+    vermelho (cor + rótulo; não depende só da cor)."""
+    taxas = [(dow, ddados[dow][1] / ddados[dow][0]) for dow in (1, 2, 3, 4, 5, 6, 0)
+             if ddados.get(dow, (0, 0))[0]]
+    if not taxas:
+        return ""
+    best = max(taxas, key=lambda x: x[1])[0]
+    worst = min(taxas, key=lambda x: x[1])[0]
+    itens, cores = [], []
+    for dow, tx in taxas:
+        n, ag = ddados[dow]
+        marca = " (melhor)" if dow == best else (" (pior)" if dow == worst else "")
+        itens.append((_DOW_NOME[dow] + marca, tx * 100, f"{ag}/{n} leads"))
+        cores.append("var(--status-baixo)" if dow == best else
+                     "var(--status-critico)" if dow == worst else "var(--brand)")
+    return _vz_barras(itens, fmt=lambda v: f"{v:.1f}%", cores=cores, largura_rotulo=120)
+
+
 _TH = ("<th style='text-align:{al};padding:8px;border-bottom:1px solid var(--border-strong);"
        "color:var(--text-muted);font-size:var(--fs-2xs);text-transform:uppercase;"
        "letter-spacing:var(--tracking-label)'>{h}</th>")
@@ -158,8 +183,9 @@ def _pv_funil(conn, request: Request) -> str:
              WHERE d.add_time >= %s AND d.add_time < %s
              GROUP BY 1 HAVING count(DISTINCT d.deal_id) >= 5 ORDER BY 2 DESC LIMIT 14""",
             (list(_ST_REUNIAO), a, b, a, b))
+        origens = cur.fetchall()
         orows = ""
-        for o, l, r in cur.fetchall():
+        for o, l, r in origens:
             tx = r / l if l else 0
             orows += (f"<tr><td style='{_TD}'>{escape(o[:34])}</td><td style='{_TD};text-align:right'>{l}</td>"
                       f"<td style='{_TD};text-align:right'>{r}</td><td style='{_TD};text-align:right'>{_fmt(tx, 'pct')}</td></tr>")
@@ -206,13 +232,20 @@ def _pv_funil(conn, request: Request) -> str:
     return (f"<h1>Funil de Qualificação</h1><div class=sub>régua OFICIAL do dashboard do time — os números batem com o Pipedrive/Lovable · o trabalho de Pré-vendas vai do Lead ao SQL (agendou = deal na mão de closer); Oportunidade e Booking mostram o destino final</div>"
             f"<form method=get action=/prevendas><input type=hidden name=view value=funil>{form}</form>"
             f"<section><h2>Funil completo (Lead → Booking)</h2><p class=secsub>largura proporcional ao volume · pílula = conversão sobre a etapa anterior · os mesmos números das abas de Marketing e Vendas</p>{funil_visual}</section>"
-            f"<section><h2>Conversão por dia de chegada do lead</h2><p class=secsub>taxa de agendamento pelo dia da semana em que o lead entrou — a reunião conta a qualquer tempo (coorte)</p>"
-            + _card(_tbl([("Dia de chegada", "left"), ("Leads", "right"), ("Agendaram", "right"),
-                          ("Taxa", "right")], drows_sem)) + "</section>"
-            f"<section><h2>Qualidade do lead por origem</h2><p class=secsub>taxa lead→reunião por canal — realimenta a segmentação do Marketing</p>"
-            + _card(_tbl([("Origem", "left"), ("Leads", "right"), ("Reuniões", "right"), ("Lead→Reunião", "right")], orows)) + "</section>"
-            f"<section><h2>Motivos de desqualificação</h2><p class=secsub>perdidos antes do handoff</p>"
-            + _card((_tbl([("Motivo", "left"), ("Deals", "right")], drows) if drows else "<span class=note>sem perdas no período</span>")
+            f"<section><h2>Conversão por dia de chegada do lead</h2><p class=secsub>taxa de agendamento pelo dia da semana em que o lead entrou — a reunião conta a qualquer tempo (coorte) · verde = melhor dia, vermelho = pior</p>"
+            + _card(_viz_dias(ddados) + _vz_det(_tbl([("Dia de chegada", "left"), ("Leads", "right"), ("Agendaram", "right"),
+                          ("Taxa", "right")], drows_sem), "ver tabela (leads e agendamentos por dia)")) + "</section>"
+            f"<section><h2>Qualidade do lead por origem</h2><p class=secsub>taxa lead→reunião por canal, ordenada da melhor para a pior — realimenta a segmentação do Marketing</p>"
+            + _card(_vz_barras([(o[:30], (r / l * 100) if l else 0, f"{r}/{l} leads") for o, l, r in
+                                sorted(origens, key=lambda x: -(x[2] / x[1] if x[1] else 0))],
+                               fmt=lambda v: f"{v:.1f}%")
+                    + _vz_det(_tbl([("Origem", "left"), ("Leads", "right"), ("Reuniões", "right"), ("Lead→Reunião", "right")], orows),
+                              "ver tabela (volume por origem)")) + "</section>"
+            f"<section><h2>Motivos de desqualificação</h2><p class=secsub>perdidos antes do handoff — Pareto (o nº1 é o filtro/roteiro prioritário)</p>"
+            + _card(((_vz_barras([(str(m)[:44], n, None) for m, n in desq], largura_rotulo=230,
+                                 cores=["var(--status-critico)"] + ["var(--status-alto)"] * 9)
+                      + _vz_det(_tbl([("Motivo", "left"), ("Deals", "right")], drows), "ver tabela"))
+                     if drows else "<span class=note>sem perdas no período</span>")
                     + ("" if tem_motivo else _aviso_coleta("motivo de perda"))) + "</section>"
             f"<section><h2>Diagnóstico do especialista</h2><p class=secsub>{ESP.PERSONA_PREVENDAS}</p>"
             + _card(ins_html + "<style>.sug-item{padding:7px 0;border-top:1px solid var(--border);font-size:var(--fs-sm);line-height:1.55;color:var(--text-2)}.sug-item:first-child{border-top:none}</style>") + "</section>")
@@ -1173,6 +1206,9 @@ def _vd_winloss(conn, request: Request) -> str:
     _nc = "padding:6px 7px;border-bottom:1px solid var(--border);font-variant-numeric:tabular-nums;font-size:var(--fs-xs)"
 
     def matriz(dim_idx, titulo, top_dim=6):
+        # HEATMAP no lugar da tabela-matriz (Parte A): intensidade + número na
+        # célula — muito mais rápido de ler que a grade de números crus
+        from ..viz import heatmap as _vz_heat
         agg: dict[str, dict[str, int]] = {}
         tot_dim: dict[str, int] = {}
         for m, og, ow, n in cruz:
@@ -1181,11 +1217,10 @@ def _vd_winloss(conn, request: Request) -> str:
             if m in top_motivos:
                 agg.setdefault(m, {})[k] = agg.setdefault(m, {}).get(k, 0) + n
         cols = [k for k, _ in sorted(tot_dim.items(), key=lambda x: -x[1])[:top_dim]]
-        linhas = ""
-        for m in top_motivos:
-            tds = "".join(f"<td style='{_nc};text-align:center'>{agg.get(m, {}).get(c, '') or '—'}</td>" for c in cols)
-            linhas += f"<tr><td style='{_nc}'>{escape(m[:36])}</td>{tds}</tr>"
-        return _card(_tbl([(titulo, "left")] + [(c, "center") for c in cols], linhas)) if cols else ""
+        if not cols:
+            return ""
+        linhas_hm = [(m[:36], [agg.get(m, {}).get(c) for c in cols]) for m in top_motivos]
+        return _card(_vz_heat(cols, linhas_hm, largura_rotulo=210, cor_rgb="255,138,61"))
 
     # gráfico de LINHAS (feedback 14/07: mais claro que a tabela) — uma linha
     # por motivo top 5, pontos com tooltip; mês corrente é parcial (tracejado)
@@ -1270,8 +1305,13 @@ def _vd_winloss(conn, request: Request) -> str:
 
     return (f"<h1>Win/Loss — Análise de Perdas</h1><div class=sub>perdas na fase de Vendas (da reunião em diante), por motivo e valor</div>"
             f"<form method=get action=/vendas><input type=hidden name=view value=winloss>{form}</form>"
-            f"<section><h2>Motivos de perda</h2>"
-            + _card((_tbl([("Motivo", "left"), ("Deals", "right"), ("MRR perdido", "right")], rows) if rows else "<span class=note>sem perdas no período</span>")
+            f"<section><h2>Motivos de perda</h2><p class=secsub>Pareto por frequência — o rótulo cinza mostra o MRR perdido de cada motivo</p>"
+            + _card(((_vz_barras([(str(m)[:44], n, _fmt(v, 'brl')) for m, n, v in perdas[:10]],
+                                 largura_rotulo=230,
+                                 cores=["var(--status-critico)"] + ["var(--status-alto)"] * 9)
+                      + _vz_det(_tbl([("Motivo", "left"), ("Deals", "right"), ("MRR perdido", "right")], rows),
+                                "ver tabela (deals e MRR por motivo)"))
+                     if rows else "<span class=note>sem perdas no período</span>")
                     + ("" if tem_motivo else _aviso_coleta("motivo de perda"))) + "</section>"
             + diag + sec_evo +
             f"<section><h2>Principais motivos de perda por bundle</h2><p class=secsub>um card por plano: os motivos que mais matam AQUELE bundle, com participação nas perdas dele — concentrado num bundle = preço/produto; espalhado por todos = abordagem</p>"
