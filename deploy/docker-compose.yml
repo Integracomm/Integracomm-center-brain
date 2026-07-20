@@ -33,8 +33,12 @@ services:
     # o host inteiro (SSH/Caddy/Postgres). Teto de RAM + excedente vai p/ swap
     # (host tem swapfile 2G desde 13/07) — o app pode passar do teto SEM
     # derrubar a máquina; o pior caso vira lentidão, não queda.
-    mem_limit: 1400m
-    memswap_limit: 3g
+    # 20/07: 1400m ficou apertado — o uvicorn cresceu com os pacotes de 17/07
+    # (raio-x/cockpit) e o cgroup passou a OOM-killar a RODADA (18-19/07,
+    # dmesg 'Memory cgroup out of memory'), derrubando mídia/atividades/Notion.
+    # 1700m dá folga p/ uvicorn + rodada coexistirem; excedente segue no swap.
+    mem_limit: 1700m
+    memswap_limit: 3500m
     volumes:
       - ../.env:/app/.env:ro          # o app lê o .env da raiz do projeto
       - ../data:/app/data             # caches offline (wa_analyses etc.) + logs de análise
