@@ -745,8 +745,35 @@ def _horarios_calc(conn, ini: dt.date, fim: dt.date, bundle: str) -> dict:
             ligacoes = {(dow, h): n for dow, h, n in cur.fetchall()}
         except Exception:  # noqa: BLE001 — tabela nova; sem sync ainda = sem taxa
             conn.rollback()
+        # COBERTURA do denominador (Otávio 20/07: com filtro de ano inteiro a
+        # taxa dava 4600% — agendamentos do ano todo divididos pelas ligações
+        # de um trecho só). A TAXA fica restrita ao trecho em que as ligações
+        # existem: numerador e denominador da MESMA janela, com aviso na tela.
+        taxa_ini = None
+        celulas_taxa = celulas
+        if ligacoes:
+            cur.execute("SELECT min(done_at) FROM sales_activities WHERE tipo='call'")
+            cob = (cur.fetchone() or [None])[0]
+            # `a` é string '(data) 00:00-03' (formato do _brt) — comparar como datetime
+            a_dt = dt.datetime.combine(ini, dt.time(0), tzinfo=dt.timezone(dt.timedelta(hours=-3)))
+            if cob and cob > a_dt:
+                taxa_ini = cob
+                cur.execute(f"""
+                    WITH primeira AS (
+                        SELECT e.deal_id, min(e.entered_at) AS entered_at
+                          FROM mkt_stage_events e
+                          JOIN mkt_deals_attribution d ON d.deal_id = e.deal_id
+                         WHERE e.stage_id = ANY(%s) AND e.entered_at >= %s AND e.entered_at < %s{filtro_b}
+                         GROUP BY e.deal_id)
+                    SELECT extract(dow  FROM entered_at AT TIME ZONE 'America/Sao_Paulo')::int,
+                           extract(hour FROM entered_at AT TIME ZONE 'America/Sao_Paulo')::int,
+                           count(*)
+                      FROM primeira GROUP BY 1, 2""",
+                    [list(_ST_AGENDA), taxa_ini, b] + args[2:])
+                celulas_taxa = {(dow, h): n for dow, h, n in cur.fetchall()}
     return {"celulas": celulas, "por_bundle": por_bundle, "por_colab": por_colab,
             "por_origem": por_origem, "ligacoes": ligacoes,
+            "celulas_taxa": celulas_taxa, "taxa_ini": taxa_ini,
             "total": sum(celulas.values())}
 
 
@@ -859,9 +886,21 @@ def _pv_horarios(conn, request: Request) -> str:
                   f"<td style='{_TD};text-align:right'>{'<span class=note>amostra pequena</span>' if tot_p < 30 else ''}</td></tr>")
 
     # --- TAXA de agendamento por horário: agendamentos ÷ ligações concluídas
-    # (Otávio 20/07: contagem sozinha engana — mutirão infla o horário) ---
+    # (Otávio 20/07: contagem sozinha engana — mutirão infla o horário).
+    # Numerador e denominador SEMPRE da mesma janela: quando as ligações só
+    # cobrem parte do período filtrado, a taxa usa celulas_taxa (agendamentos
+    # do trecho coberto) — sem isso, filtrar o ano dava 4600% (46 agend ÷ 1
+    # ligação de trecho descoberto).
     ligas = dados.get("ligacoes") or {}
+    cel_tx = dados.get("celulas_taxa") or celulas
+    taxa_ini = dados.get("taxa_ini")
     _MIN_LIG = 5  # abaixo disso a célula é amostra pequena (marcada, não some)
+    aviso_cob = ""
+    if taxa_ini is not None:
+        aviso_cob = (f"<div class=warn style='margin-bottom:8px'>⚠ As ligações registradas começam em "
+                     f"<b>{taxa_ini.astimezone(dt.timezone(dt.timedelta(hours=-3))).strftime('%d-%m-%Y')}</b> — "
+                     "a taxa abaixo considera SÓ os agendamentos e ligações desse trecho em diante "
+                     "(antes disso não há denominador; comparar janelas diferentes inflava a taxa).</div>")
     if not ligas:
         heat_taxa = ("<div class=warn>sem ligações registradas no período — a taxa usa as atividades "
                      "de LIGAÇÃO concluídas no Pipedrive (sincronização nova; entra na rodada diária). "
@@ -869,14 +908,15 @@ def _pv_horarios(conn, request: Request) -> str:
         sub_taxa = ""
     else:
         tot_lig = sum(ligas.values())
-        taxas_ok = [celulas.get(k, 0) / v for k, v in ligas.items() if v >= _MIN_LIG]
+        tot_ag_tx = sum(cel_tx.values())
+        taxas_ok = [cel_tx.get(k, 0) / v for k, v in ligas.items() if v >= _MIN_LIG]
         tmax = max(taxas_ok) if taxas_ok else 1.0
         linhas_tx = ""
         for h in horas:
             tds = ""
             for d in dows:
                 lig = ligas.get((d, h), 0)
-                ag = celulas.get((d, h), 0)
+                ag = cel_tx.get((d, h), 0)
                 if not lig:
                     tds += (f"<td title='{_DOW_NOME[d]} {h:02d}h — {ag} agendamento(s), nenhuma ligação "
                             f"concluída registrada' style='{_TD};text-align:center;color:var(--text-faint)'>"
@@ -891,13 +931,53 @@ def _pv_horarios(conn, request: Request) -> str:
                         f"style='{_TD};text-align:center;{bg}{'opacity:.55;' if peq else ''}'>"
                         f"{tx * 100:.0f}%{'*' if peq else ''}</td>")
             linhas_tx += f"<tr><td style='{_TD};color:var(--text-muted)'>{h:02d}h</td>{tds}</tr>"
-        heat_taxa = _tbl([("", "left")] + [(_DOW_NOME[d], "left") for d in dows], linhas_tx)
-        sub_taxa = (f" · {tot_lig} ligação(ões) concluída(s) no período · taxa geral "
-                    f"{total / tot_lig * 100:.0f}%" if tot_lig else "")
+        heat_taxa = aviso_cob + _tbl([("", "left")] + [(_DOW_NOME[d], "left") for d in dows], linhas_tx)
+        sub_taxa = (f" · {tot_lig} ligação(ões) concluída(s) no trecho coberto · taxa geral "
+                    f"{tot_ag_tx / tot_lig * 100:.0f}%" if tot_lig else "")
 
-    # --- melhores janelas por ORIGEM do lead (Meta vs prospecção etc.) ---
+    # --- ORIGEM do lead: mapa de calor origem × hora (pedido 20/07) + tabela
+    # de top janelas (a tabela preserva o DIA; o mapa compara o padrão de hora)
+    por_origem = dados.get("por_origem") or {}
+    horas_o = [h for h in range(7, 21)]
+    tem_fora_o = any(h < 7 or h > 20 for cel in por_origem.values() for (_d, h) in cel)
+    _tdo = ("padding:3px 2px;border-bottom:1px solid var(--border);text-align:center;"
+            "font-variant-numeric:tabular-nums;font-size:var(--fs-2xs)")
+    org_rows = ""
+    for org in sorted(por_origem, key=lambda x: -sum(por_origem[x].values())):
+        cel = por_origem[org]
+        por_h: dict[int, int] = {}
+        for (_d, h), n in cel.items():
+            por_h[h] = por_h.get(h, 0) + n
+        tot_o = sum(por_h.values())
+        vmax_o = max(por_h.values()) if por_h else 1
+        pico_h = max(por_h.items(), key=lambda x: x[1])[0] if por_h else None
+        tds = ""
+        for h in horas_o:
+            n = por_h.get(h, 0)
+            alpha = int(8 + 62 * (n / vmax_o)) if n else 0
+            bg = f"background:color-mix(in srgb,var(--brand) {alpha}%,transparent);" if n else ""
+            pico = "box-shadow:inset 0 0 0 1.5px var(--brand);border-radius:3px;" if n and h == pico_h else ""
+            tds += (f"<td title='{escape(org)} {h:02d}h — {n} agendamento(s) "
+                    f"({n / tot_o * 100:.0f}% do total da origem)' style='{_tdo};{bg}{pico}'>{n or ''}</td>")
+        if tem_fora_o:
+            fora = sum(n for (_d, h), n in cel.items() if h < 7 or h > 20)
+            tds += (f"<td title='{escape(org)} — {fora} agendamento(s) antes das 7h ou depois das 20h' "
+                    f"style='{_tdo};color:var(--text-muted)'>{fora or ''}</td>")
+        org_rows += (f"<tr><td title='{escape(org)}' style='{_tdo};text-align:left;white-space:nowrap'>"
+                     f"<b>{escape(org)}</b>{'*' if tot_o < 30 else ''}</td>"
+                     f"<td style='{_tdo};text-align:right'>{tot_o}</td>{tds}</tr>")
+    _tho = ("<th style='padding:3px 2px;border-bottom:1px solid var(--border-strong);color:var(--text-muted);"
+            "font-size:var(--fs-2xs);text-align:{al};font-weight:600'>{h}</th>")
+    ths_o = (_tho.format(al="left", h="Origem") + _tho.format(al="right", h="Tot.")
+             + "".join(_tho.format(al="center", h=str(h)) for h in horas_o)
+             + (_tho.format(al="center", h="outros") if tem_fora_o else ""))
+    heat_origem = (f"<table style='width:100%;border-collapse:collapse;table-layout:fixed'>"
+                   f"<colgroup><col style='width:120px'><col style='width:38px'>"
+                   f"<col span={len(horas_o) + (1 if tem_fora_o else 0)}></colgroup>"
+                   f"<tr>{ths_o}</tr>{org_rows}</table>")
+
     orows = ""
-    for org, cel in sorted((dados.get("por_origem") or {}).items(), key=lambda x: -sum(x[1].values())):
+    for org, cel in sorted(por_origem.items(), key=lambda x: -sum(x[1].values())):
         tot_o = sum(cel.values())
         melhores = [f"{_DOW_NOME[d]} {h:02d}h ({n})"
                     for (d, h), n in sorted(cel.items(), key=lambda x: -x[1])[:3] if n >= 2]
@@ -944,10 +1024,14 @@ def _pv_horarios(conn, request: Request) -> str:
             "<p class=secsub>até 3 janelas com mais agendamentos por bundle no período — bundles com poucas "
             "amostras merecem cautela antes de mudar escala de time</p>"
             + _card(_tbl([("Bundle", "left"), ("Agendamentos", "right"), ("Melhores janelas", "left"), ("", "right")], brows)) + "</section>"
-            "<section><h2>Melhores janelas por origem do lead</h2>"
+            "<section><h2>Melhor horário por origem do lead</h2>"
             "<p class=secsub>o melhor horário pode variar pela origem — lead de Meta chega por formulário e "
             "atende num padrão; prospecção ativa depende da agenda de quem é prospectado · canais do Marketing "
-            "(mesma régua da Origem de Leads) · independe do filtro de bundle</p>"
+            "(mesma régua da Origem de Leads) · independe do filtro de bundle · cada linha do mapa sombreada na "
+            "PRÓPRIA escala · célula contornada = pico da origem · * = amostra pequena (&lt;30)</p>"
+            + _card(heat_origem)
+            + "<div style='margin:14px 0 6px;font-size:var(--fs-2xs);color:var(--text-muted);"
+              "text-transform:uppercase;letter-spacing:.06em'>top janelas por origem (com o dia da semana)</div>"
             + _card(_tbl([("Origem", "left"), ("Agendamentos", "right"), ("Melhores janelas", "left"), ("", "right")], orows)) + "</section>")
 
 

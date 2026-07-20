@@ -526,6 +526,9 @@ def sync_activities(conn: Any, since: dt.date | None = None,
         cur.execute(_ACT_DDL)
         while start is not None and paginas < max_pages:
             paginas += 1
+            if paginas > 1:  # gentileza com o rate limit do Pipedrive (regra
+                import time as _t  # Otávio 20/07: NUNCA travar o Pipedrive) —
+                _t.sleep(0.4)      # sequencial + pausa; o time usa a ferramenta
             j = _get("activities", {"user_id": 0, "limit": 500, "start": start,
                                     "done": 1, "sort": "add_time DESC"})
             data = j.get("data") or []
