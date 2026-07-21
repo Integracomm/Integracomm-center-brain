@@ -18,3 +18,9 @@ lote — entra aqui e o Otávio decide tudo junto no fim do lote.
    mas cabe decisão: qual é a régua oficial? Se preferir a por faixa, mudo o
    `_report_from` junto (muda cockpit, Slack e /api/scores de uma vez).
    _(decisão: pendente)_
+
+2. **Primeira carga da Contas após restart do painel: ~2min** (reconstrução do
+   índice do ClickUp + SELECT frio no RDS — custo idêntico ao do HTML antigo,
+   mas no SPA o usuário vê skeleton em vez de página em branco). Proposta:
+   aquecer o índice no startup do painel (prewarm) e/ou cachear o payload de
+   /api/scores por ~5 min. _(decisão: pendente)_
