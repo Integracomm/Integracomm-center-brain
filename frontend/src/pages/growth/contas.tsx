@@ -143,9 +143,9 @@ export function GrowthContasPage() {
               subtitle={`${kpis.avaliaveis.toLocaleString("pt-BR")} avaliáveis`} />
             <KpiCard icon={AlertOctagon} tone="destructive" title="Em risco crítico"
               value={kpis.criticos.toLocaleString("pt-BR")} subtitle="alertas críticos abertos" />
-            <KpiCard icon={DollarSign} tone="warning" title="MRR em risco"
+            <KpiCard icon={DollarSign} tone="warning" title="MRR com alerta aberto"
               value={formatBRL(kpis.mrr_em_risco, { compact: true })}
-              subtitle={`${kpis.mrr_em_risco_contas} contas · ${kpis.mrr_em_risco_sem_dados} sem MRR`}
+              subtitle={`${kpis.mrr_em_risco_contas} contas com alerta · ${kpis.mrr_em_risco_sem_dados} sem MRR`}
               caveat={kpis.mrr_em_risco_sem_dados > 0
                 ? `${kpis.mrr_em_risco_sem_dados} contas em risco não têm MRR cadastrado — o valor real é maior.`
                 : undefined} />
