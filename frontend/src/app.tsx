@@ -55,7 +55,14 @@ function GrowthRouter() {
 
 function Shell({ children }: { children: React.ReactNode }) {
   const [params] = useSearchParams();
-  const atual = `${window.location.pathname}?view=${params.get("view") ?? "contas"}`;
+  // A nav mostra SÓ a área atual (feedback Otávio 21/07: dentro de Growth
+  // apareciam também os itens de PV/Vendas — o painel sempre foi 1 nav por
+  // área). A vitrine só aparece quando se está nela.
+  const area = window.location.pathname;
+  const itens = NAV.filter((n) =>
+    area === "/app" ? n.href === "/app" : n.href.startsWith(`${area}?`));
+  const viewPadrao = area === "/prevendas" || area === "/vendas" ? "funil" : "contas";
+  const atual = `${area}?view=${params.get("view") ?? viewPadrao}`;
   return (
     <div className="flex min-h-screen bg-background text-foreground">
       <aside className="flex w-60 shrink-0 flex-col border-r border-border bg-sidebar p-4">
@@ -64,7 +71,7 @@ function Shell({ children }: { children: React.ReactNode }) {
           <span className="font-display text-sm font-bold">Integracomm IA</span>
         </div>
         <nav className="flex flex-1 flex-col gap-1">
-          {NAV.map((n) => {
+          {itens.map((n) => {
             const ativa = n.spa && (n.href === atual || (n.href === "/app" && window.location.pathname === "/app"));
             const cab = n.grupo ? (
               <div key={`g-${n.grupo}`} className="mb-1 mt-4 px-3 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/70 first:mt-0">
