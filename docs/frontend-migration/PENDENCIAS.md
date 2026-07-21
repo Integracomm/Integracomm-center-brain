@@ -12,4 +12,9 @@ lote — entra aqui e o Otávio decide tudo junto no fim do lote.
 
 ## Lote 1
 
-- _(nenhuma ainda)_
+1. **Régua do "MRR em risco"** — o spec do protótipo (`_shapes.md`) definia a base
+   como `risk_band` alto|médio; o cockpit/Slack (`_report_from`) usa contas COM
+   ALERTA ABERTO. O endpoint novo seguiu o cockpit (nenhuma tela diverge da outra),
+   mas cabe decisão: qual é a régua oficial? Se preferir a por faixa, mudo o
+   `_report_from` junto (muda cockpit, Slack e /api/scores de uma vez).
+   _(decisão: pendente)_

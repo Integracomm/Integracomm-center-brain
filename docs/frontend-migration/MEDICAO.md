@@ -26,8 +26,41 @@ Base para reextrapolar os lotes 2–6 com dado real.
 
 ## Lote 1 — Growth core (Contas, Alertas, Cancelamentos)
 
-- _pendente_
+- **Início:** 21/07 09:13 · **fim:** 21/07 09:32 · **execução efetiva: ~19 min**
+  (endpoints + 3 telas + chaveamento por view + paridade + validação).
+- **Entregue:** `/api/scores` com `kpis` (reuso do `_report_from` — mesma régua do
+  cockpit/Slack) + `squad`/`responsavel` por conta; `/api/alerts` com `kpis`;
+  `/api/growth/cancelamentos` novo, extraído para `_cancel_dados()` (função pura;
+  `_mrr_por_bundle` também extraído e compartilhado com o HTML); 3 telas React
+  (Contas portada da referência; Alertas e Cancelamentos compostas — os arquivos
+  do protótipo eram PLACEHOLDER, ver observação); chaveamento por VIEW
+  (`SPA_GROWTH_VIEWS`, habilitado só no .env local); tabelas completas preservadas
+  em "ver tabela completa"; ressalvas ao lado do número (B5 base pequena, MRR
+  estimado ≈, sem-motivo, GC vazio).
+- **Ciclos de correção: 1** (campo `meses_disponiveis` faltando no tipo TS — 1 min).
+- **Paridade: 9/9 checks OK** (KPIs do mês, sublabel e taxa do B3, taxa geral —
+  HTML antigo × JSON novo batendo com a planilha mudando DURANTE o dia).
+- **Onde foi o tempo:** ~6 min extração do compute p/ funções puras (a parte de
+  engenharia de verdade); ~8 min geração das 3 telas; ~5 min validação
+  (paridade + HTTP + navegador). Um SELECT frio no RDS custou ~1 min de espera.
+- **Interrupção operacional:** 0 no lote (backfill do Pipedrive rodando em
+  background no servidor, sem custo de atenção).
+- **Observações:** (1) no protótipo, só Contas tinha referência real — Alertas e
+  Cancelamentos eram placeholders; compor com a biblioteca custou pouco (a regra
+  de escolha de visual decide rápido); (2) 1 pendência de régua registrada
+  (MRR em risco: alerta aberto vs faixa — PENDENCIAS.md).
 
-## Extrapolação (preencher após o Lote 1)
+## Extrapolação (dado real, não estimativa)
 
-- _pendente_
+- **Medido:** Lote 0 = 11 min · Lote 1 (3 telas + 2 endpoints + paridade) = 19 min.
+- **Custo por tela observado: ~5–7 min** (incluindo endpoint e paridade), quando a
+  fonte de cálculo já existe em função reutilizável.
+- **Lotes 2–6 (~24 telas restantes):** extrapolando com folga 2× para telas sem
+  referência e endpoints que exigem extração de compute maior (Ponte, Central,
+  Raio-X): **~4 a 7 horas de execução efetiva no total**, distribuídas por lote —
+  mais o tempo de validação do Otávio entre lotes e as interrupções operacionais
+  do dia a dia (que dominam o calendário, não a execução).
+- **Conclusão honesta:** os "9–11 dias de execução" eram hábito de estimativa
+  humana. O gargalo real do calendário passa a ser (b) validação + operação
+  diária, não (a) execução. Proposta: 1 lote por dia útil nos dias de operação
+  normal → migração completa em ~1 semana de calendário.

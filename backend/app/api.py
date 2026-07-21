@@ -414,16 +414,52 @@ def healthz():
 
 @app.get("/api/scores")
 def api_scores(request: Request):
+    """Contas monitoradas + KPIs prontos (redesenho 21/07: agregado NUNCA é
+    calculado no frontend — os KPIs saem do MESMO _report_from do cockpit/
+    Slack, então as telas não divergem). `squad`/`responsavel` por conta:
+    mesma resolução da Análise dos Squads (espelho quando o nome não traz)."""
     _user, role = _require_api(request)
     with _conn() as c:
-        return {"agents": _visible_agents(role), "scores": _serialize(_latest_scores(c))}
+        scores = _latest_scores(c)
+        alerts = _open_alerts(c)
+    rep = _report_from(scores, alerts)
+    try:
+        from .sources.clickup_activities import _mirror_clientes
+        _mirror = _mirror_clientes()
+    except Exception:  # noqa: BLE001 — sem espelho, resolve só pelo nome
+        _mirror = None
+    from .sources.nps_sheets import norm_account as _norm
+    for s in scores:
+        s["squad"] = _resolve_squad(s["name"], _mirror)
+        gc = ((_mirror or {}).get(_norm(s["name"])) or {}).get("gerente_de_contas")
+        s["responsavel"] = (gc or "").strip() or None  # lacuna conhecida: GC vazio no espelho
+    # base do 'MRR em risco' = contas COM ALERTA ABERTO (mesma régua do
+    # _report_from/cockpit — o spec do protótipo usava faixa alto|médio;
+    # divergência registrada em PENDENCIAS.md p/ decisão do Otávio)
+    em_risco = [s for s in scores if s.get("alert_sev")]
+    kpis = {
+        "monitoradas": rep["monitoradas"], "avaliaveis": rep["avaliaveis"],
+        "criticos": rep["alertas"].get("critico", 0),
+        "mrr_em_risco": rep["mrr_risco"],
+        "mrr_em_risco_contas": sum(1 for s in em_risco if _mrr_val(s) > 0),
+        "mrr_em_risco_sem_dados": sum(1 for s in em_risco if _mrr_val(s) <= 0),
+        "sem_cobertura": rep["sem_dados"],
+    }
+    return {"agents": _visible_agents(role), "scores": _serialize(scores), "kpis": kpis}
 
 
 @app.get("/api/alerts")
 def api_alerts(request: Request):
     _require_api(request)
     with _conn() as c:
-        return {"alerts": _serialize(_open_alerts(c))}
+        alerts = _open_alerts(c)
+    # kpis prontos (redesenho 21/07): frontend não conta severidade
+    sev: dict[str, int] = {}
+    for a in alerts:
+        sev[a["severity"]] = sev.get(a["severity"], 0) + 1
+    return {"alerts": _serialize(alerts),
+            "kpis": {"total": len(alerts), "critico": sev.get("critico", 0),
+                     "alto": sev.get("alto", 0), "atencao": sev.get("atencao", 0)}}
 
 
 # --- Aprendizado de boas práticas (intervenções × desfecho) -----------------
@@ -799,6 +835,11 @@ def dashboard(request: Request, view: str = Query("contas")):
     user, role = s
     if view not in ("contas", "alertas", "playbooks", "relatorios", "cancelamentos", "carga"):
         view = "contas"
+    # redesenho (migração rota a rota): view migrada+habilitada entrega o SPA
+    from . import spa as _spa_mod
+    _spa_resp = _spa_mod.view_response(request, "growth", view)
+    if _spa_resp is not None:
+        return _spa_resp
     with _conn() as c:
         _audit_view(c, user, scope=f"growth/{view}")
         scores = _latest_scores(c)
@@ -3144,17 +3185,8 @@ __SCRIPT__
     elif view == "playbooks":
         content = _playbooks_content(practices or {}, interventions or []) + foot
     elif view == "cancelamentos":
-        # MRR da base atual por bundle (p/ a taxa por FATURAMENTO — Otávio 16/07):
-        # (soma, nº de contas COM valor) — cobertura baixa suprime a taxa (antigos
-        # quase não têm MRR lançado e a taxa sairia absurda, ex.: 307%/mês)
-        mrr_bundle: dict[str, tuple[float, int]] = {}
-        for s in scores:
-            m_b = re.search(r"B[1-5]", s["name"])
-            k_b = m_b.group(0) if m_b else "outros"
-            v_b = max(0.0, _mrr_val(s))
-            soma, cnt = mrr_bundle.get(k_b, (0.0, 0))
-            mrr_bundle[k_b] = (soma + v_b, cnt + (1 if v_b > 0 else 0))
-        content = _cancel_content(cancel or [], request, base_bundle or {}, mrr_bundle) + foot
+        content = _cancel_content(cancel or [], request, base_bundle or {},
+                                  _mrr_por_bundle(scores)) + foot
     elif view == "relatorios":
         rep = _report_from(scores, alerts)
         content = _relatorios_content(rep, scores) + foot
@@ -3760,6 +3792,156 @@ def _canc_bundle(r: dict) -> str | None:
 def _canc_legado(r: dict) -> bool:
     pl = str(r.get("plano") or "").upper()
     return any(x in pl for x in _PLANOS_LEGADO) and "TRACTION" not in pl
+
+
+def _mrr_por_bundle(scores: list[dict]) -> dict[str, tuple[float, int]]:
+    """MRR da base atual por bundle (p/ a taxa por FATURAMENTO — Otávio 16/07):
+    (soma, nº de contas COM valor) — cobertura baixa suprime a taxa (antigos
+    quase não têm MRR lançado e a taxa sairia absurda, ex.: 307%/mês).
+    Compartilhada entre a tela HTML e o /api/growth/cancelamentos (redesenho)."""
+    out: dict[str, tuple[float, int]] = {}
+    for s in scores:
+        m_b = re.search(r"B[1-5]", s["name"])
+        k_b = m_b.group(0) if m_b else "outros"
+        v_b = max(0.0, _mrr_val(s))
+        soma, cnt = out.get(k_b, (0.0, 0))
+        out[k_b] = (soma + v_b, cnt + (1 if v_b > 0 else 0))
+    return out
+
+
+def _cancel_dados(rows: list[dict], f_ini: dt.date, f_fim: dt.date,
+                  base_bundle: dict, mrr_bundle: dict) -> dict:
+    """Agregados da aba Cancelamentos como DADOS puros (JSON-able) — mesmas
+    fórmulas da tela HTML (taxa = média do período ÷ base ATUAL; base de MRR
+    estimada quando nem toda conta tem valor; B1 fora da taxa geral; aviso de
+    base pequena <12). Endpoint do redesenho consome isto; qualquer mudança de
+    régua acontece AQUI, e as duas UIs andam juntas."""
+    import statistics as _st
+
+    def _f(v):
+        return float(v) if v is not None else None
+
+    hoje = dt.date.today()
+    mes_atual = hoje.replace(day=1)
+    dentro = lambda r: f_ini <= r["mes"] <= f_fim  # noqa: E731
+    canc = [r for r in rows if r["tipo"] == "cancelamento" and dentro(r)]
+    term = [r for r in rows if r["tipo"] == "termino" and dentro(r)]
+    trat = [r for r in rows if r["tipo"] == "tratativa"]
+    rev = [r for r in rows if r["tipo"] == "revertido" and dentro(r)]
+    meses = sorted({r["mes"] for r in canc})
+    c_mes = [r for r in canc if r["mes"] == mes_atual]
+    trat_mes = [r for r in trat if r["mes"] >= mes_atual]
+    tempos = [_f(r["meses"]) for r in canc if r["meses"] is not None]
+
+    por_mes = []
+    for m in meses:
+        cs = [r for r in canc if r["mes"] == m]
+        vals = [_f(r["valor"]) for r in cs if r["valor"] is not None]
+        tps = [_f(r["meses"]) for r in cs if r["meses"] is not None]
+        por_mes.append({"mes": m.strftime("%Y-%m"), "mes_label": m.strftime("%m/%Y"),
+                        "saidas": len(cs), "mrr_perdido": sum(_f(r["valor"]) or 0 for r in cs),
+                        "ticket_medio": (_st.mean(vals) if vals else None),
+                        "tempo_casa_mediano": (_st.median(tps) if tps else None),
+                        "terminos_start": sum(1 for r in term if r["mes"] == m)})
+
+    canc_bund: dict = {}
+    for r in canc:
+        canc_bund.setdefault(_canc_bundle(r) or "outros", []).append(r)
+    n_meses = max(1, len({r["mes"] for r in canc}) or 1)
+
+    def _tx(rotulo, bb, mrr_par, rs, recorrente=True):
+        mrr_b, mrr_cnt = mrr_par
+        cb = len(rs)
+        mrr_p = sum(_f(r["valor"]) or 0 for r in rs)
+        est = bool(bb and mrr_cnt and mrr_cnt < bb)
+        if est:
+            mrr_b = mrr_b / mrr_cnt * bb
+        tx_c = (cb / n_meses) / bb if bb else None
+        tx_f = (mrr_p / n_meses) / mrr_b if mrr_b else None
+        return {"bundle": rotulo, "recorrente": recorrente,
+                "base_atual": bb or 0, "saidas": cb, "janela_meses": n_meses,
+                "mrr_perdido": mrr_p,
+                "mrr_base": (mrr_b or None), "mrr_base_estimado": est,
+                "mrr_base_com_valor": mrr_cnt,
+                "taxa_clientes_pct": (round(tx_c * 100, 1) if tx_c is not None else None),
+                "taxa_faturamento_pct": (round(tx_f * 100, 1) if tx_f is not None else None),
+                "aviso": ("base pequena/encolheu — taxa pouco confiável"
+                          if bb and bb < 12 else None)}
+
+    _sem = (0.0, 0)
+    taxa_bundle = [_tx("B1", base_bundle.get("B1", 0), mrr_bundle.get("B1", _sem),
+                       canc_bund.get("B1", []), recorrente=False)]
+    for b in ("B2", "B3", "B4", "B5"):
+        taxa_bundle.append(_tx(b, base_bundle.get(b, 0), mrr_bundle.get(b, _sem),
+                               canc_bund.get(b, [])))
+    taxa_bundle.append(_tx("antigos/ADS", base_bundle.get("outros", 0),
+                           mrr_bundle.get("outros", _sem), canc_bund.get("outros", [])))
+    rec_base = sum(v for k, v in base_bundle.items() if k != "B1")
+    rec_mrr = (sum(v[0] for k, v in mrr_bundle.items() if k != "B1"),
+               sum(v[1] for k, v in mrr_bundle.items() if k != "B1"))
+    rec_canc = [r for k, rs in canc_bund.items() if k != "B1" for r in rs]
+    taxa_geral = _tx("GERAL (recorrentes, sem B1)", rec_base, rec_mrr, rec_canc)
+
+    from collections import Counter
+    motivos = [{"motivo": m, "saidas": n} for m, n in
+               Counter((r["motivo"] or "").strip()[:48] for r in canc if r["motivo"]).most_common(8)]
+
+    def _grupo(campo):
+        agg: dict[str, list] = {}
+        for r in canc:
+            agg.setdefault((r[campo] or "—").strip().upper()[:24], []).append(r)
+        out = []
+        for k, rs in sorted(agg.items(), key=lambda x: -len(x[1]))[:12]:
+            tps = [_f(r["meses"]) for r in rs if r["meses"] is not None]
+            out.append({"nome": k, "saidas": len(rs),
+                        "mrr_perdido": sum(_f(r["valor"]) or 0 for r in rs),
+                        "tempo_casa_mediano": (_st.median(tps) if tps else None)})
+        return out
+
+    return {
+        "periodo": {"ini": f_ini.strftime("%Y-%m"), "fim": f_fim.strftime("%Y-%m")},
+        "meses_disponiveis": [m.strftime("%Y-%m") for m in sorted({r["mes"] for r in rows})],
+        "kpis": {"saidas_mes": len(c_mes),
+                 "mrr_perdido_mes": sum(_f(r["valor"]) or 0 for r in c_mes),
+                 "em_tratativa": len(trat_mes), "revertidos": len(rev),
+                 "tempo_casa_mediano": (_st.median(tempos) if tempos else None),
+                 "tempo_casa_n": len(tempos)},
+        "por_mes": por_mes, "taxa_bundle": taxa_bundle, "taxa_geral": taxa_geral,
+        "motivos": motivos, "sem_motivo": sum(1 for r in canc if not (r["motivo"] or "").strip()),
+        "casos_com_motivo": [{"mes": r["mes"].strftime("%m/%Y"), "cliente": r["cliente"],
+                              "plano": r["plano"], "motivo": (r["motivo"] or "")[:160]}
+                             for r in sorted(canc, key=lambda x: x["mes"], reverse=True)
+                             if r["motivo"]][:15],
+        "tratativas": [{"cliente": r["cliente"], "gc": r["gc"], "plano": r["plano"],
+                        "situacao": r["situacao"] or "sem situação registrada"}
+                       for r in sorted(trat_mes, key=lambda x: (x["mes"], x["cliente"]))],
+        "por_plano": _grupo("plano"), "por_equipe": _grupo("equipe"),
+    }
+
+
+@app.get("/api/growth/cancelamentos")
+def api_cancelamentos(request: Request, ini: str = Query(""), fim: str = Query("")):
+    """JSON da aba Cancelamentos (redesenho, Lote 1) — mesmos números da tela
+    HTML: tudo sai de _cancel_dados; o frontend só formata."""
+    _require_api(request)
+    with _conn() as c:
+        rows = _cancel_rows(c)
+        with c.cursor() as cur:
+            cur.execute("""SELECT COALESCE(substring(name FROM 'B[1-5]'), 'outros'), count(*)
+                             FROM accounts GROUP BY 1""")
+            base_bundle = dict(cur.fetchall())
+        mrr_bundle = _mrr_por_bundle(_latest_scores(c))
+    if not rows:
+        return JSONResponse({"error": "sem dados de cancelamento carregados"}, status_code=503)
+    todos_meses = sorted({r["mes"] for r in rows})
+
+    def _mes(sv, padrao):
+        try:
+            return dt.date.fromisoformat(sv + "-01")
+        except ValueError:
+            return padrao
+    return _cancel_dados(rows, _mes(ini, todos_meses[0]), _mes(fim, todos_meses[-1]),
+                         base_bundle, mrr_bundle)
 
 
 def _cancel_content(rows: list[dict], request: Request, base_bundle: dict | None = None,

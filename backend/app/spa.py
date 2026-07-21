@@ -41,6 +41,19 @@ def _index(request: Request):
     return FileResponse(idx, media_type="text/html")
 
 
+def view_response(request: Request, area: str, view: str):
+    """Chaveamento por VIEW dentro de uma área (?view=): devolve a resposta do
+    SPA se aquela view estiver migrada+habilitada, senão None (segue o HTML).
+    Habilitação por env SPA_<AREA>_VIEWS (csv) — ex.: SPA_GROWTH_VIEWS=
+    "contas,alertas,cancelamentos". Vazio (padrão) = tudo no HTML; o flip por
+    ambiente permite validar local sem tocar produção."""
+    habilitadas = {v.strip() for v in
+                   os.environ.get(f"SPA_{area.upper()}_VIEWS", "").split(",") if v.strip()}
+    if view not in habilitadas:
+        return None
+    return _index(request)
+
+
 def install(app) -> None:
     """Monta assets e registra as rotas migradas. Chamado pelo api.py."""
     if _DIST.exists():
