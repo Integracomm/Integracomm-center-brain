@@ -1584,6 +1584,10 @@ def marketing(request: Request, view: str = Query("visao")):
     user, role = s
     if view not in {v for v, _ in _VIEWS}:
         view = "visao"
+    from .. import spa as _spa_mod  # redesenho: view migrada entrega o SPA
+    _r = _spa_mod.view_response(request, "marketing", view)
+    if _r is not None:
+        return _r
     _kick_deals_sync()  # espelho de deals fresco a ≤10min do Pipedrive (via Lovable)
     with A._conn() as c:
         with c.cursor() as cur:
@@ -1600,3 +1604,40 @@ def marketing(request: Request, view: str = Query("visao")):
                           "(defasagem ≤10 min; recarregue para ver o fresco); mudanças de etapa a cada hora; "
                           "Meta/Google/planilhas na coleta diária 06h. A decisão é sempre do gestor.</p>")
     return HTMLResponse(_shell(A, role, view, content, usermail=user))
+
+
+# ---------------------------------------------------------------------------
+# Endpoints JSON do redesenho (Lote 3, 21/07) — embrulham marketing/dados.py
+# (que por sua vez reusa ranking_canais/funil_por_origem de analysis.py).
+# ---------------------------------------------------------------------------
+def _periodo_api(ini: str, fim: str) -> tuple[dt.date, dt.date]:
+    hoje = dt.date.today()
+    try:
+        i = dt.date.fromisoformat(ini) if ini else hoje.replace(day=1)
+        f = dt.date.fromisoformat(fim) if fim else hoje
+    except ValueError:
+        i, f = hoje.replace(day=1), hoje
+    return i, f
+
+
+@router.get("/api/marketing/canais")
+def api_mkt_canais(request: Request, ini: str = Query(""), fim: str = Query("")):
+    A = _deps()
+    A._require_api(request)
+    from .dados import mkt_canais_dados
+    i, f = _periodo_api(ini, fim)
+    _kick_deals_sync()  # mesmo serve-stale da tela HTML
+    with A._conn() as c:
+        return mkt_canais_dados(c, i, f)
+
+
+@router.get("/api/marketing/origens")
+def api_mkt_origens(request: Request, ini: str = Query(""), fim: str = Query(""),
+                    midia: str = Query("todas"), origem: str = Query("")):
+    A = _deps()
+    A._require_api(request)
+    from .dados import mkt_origens_dados
+    i, f = _periodo_api(ini, fim)
+    _kick_deals_sync()
+    with A._conn() as c:
+        return mkt_origens_dados(c, i, f, midia, origem or None)

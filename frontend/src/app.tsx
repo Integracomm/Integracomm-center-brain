@@ -10,6 +10,8 @@ import { VendasWinLossPage } from "@/pages/vendas/winloss";
 import { VendasFunilPage } from "@/pages/vendas/funil";
 import { VendasPontePage } from "@/pages/vendas/ponte";
 import { VendasCicloPage } from "@/pages/vendas/ciclo";
+import { MktCanaisPage } from "@/pages/marketing/canais";
+import { MktOrigensPage } from "@/pages/marketing/origens";
 
 // A aplicação atual navega por QUERY (?view=) dentro de cada área — o SPA
 // respeita as MESMAS URLs (favoritos/links continuam valendo). Views ainda
@@ -26,9 +28,19 @@ const NAV: Array<{ href: string; label: string; spa: boolean; grupo?: string }> 
   { href: "/growth?view=carga", label: "Análise dos Squads", spa: false },
   { href: "/growth?view=playbooks", label: "Playbooks", spa: false },
   { href: "/growth?view=relatorios", label: "Relatórios", spa: false },
+  { href: "/marketing?view=visao", label: "Visão Geral", spa: false, grupo: "Marketing" },
+  { href: "/marketing?view=metas", label: "Metas do Semestre", spa: false },
+  { href: "/marketing?view=funil", label: "Funil de Prospecção", spa: false },
+  { href: "/marketing?view=canais", label: "Ranking de Canais", spa: true },
+  { href: "/marketing?view=origens", label: "Origem de Leads", spa: true },
+  { href: "/marketing?view=midia", label: "Mídia Paga", spa: false },
+  { href: "/marketing?view=lag", label: "Tempo até Resultado", spa: false },
+  { href: "/marketing?view=planejador", label: "Planejador", spa: false },
+  { href: "/marketing?view=criativos", label: "Criativos e Públicos", spa: false },
+  { href: "/marketing?view=ciclo", label: "Ciclo de Vida", spa: false },
   { href: "/prevendas?view=funil", label: "Qualificação & Speed", spa: true, grupo: "Pré-vendas" },
   { href: "/prevendas?view=horarios", label: "Melhor Horário", spa: true },
-  { href: "/prevendas?view=ponte", label: "Ponte PV → Vendas", spa: false },
+  { href: "/prevendas?view=ponte", label: "Ponte PV → Vendas", spa: true },
   { href: "/prevendas?view=sdrs", label: "Desempenho Individual", spa: false },
   { href: "/vendas?view=funil", label: "Funil de Fechamento", spa: true, grupo: "Vendas" },
   { href: "/vendas?view=ponte", label: "Ponte PV → Vendas", spa: true },
@@ -44,7 +56,15 @@ function PrevendasRouter() {
   const [params] = useSearchParams();
   const view = params.get("view") ?? "funil";
   if (view === "horarios") return <MelhorHorarioPage />;
+  if (view === "ponte") return <VendasPontePage />; // MESMA tela nas duas áreas (HTML idem)
   return <PrevendasPage />; // funil e speed viraram UMA página no redesenho
+}
+
+function MarketingRouter() {
+  const [params] = useSearchParams();
+  const view = params.get("view") ?? "visao";
+  if (view === "origens") return <MktOrigensPage />;
+  return <MktCanaisPage />; // canais; demais views seguem no HTML (spa.py não entrega o SPA p/ elas)
 }
 
 function VendasRouter() {
@@ -73,7 +93,8 @@ function Shell({ children }: { children: React.ReactNode }) {
   const area = window.location.pathname;
   const itens = NAV.filter((n) =>
     area === "/app" ? n.href === "/app" : n.href.startsWith(`${area}?`));
-  const viewPadrao = area === "/prevendas" || area === "/vendas" ? "funil" : "contas";
+  const viewPadrao = area === "/prevendas" || area === "/vendas" ? "funil"
+    : area === "/marketing" ? "visao" : "contas";
   const atual = `${area}?view=${params.get("view") ?? viewPadrao}`;
   return (
     <div className="flex min-h-screen bg-background text-foreground">
@@ -125,6 +146,7 @@ export function App() {
     <Shell>
       <Routes>
         <Route path="/growth" element={<GrowthRouter />} />
+        <Route path="/marketing" element={<MarketingRouter />} />
         <Route path="/prevendas" element={<PrevendasRouter />} />
         <Route path="/vendas" element={<VendasRouter />} />
         <Route path="/app" element={<BibliotecaPage />} />

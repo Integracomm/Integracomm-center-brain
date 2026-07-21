@@ -226,6 +226,32 @@ export interface VendasPontePayload {
   por_closer: PonteSegItem[];
 }
 
+// ---- Lote 3: /api/marketing/canais ----
+export interface MktCanaisPayload {
+  periodo: { ini: string; fim: string; dias: number };
+  canais: Array<{ canal: string; gasto: number | null; leads: number;
+    var_leads_pct: number | null; cpl: number | null;
+    conv_lead_oport_pct: number | null; bookings: number;
+    conv_lead_book_pct: number | null; receita: number | null;
+    cac: number | null; roas: number | null }>;
+  meses: string[];
+  evolucao: Array<{ canal: string;
+    meses: Array<{ mes: string; leads: number; cpl: number | null; cac: number | null }> }>;
+}
+
+// ---- Lote 3: /api/marketing/origens ----
+export interface MktOrigensPayload {
+  periodo: { ini: string; fim: string };
+  origem: string | null;
+  midia: string;
+  totais?: { leads: number; bookings: number };
+  linhas?: Array<{ origem: string; tag: "escalar?" | "revisar" | null;
+    leads: number; oport: number; oport_pct: number; bookings: number;
+    conv_pct: number; receita: number | null }>;
+  detalhe?: Array<{ campanha: string; criativo: string; leads: number;
+    oport: number; bookings: number; receita: number | null }>;
+}
+
 // ---- Lote 3: /api/vendas/ciclo ----
 export interface VendasCicloPayload {
   periodo: { ini: string; fim: string };

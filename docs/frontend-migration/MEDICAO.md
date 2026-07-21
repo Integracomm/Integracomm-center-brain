@@ -187,3 +187,33 @@ Base para reextrapolar os lotes 2–6 com dado real.
 - **Ciclos de correção: 0** (typecheck e build de primeira; 56 pytest ok).
 - Bundle: 755→895 KB com Lote 2+3 (code splitting segue ADIADO com gatilho
   Portal do Cliente — PENDENCIAS.md).
+
+## Lote 3 — fechamento: Ponte em Pré-vendas + Marketing Canais/Origens (21/07, ~15:10-15:50)
+
+- **Execução efetiva: ~35 min** · ciclos de correção: 0 (tsc/build/pytest de
+  primeira). **LOTE 3 COMPLETO.**
+- **Ponte PV → Vendas em Pré-vendas** (pedido do Otávio): a MESMA página React
+  serve as duas áreas — como no HTML, que já usava uma função só
+  (`_vd_ponte(area=...)`); helps já eram aliased
+  (`HELP["prevendas/ponte"] = HELP["vendas/ponte"]`). Custo: 1 linha de router
+  + env. Nav de PV agora só tem Desempenho Individual "(HTML)".
+- **Marketing Canais + Origens**: `marketing/dados.py` novo (mkt_canais_dados/
+  mkt_origens_dados) EMBRULHANDO ranking_canais/funil_por_origem de
+  analysis.py (que já eram puros — o melhor caso da regra); evolução mensal da
+  mídia paga e chips escalar?/revisar transcritos com as MESMAS regras;
+  endpoints /api/marketing/{canais,origens} (com o serve-stale
+  _kick_deals_sync da área); hook view_response no handler de /marketing
+  (primeira vez da área no chaveamento); 2 páginas React (origens com
+  drill-down campanha/criativo SEM recarregar a página — estado local, mesma
+  API); grupo Marketing completo na nav do shell (10 views, 2 SPA); 5 entradas
+  novas de help (Ranking, Evolução mídia paga, Funil por origem, Campanhas e
+  criativos) no padrão 16/07.
+- **Paridade: canais 5/5 + evolução, origens 14/14 linhas + chips idênticos
+  (escalar? prospeccao; revisar shopee/meta_ads_v3) + drill-down 6/6.**
+- Verificado no navegador: canais (ROAS 9.2x Google vs 1.4x Meta no mês),
+  origens com chips, drill-down shopee, ponte em /prevendas com nav correta;
+  console limpo. Bundle 905 KB.
+- **Estado do redesenho pós-Lote 3:** Growth 3 views SPA · Marketing 2 ·
+  Pré-vendas 4 · Vendas 4. Restam (Lotes 4-6): Marketing pesado (visao, metas,
+  funil, midia, lag, planejador, criativos, ciclo), PV sdrs, Vendas horarios/
+  closers/forecast, Central/Raio-X/Financeiro/Semana, cauda (Admin fica HTML).
