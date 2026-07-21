@@ -147,3 +147,43 @@ Base para reextrapolar os lotes 2–6 com dado real.
 - Nota: a percepção de "menu dentro do Win/Loss antigo" em Vendas é o estado
   TRANSITÓRIO da migração (SPA e HTML coexistem com shells diferentes até a
   área migrar inteira — Lote 3 em execução converge Funil/Ponte/Ciclo).
+
+## Rodada de ajustes 3 do Lote 2 — taxa v3 (21/07, ~14:20-14:40)
+
+- **Execução: ~20 min** (inclui validação contra o banco) · ciclos: 0.
+- Feedback do Otávio: células ainda passavam de 100% ("outros canais impactando").
+- **Causa REAL (não era canal vazando): eventos distintos nos dois lados da
+  divisão** — numerador contava o agendamento na hora em que o card ENTROU na
+  etapa; denominador, a ligação na hora em que foi CONCLUÍDA. Ligação 9h que
+  agenda p/ 10h = célula das 10h com mais agendamentos que ligações.
+- **Régua v3 (na função COMPARTILHADA _horarios_calc):** a taxa agora mede a
+  CONVERSÃO DA LIGAÇÃO — célula = hora em que a ligação foi feita; numerador =
+  ligações creditadas (a ÚLTIMA do deal antes da 1ª entrada em agenda,
+  tolerância 2h p/ atividade concluída depois de mover o card); 1 crédito por
+  deal ⇒ numerador ⊆ denominador ⇒ **≤100% por construção**. Agendamentos sem
+  ligação seguem fora e contados na nota.
+- **Validação no banco:** 4 cenários (mês, ano, junho, mês+B3) — 0 células
+  >100%, 0 órfãs; taxa geral 3-4% (plausível p/ ligação fria); helps e
+  subtítulos atualizados nas DUAS UIs.
+
+## Lote 3 — parte Vendas: Funil de Fechamento, Ponte PV→Vendas, Ciclo & Empacados (21/07)
+
+- **Início:** ~14:15 · execução efetiva **~40 min** até o build (3 dados-fns +
+  3 endpoints + 3 telas + nav + helps + paridade); validação no navegador na
+  sequência.
+- **Motivação da ordem:** feedback do Otávio — entrar em Vendas abria o painel
+  ANTIGO (view padrão `funil` era HTML) e o Win/Loss abria o SPA com outra
+  sidebar. Migrando funil+ponte+ciclo, a ENTRADA da área já é SPA e a nav fica
+  uma só (restam Melhor Horário/Desempenho/Performance como "(HTML)").
+- **Entregue:** `vd_funil_dados`/`vd_ponte_dados`/`vd_ciclo_dados` em
+  sales/dados.py (transcrição fiel; funil REUSA _funil_oficial + ESP.insights_
+  vendas; serve-stale _kick_deals_sync no endpoint do funil como na tela);
+  /api/vendas/{funil,ponte,ciclo}; 3 páginas React; win rate oficial =
+  Oportunidade→Booking meta 15% NA tela do Funil (como decidido — Win/Loss não
+  inventa régua); 4 entradas novas de help (Diagnóstico/Leitura/tempo de
+  qualificação/origem/Ciclo e distribuição) no padrão 16/07.
+- **Paridade: 3/3 telas** (kpis, etapas do funil oficial, segmentos da ponte,
+  empacados por deal_id — HTML × JSON no mesmo instante).
+- **Ciclos de correção: 0** (typecheck e build de primeira; 56 pytest ok).
+- Bundle: 755→895 KB com Lote 2+3 (code splitting segue ADIADO com gatilho
+  Portal do Cliente — PENDENCIAS.md).

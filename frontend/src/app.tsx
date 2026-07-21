@@ -7,6 +7,9 @@ import { GrowthCancelamentosPage } from "@/pages/growth/cancelamentos";
 import { PrevendasPage } from "@/pages/prevendas";
 import { MelhorHorarioPage } from "@/pages/prevendas/melhor-horario";
 import { VendasWinLossPage } from "@/pages/vendas/winloss";
+import { VendasFunilPage } from "@/pages/vendas/funil";
+import { VendasPontePage } from "@/pages/vendas/ponte";
+import { VendasCicloPage } from "@/pages/vendas/ciclo";
 
 // A aplicação atual navega por QUERY (?view=) dentro de cada área — o SPA
 // respeita as MESMAS URLs (favoritos/links continuam valendo). Views ainda
@@ -27,10 +30,10 @@ const NAV: Array<{ href: string; label: string; spa: boolean; grupo?: string }> 
   { href: "/prevendas?view=horarios", label: "Melhor Horário", spa: true },
   { href: "/prevendas?view=ponte", label: "Ponte PV → Vendas", spa: false },
   { href: "/prevendas?view=sdrs", label: "Desempenho Individual", spa: false },
-  { href: "/vendas?view=winloss", label: "Win/Loss", spa: true, grupo: "Vendas" },
-  { href: "/vendas?view=funil", label: "Funil de Fechamento", spa: false },
-  { href: "/vendas?view=ponte", label: "Ponte PV → Vendas", spa: false },
-  { href: "/vendas?view=ciclo", label: "Ciclo & Empacados", spa: false },
+  { href: "/vendas?view=funil", label: "Funil de Fechamento", spa: true, grupo: "Vendas" },
+  { href: "/vendas?view=ponte", label: "Ponte PV → Vendas", spa: true },
+  { href: "/vendas?view=winloss", label: "Win/Loss", spa: true },
+  { href: "/vendas?view=ciclo", label: "Ciclo & Empacados", spa: true },
   { href: "/vendas?view=horarios", label: "Melhor Horário", spa: false },
   { href: "/vendas?view=closers", label: "Desempenho Individual", spa: false },
   { href: "/vendas?view=forecast", label: "Performance & Meta", spa: false },
@@ -45,7 +48,12 @@ function PrevendasRouter() {
 }
 
 function VendasRouter() {
-  return <VendasWinLossPage />; // única view migrada da área até o Lote 3
+  const [params] = useSearchParams();
+  const view = params.get("view") ?? "funil";
+  if (view === "winloss") return <VendasWinLossPage />;
+  if (view === "ponte") return <VendasPontePage />;
+  if (view === "ciclo") return <VendasCicloPage />;
+  return <VendasFunilPage />; // view padrão da área (Lote 3)
 }
 
 function GrowthRouter() {

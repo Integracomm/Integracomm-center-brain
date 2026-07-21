@@ -78,8 +78,10 @@ export function MelhorHorarioPage() {
   }, [d]);
   const agend = useMemo(() => (d ? paraCells(d.celulas, diasAtivos, horasComuns) : null), [d, diasAtivos, horasComuns]);
 
-  // TAXA: numerador (agend. do trecho coberto) ÷ ligações — células com <5
-  // ligações vêm marcadas como amostra pequena (regra do backend preservada)
+  // TAXA: conversão da ligação — numerador = ligações que converteram em
+  // agendamento (creditada a última antes do agendamento; célula = hora em que
+  // a ligação foi FEITA), denominador = ligações do slot. Subconjunto → ≤100%.
+  // Células com <5 ligações vêm marcadas como amostra pequena.
   const taxa = useMemo(() => {
     if (!d || !d.ligacoes.length) return null;
     const ag = new Map(d.celulas_taxa.map((c) => [`${c.dow}|${c.hora}`, c.n]));
@@ -162,7 +164,7 @@ export function MelhorHorarioPage() {
               caveat={d.taxa_ini ? "a taxa considera só o trecho com ligações registradas — numerador e denominador da MESMA janela" : undefined} />
             <KpiCard icon={Target} tone="success" title="Taxa geral (trecho coberto)"
               value={totLig ? formatPct((totAgTx / totLig) * 100) : "—"}
-              subtitle="agendamentos ÷ ligações" />
+              subtitle="ligações que converteram ÷ ligações feitas" />
           </div>
 
           <div className="grid gap-6 xl:grid-cols-2">
@@ -176,8 +178,8 @@ export function MelhorHorarioPage() {
 
             <SectionCard hint={<Hint area="prevendas/horarios" titulo="Taxa de agendamento por horário" />}
               headerClassName="min-h-[56px]"
-              title="Taxa de agendamento — hora × dia"
-              subtitle="agendamentos com ligação ÷ ligações · hachura = <5 ligações · detalhes no ⓘ">
+              title="Taxa de conversão da ligação — hora × dia"
+              subtitle="das ligações FEITAS no horário, % que converteu em agendamento · hachura = <5 ligações · detalhes no ⓘ">
               {taxa && taxa.cells.length ? (
                 <>
                   <Heatmap rows={taxa.rows} cols={taxa.cols} cells={taxa.cells}

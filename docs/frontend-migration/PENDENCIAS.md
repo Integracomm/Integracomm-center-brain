@@ -11,6 +11,8 @@ lote — entra aqui e o Otávio decide tudo junto no fim do lote.
    _(DECIDIDO 21/07: ADIADO COM GATILHO — ferramenta interna, rede boa,
    download único cacheado. REVISITAR quando o Portal do Cliente entrar em
    pauta: usuários externos/celular/conexão ruim → code splitting por rota.)_
+   _(medição 21/07 pós-Lote 3: 895 KB / 262 KB gzip — cresce ~35 KB por lote;
+   o gatilho segue o mesmo.)_
 
 ## Lote 1
 

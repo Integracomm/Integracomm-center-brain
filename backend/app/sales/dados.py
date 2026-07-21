@@ -341,3 +341,245 @@ def winloss_dados(conn: Any, ini: dt.date, fim: dt.date) -> dict:
         "evolucao": {"meses": meses_evo, "series": series},
         "diagnostico": diag,
     }
+
+
+# ---------------------------------------------------------------------------
+# VENDAS — Funil de Fechamento (Lote 3, 21/07). Win rate OFICIAL da área =
+# Oportunidade→Booking (meta 15%) — régua já existente da tela HTML, é ELA
+# que o Win/Loss referencia (decisão: não inventar win rate por lá).
+# ---------------------------------------------------------------------------
+def vd_funil_dados(conn: Any, ini: dt.date, fim: dt.date) -> dict:
+    from ..marketing.ui import _funil_oficial
+    from . import especialista as ESP
+    from .ui import _entradas
+    a, b = _brt(ini, fim)
+    reunioes = _entradas(conn, _ST_REUNIAO, a, b, coorte=False)
+    with conn.cursor() as cur:
+        cur.execute("""SELECT count(*) FROM mkt_deals_attribution
+                        WHERE oport_time >= %s AND oport_time < %s""", (a, b))
+        negoc = cur.fetchone()[0]
+        cur.execute("""SELECT count(*), COALESCE(sum(COALESCE(valor_custom, valor)), 0)
+                         FROM mkt_deals_attribution
+                        WHERE status='won' AND won_time >= %s AND won_time < %s""", (a, b))
+        book, receita = cur.fetchone()
+        cur.execute("""
+            WITH oport AS (SELECT date_trunc('month', oport_time - interval '3 hours') m, count(*) n
+                             FROM mkt_deals_attribution WHERE oport_time IS NOT NULL GROUP BY 1),
+                 wins AS (SELECT date_trunc('month', won_time - interval '3 hours') m, count(*) n
+                            FROM mkt_deals_attribution WHERE status='won' GROUP BY 1)
+            SELECT to_char(o.m, 'MM-YYYY'), o.n, COALESCE(w.n, 0)
+              FROM oport o LEFT JOIN wins w ON w.m = o.m
+             WHERE o.m >= date_trunc('month', now()) - interval '5 months'
+             ORDER BY o.m""")
+        tend = cur.fetchall()
+        cur.execute("""SELECT count(DISTINCT deal_id) FROM mkt_stage_events
+                        WHERE stage_id = 5 AND entered_at >= %s AND entered_at < %s""", (a, b))
+        reag = cur.fetchone()[0]
+        cur.execute("""
+            WITH op AS (
+                SELECT COALESCE(substring(d.produto FROM 'B[1-5]'),
+                                left(COALESCE(d.produto, '(sem plano)'), 30)) AS bnd,
+                       count(*) AS n
+                  FROM mkt_deals_attribution d
+                 WHERE d.oport_time >= %s AND d.oport_time < %s
+                 GROUP BY 1),
+                 wn AS (
+                SELECT COALESCE(substring(produto FROM 'B[1-5]'),
+                                left(COALESCE(produto, '(sem plano)'), 30)) AS bnd, count(*) AS n
+                  FROM mkt_deals_attribution
+                 WHERE status = 'won' AND won_time >= %s AND won_time < %s GROUP BY 1)
+            SELECT COALESCE(op.bnd, wn.bnd), COALESCE(op.n, 0), COALESCE(wn.n, 0)
+              FROM op FULL JOIN wn ON wn.bnd = op.bnd
+             ORDER BY 2 DESC, 3 DESC""", (a, b, a, b))
+        bdados = cur.fetchall()
+        cur.execute("""
+            WITH wins AS (
+                SELECT COALESCE(origem, '(vazio)') o,
+                       COALESCE(substring(produto FROM 'B[1-5]'), 'outros') p, count(*) n
+                  FROM mkt_deals_attribution
+                 WHERE status='won' AND won_time >= %s AND won_time < %s GROUP BY 1, 2),
+                 leads AS (
+                SELECT COALESCE(origem, '(vazio)') o, count(*) n FROM mkt_deals_attribution
+                 WHERE add_time >= %s AND add_time < %s GROUP BY 1)
+            SELECT w.o, w.p, w.n, COALESCE(l.n, 0)
+              FROM wins w LEFT JOIN leads l ON l.o = w.o""", (a, b, a, b))
+        mx: dict[str, dict[str, int]] = {}
+        leads_por_origem: dict[str, int] = {}
+        for o, p_, n, l in cur.fetchall():
+            mx.setdefault(o, {})[p_] = n
+            leads_por_origem[o] = l
+    conv = book / negoc if negoc else None
+    ins = ESP.insights_vendas({"conv_oport_book": conv, "meta_conv": 0.15,
+                               "no_show": (reag / reunioes if reunioes else None)})
+
+    # funil oficial Lead→Booking — MESMO shape do pv_dados (o SPA reusa o componente)
+    passou, book_of, leads_of, receita_of = _funil_oficial(conn, ini, fim)
+    rotulos = ["Lead", "MQL", "SAL", "SQL", "Oportunidade", "Booking"]
+    vols = [*passou[:5], book_of]
+    etapas = []
+    for i, (rot, v) in enumerate(zip(rotulos, vols)):
+        ant = vols[i - 1] if i else None
+        etapas.append({"key": rot.lower(), "label": rot, "volume": int(v),
+                       "conversao_da_anterior_pct":
+                           round(v / ant * 100, 1) if ant else None})
+
+    tot_op = sum(o for _bn, o, _w in bdados) or 1
+    planos_cols = ["B1", "B2", "B3", "B4", "B5", "outros"]
+    linhas_ox = []
+    for o in sorted(mx, key=lambda x: -sum(mx[x].values()))[:12]:
+        tot_o = sum(mx[o].values())
+        l_o = leads_por_origem.get(o, 0)
+        linhas_ox.append({"origem": o[:30], "por_plano": {p_: mx[o].get(p_, 0) for p_ in planos_cols},
+                          "total": tot_o, "leads": l_o,
+                          "tx_lead_booking_pct": round(tot_o / l_o * 100, 1) if l_o else None})
+
+    return {
+        "periodo": {"ini": ini.isoformat(), "fim": fim.isoformat()},
+        "kpis": {"reunioes": reunioes, "oportunidades": negoc, "bookings": book,
+                 "receita": _f(receita),
+                 "conv_oport_booking_pct": round(conv * 100, 1) if conv is not None else None,
+                 "meta_pct": 15.0},
+        "funil": {"etapas": etapas, "leads": int(leads_of), "receita": _f(receita_of),
+                  "conversao_total_pct": round(book_of / leads_of * 100, 1) if leads_of else None},
+        "por_bundle": [{"bundle": bn, "oportunidades": o,
+                        "mix_pct": round(o / tot_op * 100, 1),
+                        "bookings": w,
+                        "conv_pct": round(w / o * 100, 1) if o else None}
+                       for bn, o, w in bdados],
+        "origem_x_plano": {"planos": planos_cols, "linhas": linhas_ox},
+        "tendencia": [{"mes": m, "oportunidades": o, "bookings": w,
+                       "conv_pct": round(w / o * 100, 1) if o else None,
+                       "na_meta": (w / o if o else 0) >= 0.15}
+                      for m, o, w in tend],
+        "diagnostico": {"persona": ESP.PERSONA_VENDAS, "itens": ins,
+                        "fonte": "regras determinísticas"},
+    }
+
+
+# ---------------------------------------------------------------------------
+# VENDAS — Ponte PV → Vendas (Lote 3): conversão fraca é herdada da
+# qualificação ou é do fechamento? Taxa SEMPRE sobre decididas.
+# ---------------------------------------------------------------------------
+def vd_ponte_dados(conn: Any, ini: dt.date, fim: dt.date) -> dict:
+    a, b = _brt(ini, fim)
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT d.deal_id, d.status, COALESCE(d.origem, '(vazio)'),
+                   COALESCE(d.sdr, '(sem SDR)'),
+                   COALESCE(d.owner_name, '—'),
+                   EXTRACT(epoch FROM (t.first_at - d.add_time)) / 60,
+                   EXTRACT(epoch FROM (d.oport_time - d.add_time)) / 86400
+              FROM mkt_deals_attribution d
+              LEFT JOIN sales_first_touch t ON t.deal_id = d.deal_id
+             WHERE d.oport_time >= %s AND d.oport_time < %s""", (a, b))
+        rows = cur.fetchall()
+
+    def agrega(chave):
+        seg: dict[str, list[int]] = {}
+        for r in rows:
+            k = chave(r)
+            if k is None:
+                continue
+            t = seg.setdefault(k, [0, 0, 0])  # ganhas, decididas, total
+            if r[1] == "won":
+                t[0] += 1; t[1] += 1
+            elif r[1] == "lost":
+                t[1] += 1
+            t[2] += 1
+        return seg
+
+    def bloco(seg, ordem=None):
+        chaves = ordem or sorted(seg, key=lambda k: -seg[k][2])
+        return [{"rotulo": str(k)[:30], "oports": seg[k][2], "fechadas": seg[k][0],
+                 "perdidas": seg[k][1] - seg[k][0], "em_aberto": seg[k][2] - seg[k][1],
+                 "taxa_pct": round(seg[k][0] / seg[k][1] * 100, 1) if seg[k][1] else None,
+                 "amostra_pequena": seg[k][1] < 10}
+                for k in chaves if k in seg]
+
+    sla = agrega(lambda r: None if r[5] is None else ("dentro do SLA (≤15 min)" if r[5] <= 15
+                                                      else ("15-60 min" if r[5] <= 60 else "acima de 1h")))
+    tempo = agrega(lambda r: None if r[6] is None else ("qualificou em ≤2 dias" if r[6] <= 2
+                                                        else ("3-7 dias" if r[6] <= 7 else "mais de 7 dias")))
+    origem = agrega(lambda r: r[2][:26])
+    sdr = agrega(lambda r: r[3][:26])
+    closer = agrega(lambda r: r[4][:26])
+    origem = {k: v for k, v in sorted(origem.items(), key=lambda x: -x[1][2])[:8]}
+
+    def taxas(seg):
+        return [g / dec for g, dec, _t in seg.values() if dec >= 10]
+    qual_txs = taxas(sla) + taxas(tempo) + taxas(origem) + taxas(sdr)
+    clos_txs = taxas(closer)
+    amp_q = (max(qual_txs) - min(qual_txs)) if len(qual_txs) >= 2 else None
+    amp_c = (max(clos_txs) - min(clos_txs)) if len(clos_txs) >= 2 else None
+    if amp_q is None and amp_c is None:
+        leitura = "Amostra ainda pequena para diagnóstico — acumule mais um período."
+    elif (amp_q or 0) >= 0.15 and (amp_q or 0) >= (amp_c or 0):
+        leitura = (f"O gargalo tem cara de HERANÇA DA QUALIFICAÇÃO: a taxa de fechamento varia "
+                   f"{amp_q * 100:.0f} p.p. conforme a qualidade da qualificação recebida (SLA/tempo/origem/SDR), "
+                   f"mais do que entre closers ({(amp_c or 0) * 100:.0f} p.p.). Caminho: devolver critérios de "
+                   "qualificação à Pré-vendas — priorizar os segmentos que fecham e endurecer o filtro nos que não fecham.")
+    elif (amp_c or 0) >= 0.15:
+        leitura = (f"O gargalo tem cara de FECHAMENTO: a taxa varia pouco com a qualificação recebida "
+                   f"({(amp_q or 0) * 100:.0f} p.p.), mas {amp_c * 100:.0f} p.p. entre closers. Caminho: abordagem/"
+                   "ancoragem em Vendas — role-play com quem está acima e revisão de proposta.")
+    else:
+        leitura = (f"Taxas relativamente UNIFORMES ({(amp_q or 0) * 100:.0f} p.p. por qualificação, "
+                   f"{(amp_c or 0) * 100:.0f} p.p. por closer) — o gargalo não está na triagem nem em pessoas "
+                   "específicas; olhe preço/proposta (Win/Loss) e volume de topo.")
+    tot_g = sum(1 for r in rows if r[1] == "won")
+    tot_d = sum(1 for r in rows if r[1] in ("won", "lost"))
+    return {
+        "periodo": {"ini": ini.isoformat(), "fim": fim.isoformat()},
+        "kpis": {"oportunidades": len(rows), "fechadas": tot_g, "decididas": tot_d,
+                 "em_aberto": len(rows) - tot_d,
+                 "fechamento_pct": round(tot_g / tot_d * 100, 1) if tot_d else None},
+        "leitura": {"texto": leitura, "fonte": "regras determinísticas"},
+        "por_sla": bloco(sla, ["dentro do SLA (≤15 min)", "15-60 min", "acima de 1h"]),
+        "por_tempo_qualificacao": bloco(tempo, ["qualificou em ≤2 dias", "3-7 dias", "mais de 7 dias"]),
+        "por_origem": bloco(origem),
+        "por_sdr": bloco(sdr),
+        "por_closer": bloco(closer),
+    }
+
+
+# ---------------------------------------------------------------------------
+# VENDAS — Ciclo & Empacados (Lote 3): distribuição do tempo 1ª reunião →
+# contrato + deals abertos sem movimento (>2× a mediana, mín. 14 dias).
+# ---------------------------------------------------------------------------
+def vd_ciclo_dados(conn: Any, ini: dt.date, fim: dt.date) -> dict:
+    from .ui import _ST_VENDAS_ABERTO
+    a, b = _brt(ini, fim)
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT EXTRACT(epoch FROM d.won_time - min(e.entered_at)) / 86400
+              FROM mkt_deals_attribution d JOIN mkt_stage_events e ON e.deal_id = d.deal_id
+             WHERE d.status='won' AND d.won_time >= %s AND d.won_time < %s
+               AND e.stage_id = ANY(%s)
+             GROUP BY d.deal_id, d.won_time""", (a, b, list(_ST_VENDAS_ABERTO)))
+        ciclos = [float(r[0]) for r in cur.fetchall() if r[0] is not None and r[0] >= 0]
+        cur.execute("""
+            SELECT d.deal_id, d.stage_id, COALESCE(d.valor_custom, d.valor) AS valor,
+                   d.produto, d.owner_name,
+                   EXTRACT(epoch FROM now() - max(e.entered_at)) / 86400 AS dias
+              FROM mkt_deals_attribution d JOIN mkt_stage_events e ON e.deal_id = d.deal_id
+             WHERE d.status='open' AND d.stage_id IN (6, 5, 7)
+             GROUP BY d.deal_id, d.stage_id, COALESCE(d.valor_custom, d.valor), d.produto, d.owner_name""")
+        abertos = cur.fetchall()
+    med = st.median(ciclos) if ciclos else None
+    p25, p75 = (st.quantiles(ciclos, n=4)[0], st.quantiles(ciclos, n=4)[2]) if len(ciclos) >= 4 else (None, None)
+    dias_ab = [float(x[5]) for x in abertos if x[5] is not None]
+    med_ab = st.median(dias_ab) if dias_ab else 0
+    limiar = max(2 * med_ab, 14)
+    empacados = sorted([x for x in abertos if x[5] and float(x[5]) > limiar],
+                       key=lambda x: -float(x[5]))[:20]
+    return {
+        "periodo": {"ini": ini.isoformat(), "fim": fim.isoformat()},
+        "kpis": {"ciclo_mediano_d": round(med, 1) if med is not None else None,
+                 "p25_d": round(p25, 1) if p25 is not None else None,
+                 "p75_d": round(p75, 1) if p75 is not None else None,
+                 "n_ganhos": len(ciclos), "abertos": len(abertos),
+                 "empacados": len(empacados), "limiar_dias": round(limiar, 1)},
+        "empacados": [{"deal_id": did, "dono": (own or "—")[:22], "plano": (prod or "—")[:20],
+                       "valor": _f(val), "dias": round(float(dias), 0)}
+                      for did, _sid, val, prod, own, dias in empacados],
+    }

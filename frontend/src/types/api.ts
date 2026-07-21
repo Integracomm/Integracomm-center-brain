@@ -185,3 +185,51 @@ export interface HorariosPayload {
   por_origem: Record<string, Array<{ dow: number; hora: number; n: number }>>;
   por_colab: Record<string, Array<{ hora: number; n: number }>>;
 }
+
+// ---- Lote 3: /api/vendas/funil ----
+export interface VendasFunilPayload {
+  periodo: { ini: string; fim: string };
+  kpis: {
+    reunioes: number; oportunidades: number; bookings: number; receita: number | null;
+    conv_oport_booking_pct: number | null; meta_pct: number;
+  };
+  funil: {
+    etapas: Array<{ key: string; label: string; volume: number; conversao_da_anterior_pct: number | null }>;
+    leads: number; receita: number | null; conversao_total_pct: number | null;
+  };
+  por_bundle: Array<{ bundle: string; oportunidades: number; mix_pct: number;
+    bookings: number; conv_pct: number | null }>;
+  origem_x_plano: {
+    planos: string[];
+    linhas: Array<{ origem: string; por_plano: Record<string, number>; total: number;
+      leads: number; tx_lead_booking_pct: number | null }>;
+  };
+  tendencia: Array<{ mes: string; oportunidades: number; bookings: number;
+    conv_pct: number | null; na_meta: boolean }>;
+  diagnostico: { persona: string; itens: string[]; fonte: string };
+}
+
+// ---- Lote 3: /api/vendas/ponte ----
+export interface PonteSegItem {
+  rotulo: string; oports: number; fechadas: number; perdidas: number;
+  em_aberto: number; taxa_pct: number | null; amostra_pequena: boolean;
+}
+export interface VendasPontePayload {
+  periodo: { ini: string; fim: string };
+  kpis: { oportunidades: number; fechadas: number; decididas: number;
+    em_aberto: number; fechamento_pct: number | null };
+  leitura: { texto: string; fonte: string };
+  por_sla: PonteSegItem[];
+  por_tempo_qualificacao: PonteSegItem[];
+  por_origem: PonteSegItem[];
+  por_sdr: PonteSegItem[];
+  por_closer: PonteSegItem[];
+}
+
+// ---- Lote 3: /api/vendas/ciclo ----
+export interface VendasCicloPayload {
+  periodo: { ini: string; fim: string };
+  kpis: { ciclo_mediano_d: number | null; p25_d: number | null; p75_d: number | null;
+    n_ganhos: number; abertos: number; empacados: number; limiar_dias: number };
+  empacados: Array<{ deal_id: number; dono: string; plano: string; valor: number | null; dias: number }>;
+}

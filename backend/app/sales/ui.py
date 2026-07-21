@@ -760,30 +760,52 @@ def _horarios_calc(conn, ini: dt.date, fim: dt.date, bundle: str) -> dict:
             if cob and cob > a_dt:
                 taxa_ini = cob
             ini_tx = taxa_ini or a
-            # numerador da TAXA: só agendamentos de deals que TÊM ligação
-            # registrada (Otávio 21/07: indicação/inbound agenda SEM ligação e
-            # inflava a taxa sem significar horário bom). Os sem-ligação são
-            # contados à parte e viram nota na tela — nenhum dado some.
+            # numerador da TAXA (v3, Otávio 21/07 — células ainda passavam de
+            # 100%): a taxa agora mede a CONVERSÃO DA LIGAÇÃO e a célula é o
+            # horário em que a ligação foi FEITA. Antes o numerador era o
+            # agendamento na hora em que o card entrou na etapa e o denominador
+            # a ligação na hora em que foi concluída — eventos DISTINTOS:
+            # ligação 9h que agenda p/ 10h dava célula com mais agendamentos
+            # que ligações (>100% sem nenhum canal vazando). Crédito: a ÚLTIMA
+            # ligação do deal antes da 1ª entrada em agenda (tolerância de 2h —
+            # o SDR costuma concluir a atividade DEPOIS de mover o card).
+            # 1 ligação creditada por deal → numerador é subconjunto do
+            # denominador em toda célula → taxa ≤ 100% por construção.
+            cur.execute(f"""
+                WITH ag AS (
+                    SELECT e.deal_id, min(e.entered_at) AS entered_at
+                      FROM mkt_stage_events e
+                      JOIN mkt_deals_attribution d ON d.deal_id = e.deal_id
+                     WHERE e.stage_id = ANY(%s){filtro_b}
+                     GROUP BY e.deal_id),
+                conv AS (
+                    SELECT DISTINCT ON (s.deal_id) s.deal_id, s.done_at
+                      FROM sales_activities s
+                      JOIN ag ON ag.deal_id = s.deal_id
+                     WHERE s.tipo = 'call'
+                       AND s.done_at < ag.entered_at + interval '2 hours'
+                     ORDER BY s.deal_id, s.done_at DESC)
+                SELECT extract(dow  FROM done_at AT TIME ZONE 'America/Sao_Paulo')::int,
+                       extract(hour FROM done_at AT TIME ZONE 'America/Sao_Paulo')::int,
+                       count(*)
+                  FROM conv WHERE done_at >= %s AND done_at < %s
+                 GROUP BY 1, 2""",
+                [list(_ST_AGENDA)] + args[2:] + [ini_tx, b])
+            celulas_taxa = {(dow, h): n for dow, h, n in cur.fetchall()}
+            # agendamentos SEM ligação registrada (indicação/inbound direto)
+            # ficam fora da taxa por definição — contados à parte p/ a nota.
             cur.execute(f"""
                 WITH primeira AS (
-                    SELECT e.deal_id, min(e.entered_at) AS entered_at,
-                           EXISTS (SELECT 1 FROM sales_activities s
-                                    WHERE s.deal_id = e.deal_id AND s.tipo = 'call') AS tem_lig
+                    SELECT e.deal_id, min(e.entered_at) AS entered_at
                       FROM mkt_stage_events e
                       JOIN mkt_deals_attribution d ON d.deal_id = e.deal_id
                      WHERE e.stage_id = ANY(%s) AND e.entered_at >= %s AND e.entered_at < %s{filtro_b}
                      GROUP BY e.deal_id)
-                SELECT extract(dow  FROM entered_at AT TIME ZONE 'America/Sao_Paulo')::int,
-                       extract(hour FROM entered_at AT TIME ZONE 'America/Sao_Paulo')::int,
-                       count(*) FILTER (WHERE tem_lig),
-                       count(*) FILTER (WHERE NOT tem_lig)
-                  FROM primeira GROUP BY 1, 2""",
+                SELECT count(*) FROM primeira p
+                 WHERE NOT EXISTS (SELECT 1 FROM sales_activities s
+                                    WHERE s.deal_id = p.deal_id AND s.tipo = 'call')""",
                 [list(_ST_AGENDA), ini_tx, b] + args[2:])
-            celulas_taxa = {}
-            for dow, h, com_lig, sem_lig in cur.fetchall():
-                if com_lig:
-                    celulas_taxa[(dow, h)] = com_lig
-                agend_sem_ligacao += sem_lig
+            agend_sem_ligacao = (cur.fetchone() or [0])[0]
     return {"celulas": celulas, "por_bundle": por_bundle, "por_colab": por_colab,
             "por_origem": por_origem, "ligacoes": ligacoes,
             "agend_sem_ligacao": agend_sem_ligacao,
@@ -899,12 +921,11 @@ def _pv_horarios(conn, request: Request) -> str:
                   f"<td style='{_TD}'>{escape(' · '.join(melhores) or '—')}</td>"
                   f"<td style='{_TD};text-align:right'>{'<span class=note>amostra pequena</span>' if tot_p < 30 else ''}</td></tr>")
 
-    # --- TAXA de agendamento por horário: agendamentos ÷ ligações concluídas
-    # (Otávio 20/07: contagem sozinha engana — mutirão infla o horário).
-    # Numerador e denominador SEMPRE da mesma janela: quando as ligações só
-    # cobrem parte do período filtrado, a taxa usa celulas_taxa (agendamentos
-    # do trecho coberto) — sem isso, filtrar o ano dava 4600% (46 agend ÷ 1
-    # ligação de trecho descoberto).
+    # --- TAXA de conversão da ligação por horário: das ligações FEITAS na
+    # célula, quantas converteram em agendamento (Otávio 20/07: contagem
+    # sozinha engana — mutirão infla o horário; 21/07: numerador e denominador
+    # agora são o MESMO evento — a ligação — senão a célula passava de 100%).
+    # celulas_taxa = ligações creditadas (a última antes do agendamento).
     ligas = dados.get("ligacoes") or {}
     cel_tx = dados.get("celulas_taxa") or celulas
     taxa_ini = dados.get("taxa_ini")
@@ -932,24 +953,23 @@ def _pv_horarios(conn, request: Request) -> str:
                 lig = ligas.get((d, h), 0)
                 ag = cel_tx.get((d, h), 0)
                 if not lig:
-                    tds += (f"<td title='{_DOW_NOME[d]} {h:02d}h — {ag} agendamento(s), nenhuma ligação "
-                            f"concluída registrada' style='{_TD};text-align:center;color:var(--text-faint)'>"
-                            f"{'—' if not ag else '∅'}</td>")
+                    tds += (f"<td title='{_DOW_NOME[d]} {h:02d}h — nenhuma ligação concluída registrada' "
+                            f"style='{_TD};text-align:center;color:var(--text-faint)'>—</td>")
                     continue
                 tx = ag / lig
                 alpha = int(8 + 62 * min(tx / tmax, 1.0)) if tx and tmax else 0
                 bg = f"background:color-mix(in srgb,var(--brand) {alpha}%,transparent);" if tx else ""
                 peq = lig < _MIN_LIG
-                tds += (f"<td title='{_DOW_NOME[d]} {h:02d}h — {ag} agendamento(s) em {lig} ligação(ões) "
-                        f"= {tx * 100:.0f}%{' · amostra pequena — interpretar com cautela' if peq else ''}' "
+                tds += (f"<td title='{_DOW_NOME[d]} {h:02d}h — de {lig} ligação(ões), {ag} converteram em "
+                        f"agendamento = {tx * 100:.0f}%{' · amostra pequena — interpretar com cautela' if peq else ''}' "
                         f"style='{_TD};text-align:center;{bg}{'opacity:.55;' if peq else ''}'>"
                         f"{tx * 100:.0f}%{'*' if peq else ''}</td>")
             linhas_tx += f"<tr><td style='{_TD};color:var(--text-muted)'>{h:02d}h</td>{tds}</tr>"
         heat_taxa = aviso_cob + _tbl([("", "left")] + [(_DOW_NOME[d], "left") for d in dows], linhas_tx)
-        sub_taxa = (f" · {tot_lig} ligação(ões) concluída(s) no trecho coberto · taxa geral "
-                    f"{tot_ag_tx / tot_lig * 100:.0f}%" if tot_lig else "")
+        sub_taxa = (f" · {tot_lig} ligação(ões) concluída(s) no trecho coberto · {tot_ag_tx} converteram em "
+                    f"agendamento = taxa geral {tot_ag_tx / tot_lig * 100:.0f}%" if tot_lig else "")
         if dados.get("agend_sem_ligacao"):
-            sub_taxa += (f" · {dados['agend_sem_ligacao']} agendamento(s) de deals SEM ligação registrada "
+            sub_taxa += (f" · {dados['agend_sem_ligacao']} agendamento(s) SEM ligação registrada "
                          "(indicação/inbound) ficam fora da taxa")
 
     # --- ORIGEM do lead: mapa de calor origem × hora (pedido 20/07) + tabela
@@ -1027,11 +1047,11 @@ def _pv_horarios(conn, request: Request) -> str:
             f"<p class=secsub>período {ini.strftime('%d-%m-%Y')} a {fim.strftime('%d-%m-%Y')}"
             f"{' · bundle ' + bundle if bundle != 'todos' else ''} · quanto mais escuro, mais agendamentos</p>"
             + _card(heat) + "</section>"
-            "<section><h2>Taxa de agendamento por horário — agendamentos ÷ ligações</h2>"
-            "<p class=secsub>normaliza o esforço: um horário pode ter muitos agendamentos porque houve MUTIRÃO de "
-            "ligações naquele dia, não porque converte melhor · ligações = atividades de ligação CONCLUÍDAS no "
-            "Pipedrive (horário da conclusão) · * = menos de 5 ligações na célula (amostra pequena) · ∅ = houve "
-            f"agendamento sem ligação registrada{sub_taxa}</p>"
+            "<section><h2>Taxa de conversão da ligação por horário</h2>"
+            "<p class=secsub>de cada 100 ligações FEITAS naquele dia/hora, quantas converteram em agendamento — "
+            "normaliza o esforço (mutirão infla o volume, não a taxa) · ligações = atividades de ligação CONCLUÍDAS "
+            "no Pipedrive (horário da conclusão); conversão creditada à última ligação antes do agendamento · "
+            f"* = menos de 5 ligações na célula (amostra pequena){sub_taxa}</p>"
             + _card(heat_taxa) + "</section>"
             "<section><h2>Agendamentos por colaborador × hora</h2>"
             "<p class=secsub>atribuição pelo campo SDR do deal · cada linha sombreada na PRÓPRIA escala — o horário forte de cada pessoa, independente do volume · célula contornada = pico da pessoa · * = amostra pequena (&lt;30)</p>"
@@ -2225,3 +2245,46 @@ def api_vd_winloss(request: Request, ini: str = Query(""), fim: str = Query(""))
         i, f = hoje.replace(day=1), hoje
     with A._conn() as c:
         return winloss_dados(c, i, f)
+
+
+def _periodo_api(ini: str, fim: str) -> tuple[dt.date, dt.date]:
+    hoje = dt.date.today()
+    try:
+        i = dt.date.fromisoformat(ini) if ini else hoje.replace(day=1)
+        f = dt.date.fromisoformat(fim) if fim else hoje
+    except ValueError:
+        i, f = hoje.replace(day=1), hoje
+    return i, f
+
+
+@router.get("/api/vendas/funil")
+def api_vd_funil(request: Request, ini: str = Query(""), fim: str = Query("")):
+    A = _deps()
+    A._require_api(request)
+    from .dados import vd_funil_dados
+    i, f = _periodo_api(ini, fim)
+    # mesmo serve-stale da tela HTML: funil sempre a ≤10min do Pipedrive
+    from ..marketing.ui import _kick_deals_sync
+    _kick_deals_sync()
+    with A._conn() as c:
+        return vd_funil_dados(c, i, f)
+
+
+@router.get("/api/vendas/ponte")
+def api_vd_ponte(request: Request, ini: str = Query(""), fim: str = Query("")):
+    A = _deps()
+    A._require_api(request)
+    from .dados import vd_ponte_dados
+    i, f = _periodo_api(ini, fim)
+    with A._conn() as c:
+        return vd_ponte_dados(c, i, f)
+
+
+@router.get("/api/vendas/ciclo")
+def api_vd_ciclo(request: Request, ini: str = Query(""), fim: str = Query("")):
+    A = _deps()
+    A._require_api(request)
+    from .dados import vd_ciclo_dados
+    i, f = _periodo_api(ini, fim)
+    with A._conn() as c:
+        return vd_ciclo_dados(c, i, f)
