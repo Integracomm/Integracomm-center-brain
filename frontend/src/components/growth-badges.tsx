@@ -76,7 +76,12 @@ export function ExecBadge({ score, inativo }: { score: number | null; inativo: s
     : score >= 40
       ? ["bg-warning/15 text-warning", "atenção"]
       : ["bg-destructive/15 text-destructive", "crítica"];
-  return <Badge className={cn("border-0 font-medium tabular-nums", cls)}>{score.toFixed(0)} · {rot}</Badge>;
+  return (
+    <Badge className={cn("border-0 font-medium tabular-nums", cls)}
+      title="nota de execução no ClickUp (0 a 100): entregas concluídas, atrasos e ritmo de trabalho na conta — em dia ≥70 · atenção 40-69 · crítica <40">
+      {score.toFixed(0)}/100 · {rot}
+    </Badge>
+  );
 }
 
 // Atrasos: entregas ABERTAS com vencimento estourado (regra da Análise dos
