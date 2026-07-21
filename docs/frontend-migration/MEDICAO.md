@@ -92,9 +92,10 @@ Base para reextrapolar os lotes 2–6 com dado real.
 
 ## Lote 2 — Pré-vendas (Qualificação+Speed), Melhor Horário, Win/Loss
 
-- **Início:** 21/07 10:41 · **fim:** ~12:0x · **execução efetiva: ~45 min**
-  (inclui o deploy dos Lotes 0-1 em paralelo e a leitura dos ~600 linhas de
-  compute das telas HTML de sales/ui.py — a extração é o custo dominante).
+- **Início:** 21/07 10:41 · **fim:** 10:54 · **execução efetiva: ~13 min**
+  (medido no relógio, corrigido — a estimativa de memória dizia 45; o deploy
+  dos Lotes 0-1 correu em BACKGROUND sem custar tempo do lote; a leitura das
+  ~600 linhas de compute do sales/ui.py foi o custo dominante).
 - **Entregue:** `app/sales/dados.py` (pv_dados + winloss_dados — transcrição
   fiel das queries; funil REUSA _funil_oficial do Marketing); /api/prevendas,
   /api/vendas/winloss, /api/prevendas/horarios (embrulha o _horarios_calc que
