@@ -55,7 +55,7 @@ export function GrowthCancelamentosPage() {
   return (
     <div className="space-y-6">
       <header>
-        <h1 className="font-display text-2xl font-bold tracking-tight">Growth · Cancelamentos</h1>
+        <h1 className="font-display text-2xl font-bold tracking-tight">Cancelamentos</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Churn realizado (planilhas do time — fonte oficial) + pipeline de retenção.
         </p>
@@ -85,7 +85,7 @@ export function GrowthCancelamentosPage() {
             </span>
           </div>
 
-          <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
+          <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5">
             <KpiCard icon={TrendingDown} tone="destructive" title="Saídas no mês"
               value={d.kpis.saidas_mes.toLocaleString("pt-BR")} subtitle="formalizadas nas planilhas" />
             <KpiCard icon={Wallet} tone="warning" title="MRR perdido no mês"
@@ -223,10 +223,10 @@ export function GrowthCancelamentosPage() {
 
             <SectionCard title="Saídas por plano e por equipe" subtitle="todo o período filtrado — top 8 de cada">
               <div className="grid gap-4">
-                <BarListH height={200} width={170}
+                <BarListH height={220} width={235}
                   data={d.por_plano.slice(0, 8).map((p) => ({ label: p.nome, value: p.saidas }))}
                   color="var(--chart-2)" />
-                <BarListH height={200} width={170}
+                <BarListH height={220} width={235}
                   data={d.por_equipe.slice(0, 8).map((p) => ({ label: p.nome, value: p.saidas }))}
                   color="var(--chart-4)" />
               </div>

@@ -25,7 +25,7 @@ import {
 import { formatBRL } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import {
-  RiskBadge, SeverityBadge, TrajectoryIcon, stageLabels,
+  AtrasosBadge, ExecBadge, RiskBadge, SeverityBadge, TrajectoryIcon, stageLabels,
 } from "@/components/growth-badges";
 import type { RiskBand, Score, ScoresEnvelope, Severity, Stage } from "@/types/api";
 
@@ -59,12 +59,20 @@ export function GrowthContasPage() {
   const [search, setSearch] = useState("");
   const [risco, setRisco] = useState<"todos" | RiskBand>("todos");
   const [alerta, setAlerta] = useState<"todos" | "com" | "sem" | Severity>("todos");
+  const [squad, setSquad] = useState("todos");
+  const [plano, setPlano] = useState("todos");   // bundle B1..B5 pela tag do nome
+  const [execf, setExecf] = useState<"todos" | "em_dia" | "atencao" | "critica" | "atrasos">("todos");
   const [sort, setSort] = useState<{ key: SortKey; dir: SortDir }>({ key: "score", dir: "asc" });
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<Score | null>(null);
   const PAGE_SIZE = 25;
 
   const scores = q.data?.scores ?? [];
+
+  const bundleDe = (nome: string) => nome.match(/B[1-5]/)?.[0] ?? "outros";
+  const squads = useMemo(
+    () => Array.from(new Set(scores.map((s) => s.squad).filter(Boolean))).sort() as string[],
+    [scores]);
 
   const filtered = useMemo(() => {
     const s = search.trim().toLowerCase();
@@ -74,9 +82,15 @@ export function GrowthContasPage() {
       if (alerta === "com" && !sc.alert_sev) return false;
       if (alerta === "sem" && sc.alert_sev) return false;
       if (["critico", "alto", "atencao"].includes(alerta) && sc.alert_sev !== alerta) return false;
+      if (squad !== "todos" && sc.squad !== squad) return false;
+      if (plano !== "todos" && bundleDe(sc.name) !== plano) return false;
+      if (execf === "atrasos" && !(sc.atrasadas ?? 0)) return false;
+      if (execf === "em_dia" && !(sc.exec_score != null && sc.exec_score >= 70)) return false;
+      if (execf === "atencao" && !(sc.exec_score != null && sc.exec_score >= 40 && sc.exec_score < 70)) return false;
+      if (execf === "critica" && !(sc.exec_score != null && sc.exec_score < 40)) return false;
       return true;
     });
-  }, [scores, search, risco, alerta]);
+  }, [scores, search, risco, alerta, squad, plano, execf]);
 
   const sorted = useMemo(() => {
     const arr = [...filtered];
@@ -113,7 +127,7 @@ export function GrowthContasPage() {
   return (
     <div className="space-y-6">
       <header>
-        <h1 className="font-display text-2xl font-bold tracking-tight">Growth · Contas</h1>
+        <h1 className="font-display text-2xl font-bold tracking-tight">Contas</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Todas as contas monitoradas com score de risco, alerta e MRR em jogo.
         </p>
@@ -167,6 +181,31 @@ export function GrowthContasPage() {
                 <SelectItem value="atencao">Atenção</SelectItem>
               </SelectContent>
             </Select>
+            <Select value={squad} onValueChange={(v) => { setSquad(v); setPage(1); }}>
+              <SelectTrigger className="w-[150px]"><SelectValue placeholder="Squad" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="todos">Todos os squads</SelectItem>
+                {squads.map((sq) => <SelectItem key={sq} value={sq}>{sq}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <Select value={plano} onValueChange={(v) => { setPlano(v); setPage(1); }}>
+              <SelectTrigger className="w-[140px]"><SelectValue placeholder="Plano" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="todos">Todos os planos</SelectItem>
+                {["B1", "B2", "B3", "B4", "B5"].map((b) => <SelectItem key={b} value={b}>{b}</SelectItem>)}
+                <SelectItem value="outros">antigos/ADS</SelectItem>
+              </SelectContent>
+            </Select>
+            <Select value={execf} onValueChange={(v) => { setExecf(v as typeof execf); setPage(1); }}>
+              <SelectTrigger className="w-[190px]"><SelectValue placeholder="Execução" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="todos">Execução: todas</SelectItem>
+                <SelectItem value="em_dia">Em dia (70 ou mais)</SelectItem>
+                <SelectItem value="atencao">Atenção (40 a 69)</SelectItem>
+                <SelectItem value="critica">Crítica (abaixo de 40)</SelectItem>
+                <SelectItem value="atrasos">Com entregas atrasadas</SelectItem>
+              </SelectContent>
+            </Select>
             <div className="ml-auto text-xs text-muted-foreground">
               <strong className="tabular-nums text-foreground">{sorted.length}</strong> de{" "}
               <span className="tabular-nums">{scores.length}</span> contas
@@ -186,7 +225,9 @@ export function GrowthContasPage() {
                     <SortHead label="Estágio" k="stage" sort={sort} onSort={onSort} />
                     <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Alerta</TableHead>
                     <SortHead label="MRR" k="mrr" sort={sort} onSort={onSort} align="right" />
-                    <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Squad / GC</TableHead>
+                    <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Execução</TableHead>
+                    <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Atrasos</TableHead>
+                    <TableHead className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Squad</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -216,14 +257,9 @@ export function GrowthContasPage() {
                           </span>
                         )}
                       </TableCell>
-                      <TableCell>
-                        <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-                          {s.squad ?? "—"}{s.responsavel ? ` · ${s.responsavel}` : ""}
-                          {!s.responsavel && (
-                            <Caveat text="GC responsável vazio no espelho — lacuna de dado conhecida (relatório de churn 20/07)." />
-                          )}
-                        </span>
-                      </TableCell>
+                      <TableCell><ExecBadge score={s.exec_score} inativo={s.clickup_inativo} /></TableCell>
+                      <TableCell><AtrasosBadge n={s.atrasadas} execScore={s.exec_score} inativo={s.clickup_inativo} /></TableCell>
+                      <TableCell><span className="text-xs text-muted-foreground">{s.squad ?? "—"}</span></TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -306,13 +342,8 @@ function ContaSheet({ score, onClose }: { score: Score | null; onClose: () => vo
                   </div>
                 </div>
                 <div className="rounded-xl border border-border p-3">
-                  <div className="text-xs uppercase tracking-wide text-muted-foreground">Squad / GC</div>
-                  <div className="mt-0.5 flex items-center gap-1 text-sm font-medium">
-                    {score.squad ?? "—"}{score.responsavel ? ` · ${score.responsavel}` : ""}
-                    {!score.responsavel && (
-                      <Caveat text="GC responsável vazio no espelho — lacuna de dado conhecida." />
-                    )}
-                  </div>
+                  <div className="text-xs uppercase tracking-wide text-muted-foreground">Squad</div>
+                  <div className="mt-0.5 text-sm font-medium">{score.squad ?? "—"}</div>
                 </div>
               </div>
 

@@ -37,6 +37,8 @@ export interface Score {
   reasons: ScoreReason[];
   squad: string | null;
   responsavel: string | null;
+  atrasadas: number | null;
+  clickup_inativo: string | null;
 }
 
 export interface ScoresKpis {

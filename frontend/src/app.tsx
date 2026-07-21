@@ -11,13 +11,16 @@ import { GrowthCancelamentosPage } from "@/pages/growth/cancelamentos";
 // o backend só entrega o SPA para as views listadas em spa.py.
 const SPA_GROWTH_VIEWS = ["contas", "alertas", "cancelamentos"] as const;
 
-const NAV: Array<{ href: string; label: string; spa: boolean }> = [
-  { href: "/growth?view=contas", label: "Growth · Contas", spa: true },
-  { href: "/growth?view=alertas", label: "Growth · Alertas", spa: true },
-  { href: "/growth?view=cancelamentos", label: "Growth · Cancelamentos", spa: true },
+// itens SEM o prefixo da área (Otávio 21/07: já estamos dentro dela) —
+// o cabeçalho do grupo diz onde o usuário está
+const NAV: Array<{ href: string; label: string; spa: boolean; grupo?: string }> = [
+  { href: "/growth?view=contas", label: "Contas", spa: true, grupo: "Growth / Assessoria" },
+  { href: "/growth?view=alertas", label: "Alertas", spa: true },
+  { href: "/growth?view=cancelamentos", label: "Cancelamentos", spa: true },
   { href: "/growth?view=carga", label: "Análise dos Squads", spa: false },
+  { href: "/growth?view=playbooks", label: "Playbooks", spa: false },
   { href: "/growth?view=relatorios", label: "Relatórios", spa: false },
-  { href: "/app", label: "Biblioteca (vitrine)", spa: true },
+  { href: "/app", label: "Biblioteca (vitrine)", spa: true, grupo: "Redesenho" },
 ];
 
 function GrowthRouter() {
@@ -42,17 +45,25 @@ function Shell({ children }: { children: React.ReactNode }) {
         <nav className="flex flex-1 flex-col gap-1">
           {NAV.map((n) => {
             const ativa = n.spa && (n.href === atual || (n.href === "/app" && window.location.pathname === "/app"));
+            const cab = n.grupo ? (
+              <div key={`g-${n.grupo}`} className="mb-1 mt-4 px-3 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/70 first:mt-0">
+                {n.grupo}
+              </div>
+            ) : null;
             // âncora comum de propósito: views não-migradas precisam de request
             // ao servidor (HTML antigo); as migradas também funcionam via full
             // load — simplicidade > SPA-navigation no Lote 1
             return (
-              <a key={n.href} href={n.href}
+              <span key={n.href} className="contents">
+              {cab}
+              <a href={n.href}
                 className={`rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
                   ativa ? "bg-primary/10 text-primary"
                     : "text-muted-foreground hover:bg-muted hover:text-foreground"
                 }`}>
                 {n.label}{!n.spa && <span className="ml-1 text-[10px] text-muted-foreground/60">(HTML)</span>}
               </a>
+              </span>
             );
           })}
           <a href="/" className="rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground">

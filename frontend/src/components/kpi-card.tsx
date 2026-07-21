@@ -32,7 +32,7 @@ export function KpiCard({ title, value, subtitle, icon: Icon, tone = "primary", 
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          <span className="truncate">{title}</span>
+          <span className="min-w-0 whitespace-normal leading-tight">{title}</span>
           {caveat && <Caveat text={caveat} />}
         </div>
         <div className="mt-1 font-display text-3xl font-bold tabular-nums leading-tight text-foreground">

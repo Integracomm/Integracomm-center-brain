@@ -1,4 +1,6 @@
 import { useMemo, useState } from "react";
+import { TimeSeries } from "@/components/charts/time-series";
+import { formatBRL, formatDatePtBR } from "@/lib/format";
 import { AlertOctagon, BellRing, Flame, Search, ShieldAlert } from "lucide-react";
 import { useApi } from "@/hooks/use-api";
 import { LoadingSkeleton, ErrorState, EmptyState } from "@/components/states";
@@ -10,7 +12,6 @@ import {
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
-import { formatDatePtBR } from "@/lib/format";
 import { RiskBadge, SeverityBadge, stageLabels } from "@/components/growth-badges";
 import type { Alert, AlertsEnvelope, Severity } from "@/types/api";
 
@@ -21,6 +22,7 @@ export function GrowthAlertasPage() {
   const q = useApi<AlertsEnvelope & { kpis: { total: number; critico: number; alto: number; atencao: number } }>("/api/alerts");
   const [search, setSearch] = useState("");
   const [sev, setSev] = useState<"todos" | Severity>("todos");
+  const [modeloAberto, setModeloAberto] = useState(false);
 
   const alerts = q.data?.alerts ?? [];
   const filtered = useMemo(() => {
@@ -37,7 +39,7 @@ export function GrowthAlertasPage() {
   return (
     <div className="space-y-6">
       <header>
-        <h1 className="font-display text-2xl font-bold tracking-tight">Growth · Alertas</h1>
+        <h1 className="font-display text-2xl font-bold tracking-tight">Alertas</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Fila de alertas abertos, do mais grave para o mais recente — a última nota do caso vem junto.
         </p>
@@ -115,8 +117,99 @@ export function GrowthAlertasPage() {
             Notas iniciadas com <b>[auto]</b> foram detectadas pelo agente no WhatsApp (confirmadas semanticamente) —
             conteúdo gerado automaticamente, não por um gestor.
           </p>
+
+          {/* Consulta eventual (Otávio 21/07): colapsado para não poluir o
+              dia a dia — os dados só são buscados quando a seção abre. */}
+          <details className="rounded-xl border border-border bg-card"
+            onToggle={(e) => setModeloAberto((e.target as HTMLDetailsElement).open)}>
+            <summary className="cursor-pointer p-4 text-sm font-medium text-foreground">
+              Precisão do modelo e evolução do risco da carteira
+              <span className="ml-2 text-xs font-normal text-muted-foreground">
+                consulta eventual — abre sob demanda
+              </span>
+            </summary>
+            <div className="border-t border-border p-4">
+              {modeloAberto && <ModeloSection />}
+            </div>
+          </details>
         </>
       )}
+    </div>
+  );
+}
+
+
+// ---- Precisão do modelo + risco da carteira (dados de /api/growth/modelo —
+// mesmos _modelo_precisao e grw_risk_snapshot da tela HTML) ----
+interface ModeloPayload {
+  modelo: {
+    alertadas: number; com_desf: number; cancel: number; retidas: number;
+    negoc: number; retidas_int: number; crit_cancel: number; crit_desf: number;
+    mrr_salvo: number;
+  } | null;
+  risco: Array<{ dia: string; criticos: number; altos: number; atencao: number; mrr_risco: number }>;
+}
+
+function ModeloSection() {
+  const q = useApi<ModeloPayload>("/api/growth/modelo");
+  if (q.loading) return <LoadingSkeleton rows={2} />;
+  if (q.error) return <ErrorState message={q.error} onRetry={q.refetch} />;
+  const m = q.data?.modelo;
+  const risco = q.data?.risco ?? [];
+  return (
+    <div className="space-y-6">
+      {m ? (
+        <div>
+          <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Precisão do modelo — previsões × desfechos registrados
+          </div>
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+            {[
+              ["Contas alertadas", m.alertadas, null],
+              ["Com desfecho registrado", m.com_desf, "registre desfechos na aba Contas — é o que alimenta esta medição"],
+              ["Cancelaram (o alerta acertou)", m.cancel, null],
+              ["Retidas COM intervenção", m.retidas_int, "o melhor resultado: alerta + ação + cliente ficou"],
+              ["Retidas no total", m.retidas, null],
+              ["Em negociação", m.negoc, null],
+              ["Críticos com desfecho", m.crit_desf, `${m.crit_cancel} cancelaram`],
+              ["MRR salvo (retidas)", formatBRL(m.mrr_salvo), null],
+            ].map(([rot, val, nota]) => (
+              <div key={String(rot)} className="rounded-lg border border-border p-3">
+                <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{rot}</div>
+                <div className="mt-0.5 font-display text-xl font-bold tabular-nums">{val as React.ReactNode}</div>
+                {nota && <div className="mt-1 text-[11px] leading-snug text-muted-foreground">{nota}</div>}
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <p className="text-sm text-muted-foreground">Sem medição ainda — registre desfechos na aba Contas.</p>
+      )}
+      <div>
+        <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Evolução do risco da carteira — 1 snapshot por dia
+        </div>
+        {risco.length >= 2 ? (
+          <TimeSeries
+            height={220}
+            data={risco}
+            xKey="dia"
+            series={[
+              { key: "criticos", label: "Críticos", color: "var(--destructive)" },
+              { key: "altos", label: "Altos", color: "var(--warning)" },
+              { key: "atencao", label: "Atenção", color: "var(--chart-3)" },
+              { key: "mrr_risco", label: "MRR em risco", color: "var(--chart-2)", yAxis: "right",
+                dashed: true, valueFormatter: (v) => formatBRL(v) },
+            ]}
+            rightTickFormatter={(v) => formatBRL(v, { compact: true })}
+          />
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            Série iniciada agora ({risco.length} snapshot) — em poucas semanas este quadro responde se as
+            intervenções estão reduzindo o risco da carteira.
+          </p>
+        )}
+      </div>
     </div>
   );
 }

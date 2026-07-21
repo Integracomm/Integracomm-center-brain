@@ -61,3 +61,34 @@ export function TrajectoryIcon({ t }: { t: string }) {
     </span>
   );
 }
+
+// Execução (ClickUp): mesmas faixas da tela HTML — >=70 em dia · 40-69 atenção
+// · <40 crítica. Cliente pausado/concluído ganha selo próprio (não é atraso).
+export function ExecBadge({ score, inativo }: { score: number | null; inativo: string | null }) {
+  if (inativo) {
+    const rot = inativo.includes("pausada") ? "pausado" : "concluído";
+    return <Badge className="border-0 bg-muted font-medium text-muted-foreground"
+      title={`cliente ${inativo} no ClickUp — serviço suspenso`}>{rot}</Badge>;
+  }
+  if (score == null) return <span className="text-xs text-muted-foreground">—</span>;
+  const [cls, rot] = score >= 70
+    ? ["bg-success/15 text-success", "em dia"]
+    : score >= 40
+      ? ["bg-warning/15 text-warning", "atenção"]
+      : ["bg-destructive/15 text-destructive", "crítica"];
+  return <Badge className={cn("border-0 font-medium tabular-nums", cls)}>{score.toFixed(0)} · {rot}</Badge>;
+}
+
+// Atrasos: entregas ABERTAS com vencimento estourado (regra da Análise dos
+// Squads — pausados não contam e aparecem no ExecBadge).
+export function AtrasosBadge({ n, execScore, inativo }: {
+  n: number | null; execScore: number | null; inativo: string | null;
+}) {
+  if (inativo) return <span className="text-xs text-muted-foreground">—</span>;
+  if (n == null || execScore == null) return <span className="text-xs text-muted-foreground">—</span>;
+  if (n > 0) {
+    return <Badge className="border-0 bg-destructive/15 font-medium tabular-nums text-destructive"
+      title="entregas abertas com vencimento estourado — nomes e responsáveis no relatório da conta">{n} atrasada(s)</Badge>;
+  }
+  return <Badge className="border-0 bg-success/15 font-medium text-success">em dia</Badge>;
+}

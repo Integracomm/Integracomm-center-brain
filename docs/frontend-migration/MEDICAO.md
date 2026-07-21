@@ -64,3 +64,17 @@ Base para reextrapolar os lotes 2–6 com dado real.
   humana. O gargalo real do calendário passa a ser (b) validação + operação
   diária, não (a) execução. Proposta: 1 lote por dia útil nos dias de operação
   normal → migração completa em ~1 semana de calendário.
+
+## Rodada de ajustes do Lote 1 (feedback do Otávio, 21/07)
+
+- **Execução: ~25 min** · ciclos de correção: 1 (heredoc do shell, trocado por
+  script — sem impacto no código). Itens: títulos sem prefixo da área (nav com
+  cabeçalho de grupo); KPI cards sem corte; legendas completas nas barras de
+  plano/equipe (largura 235); Contas com colunas Execução/Atrasos (campos novos
+  `atrasadas`/`clickup_inativo` no /api/scores, mesmas regras dos chips HTML,
+  pausados sinalizados), coluna Squad sem GC, filtros de squad/plano(B1-B5)/
+  execução; Alertas com "Precisão do modelo + evolução do risco" em `<details>`
+  colapsado com fetch sob demanda (endpoint novo /api/growth/modelo reusando
+  _modelo_precisao + grw_risk_snapshot).
+- Lição p/ extrapolação: a rodada de ajustes custa na ordem do próprio lote —
+  manter nos planos 1 rodada por lote.

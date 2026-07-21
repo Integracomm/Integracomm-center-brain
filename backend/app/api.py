@@ -429,10 +429,26 @@ def api_scores(request: Request):
     except Exception:  # noqa: BLE001 — sem espelho, resolve só pelo nome
         _mirror = None
     from .sources.nps_sheets import norm_account as _norm
+    # atrasos por conta: MESMAS regras dos chips da tela HTML (vencidas no
+    # ClickUp; cliente pausado/concluído não conta e vem sinalizado)
+    try:
+        from .sources.clickup_activities import (_overdue_from_clickup as _atr,
+                                                 client_inactive_status as _inat)
+        _agora = dt.datetime.now(dt.timezone.utc)
+    except Exception:  # noqa: BLE001
+        _atr = None
     for s in scores:
         s["squad"] = _resolve_squad(s["name"], _mirror)
         gc = ((_mirror or {}).get(_norm(s["name"])) or {}).get("gerente_de_contas")
         s["responsavel"] = (gc or "").strip() or None  # lacuna conhecida: GC vazio no espelho
+        s["clickup_inativo"] = None
+        s["atrasadas"] = None
+        if _atr is not None:
+            try:
+                s["clickup_inativo"] = _inat(s["name"])
+                s["atrasadas"] = 0 if s["clickup_inativo"] else len(_atr(s["name"], _agora) or [])
+            except Exception:  # noqa: BLE001 — conta sem match não derruba o payload
+                pass
     # base do 'MRR em risco' = contas COM ALERTA ABERTO (mesma régua do
     # _report_from/cockpit — o spec do protótipo usava faixa alto|médio;
     # divergência registrada em PENDENCIAS.md p/ decisão do Otávio)
@@ -762,6 +778,24 @@ def _modelo_precisao(conn: Any) -> dict | None:
                 "mrr_salvo": float(mrr_salvo or 0)}
     except Exception:  # noqa: BLE001 — medição nunca derruba a aba
         return None
+
+
+@app.get("/api/growth/modelo")
+def api_growth_modelo(request: Request):
+    """Precisão do modelo + série do risco da carteira (redesenho, ajuste do
+    Lote 1 — Otávio 21/07: campos de consulta eventual, fora do dia a dia).
+    Reusa _modelo_precisao e a MESMA tabela grw_risk_snapshot da tela HTML."""
+    _require_api(request)
+    with _conn() as c:
+        grava_snapshot_risco(c)
+        modelo = _modelo_precisao(c)
+        with c.cursor() as cur:
+            cur.execute("""SELECT dia, criticos, altos, atencao, mrr_risco
+                             FROM grw_risk_snapshot ORDER BY dia DESC LIMIT 14""")
+            risco = [{"dia": d.strftime("%d/%m"), "criticos": cr, "altos": al,
+                      "atencao": at, "mrr_risco": float(m or 0)}
+                     for d, cr, al, at, m in cur.fetchall()[::-1]]
+    return {"modelo": modelo, "risco": risco}
 
 
 def _modelo_html(m: dict | None) -> str:
