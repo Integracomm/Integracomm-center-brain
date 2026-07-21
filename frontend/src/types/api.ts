@@ -122,3 +122,63 @@ export interface CancelamentosPayload {
   por_plano: Array<{ nome: string; saidas: number; mrr_perdido: number; tempo_casa_mediano: number | null }>;
   por_equipe: Array<{ nome: string; saidas: number; mrr_perdido: number; tempo_casa_mediano: number | null }>;
 }
+
+
+// ---- Lote 2: /api/prevendas ----
+export interface PrevendasPayload {
+  periodo: { ini: string; fim: string };
+  funil: {
+    etapas: Array<{ key: string; label: string; volume: number; conversao_da_anterior_pct: number | null }>;
+    conversao_total_pct: number | null;
+    receita_bookings: number | null;
+  };
+  kpis: {
+    leads: number; sql: number; taxa_lead_sql_pct: number | null;
+    speed_mediano_min: number | null; pct_15min: number | null;
+    p75_min: number | null; sem_contato: number;
+  };
+  dias: Array<{ dia: number; dia_label: string; leads: number; agendaram: number;
+    taxa_pct: number | null; best: boolean; worst: boolean }>;
+  origens: Array<{ origem: string; leads: number; reunioes: number; taxa_pct: number; amostra_pequena: boolean }>;
+  desq: Array<{ motivo: string; deals: number }>;
+  sem_motivo_desq: number;
+  velocidade: {
+    faixas: Array<{ faixa: string; ordem: string; leads: number; agendaram: number; taxa_pct: number | null }>;
+    razao_15min_vs_24h: number | null;
+  };
+  tipos_contato: Array<{ tipo: string; leads: number; agendaram: number; taxa_pct: number | null }>;
+  por_responsavel: Array<{ nome: string; leads: number; mediana_min: number; pct_15min: number }>;
+  por_origem_speed: Array<{ nome: string; leads: number; mediana_min: number; pct_15min: number }>;
+  tem_first_touch: boolean;
+}
+
+// ---- Lote 2: /api/vendas/winloss ----
+export interface WinLossPayload {
+  periodo: { ini: string; fim: string };
+  kpis: { deals_perdidos: number; mrr_perdido: number; motivo_top: string | null };
+  motivos_perda: Array<{ motivo: string; deals: number; mrr_perdido: number | null }>;
+  sem_motivo: number;
+  por_bundle: Array<{ bundle: string; perdas: number; mrr_perdido: number;
+    motivos: Array<{ motivo: string; deals: number; mrr: number | null; pct: number }>;
+    outros_motivos: number }>;
+  heatmap_motivo_x_origem: { rows: string[]; cols: string[];
+    cells: Array<{ row: string; col: string; value: number | null; n?: number; amostra_pequena?: boolean }>; unit: string };
+  heatmap_motivo_x_closer: { rows: string[]; cols: string[];
+    cells: Array<{ row: string; col: string; value: number | null; n?: number; amostra_pequena?: boolean }>; unit: string };
+  evolucao: { meses: string[]; series: Array<{ motivo: string; valores: number[] }> };
+  diagnostico: { motivo: string; deals: number; leitura: string;
+    concentracao: string | null; fonte: string } | null;
+}
+
+// ---- Lote 2: /api/prevendas/horarios ----
+export interface HorariosPayload {
+  periodo: { ini: string; fim: string; bundle: string };
+  total: number;
+  celulas: Array<{ dow: number; hora: number; n: number }>;
+  celulas_taxa: Array<{ dow: number; hora: number; n: number }>;
+  ligacoes: Array<{ dow: number; hora: number; n: number }>;
+  taxa_ini: string | null;
+  por_bundle: Record<string, Array<{ dow: number; hora: number; n: number }>>;
+  por_origem: Record<string, Array<{ dow: number; hora: number; n: number }>>;
+  por_colab: Record<string, Array<{ hora: number; n: number }>>;
+}

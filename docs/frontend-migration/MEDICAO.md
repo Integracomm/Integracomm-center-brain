@@ -89,3 +89,27 @@ Base para reextrapolar os lotes 2–6 com dado real.
   GERAL primeiro e destacado (B1 segue na tabela — nenhum dado some),
   comparativo novos×antigos de volta na Evolução (campos saidas_novos/antigos
   no payload, MESMA régua _canc_legado do HTML), paginação em Alertas (25/pág).
+
+## Lote 2 — Pré-vendas (Qualificação+Speed), Melhor Horário, Win/Loss
+
+- **Início:** 21/07 10:41 · **fim:** ~12:0x · **execução efetiva: ~45 min**
+  (inclui o deploy dos Lotes 0-1 em paralelo e a leitura dos ~600 linhas de
+  compute das telas HTML de sales/ui.py — a extração é o custo dominante).
+- **Entregue:** `app/sales/dados.py` (pv_dados + winloss_dados — transcrição
+  fiel das queries; funil REUSA _funil_oficial do Marketing); /api/prevendas,
+  /api/vendas/winloss, /api/prevendas/horarios (embrulha o _horarios_calc que
+  JÁ era puro); chaveamento por view em /prevendas e /vendas; 3 telas React
+  (PV = funil+speed numa página, conforme o desenho do lote; Melhor Horário
+  com 2 heatmaps dia×hora + grades origem×hora e colaborador×hora; Win/Loss
+  com Pareto + cards por bundle + heatmaps motivo×origem e motivo×closer);
+  extensão aprovável na biblioteca: Heatmap.rowScale (escala por linha, padrão
+  das grades da tela antiga). Honestidade: win rate NÃO entrou no Win/Loss —
+  a tela HTML não o calcula e inventar régua violaria a regra (vem no Lote 3
+  com a régua do Funil de Fechamento).
+- **Ciclos de correção: 1** (leftover de código morto na página de horários).
+- **Paridade: 10/10** (3 probes iniciais "divergentes" eram formato do próprio
+  check — separador de milhar; números batiam).
+- **Validação:** 6 rotas conferidas (3 SPA + ponte/funil de vendas seguem
+  HTML), 3 endpoints 200 (1,8-3,6s), 2 telas conferidas no navegador com
+  dados reais; 56 testes ok.
+- **Interrupção operacional:** 0.

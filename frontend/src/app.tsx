@@ -4,6 +4,9 @@ import { BibliotecaPage } from "@/pages/biblioteca";
 import { GrowthContasPage } from "@/pages/growth/contas";
 import { GrowthAlertasPage } from "@/pages/growth/alertas";
 import { GrowthCancelamentosPage } from "@/pages/growth/cancelamentos";
+import { PrevendasPage } from "@/pages/prevendas";
+import { MelhorHorarioPage } from "@/pages/prevendas/melhor-horario";
+import { VendasWinLossPage } from "@/pages/vendas/winloss";
 
 // A aplicação atual navega por QUERY (?view=) dentro de cada área — o SPA
 // respeita as MESMAS URLs (favoritos/links continuam valendo). Views ainda
@@ -20,8 +23,26 @@ const NAV: Array<{ href: string; label: string; spa: boolean; grupo?: string }> 
   { href: "/growth?view=carga", label: "Análise dos Squads", spa: false },
   { href: "/growth?view=playbooks", label: "Playbooks", spa: false },
   { href: "/growth?view=relatorios", label: "Relatórios", spa: false },
+  { href: "/prevendas?view=funil", label: "Qualificação & Speed", spa: true, grupo: "Pré-vendas" },
+  { href: "/prevendas?view=horarios", label: "Melhor Horário", spa: true },
+  { href: "/prevendas?view=ponte", label: "Ponte PV → Vendas", spa: false },
+  { href: "/prevendas?view=sdrs", label: "Desempenho Individual", spa: false },
+  { href: "/vendas?view=winloss", label: "Win/Loss", spa: true, grupo: "Vendas" },
+  { href: "/vendas?view=funil", label: "Funil de Fechamento", spa: false },
+  { href: "/vendas?view=forecast", label: "Performance & Meta", spa: false },
   { href: "/app", label: "Biblioteca (vitrine)", spa: true, grupo: "Redesenho" },
 ];
+
+function PrevendasRouter() {
+  const [params] = useSearchParams();
+  const view = params.get("view") ?? "funil";
+  if (view === "horarios") return <MelhorHorarioPage />;
+  return <PrevendasPage />; // funil e speed viraram UMA página no redesenho
+}
+
+function VendasRouter() {
+  return <VendasWinLossPage />; // única view migrada da área até o Lote 3
+}
 
 function GrowthRouter() {
   const [params] = useSearchParams();
@@ -85,6 +106,8 @@ export function App() {
     <Shell>
       <Routes>
         <Route path="/growth" element={<GrowthRouter />} />
+        <Route path="/prevendas" element={<PrevendasRouter />} />
+        <Route path="/vendas" element={<VendasRouter />} />
         <Route path="/app" element={<BibliotecaPage />} />
         <Route path="*" element={<BibliotecaPage />} />
       </Routes>

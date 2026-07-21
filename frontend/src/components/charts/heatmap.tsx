@@ -27,6 +27,10 @@ export interface HeatmapProps {
   legendLabel?: string;
   // Largura mínima da coluna de rótulos das linhas.
   rowLabelWidth?: number;
+  // Intensidade normalizada POR LINHA (compara o padrão de cada linha,
+  // independente do volume) + contorno no pico da linha. Usado nas grades
+  // colaborador×hora / origem×hora (Lote 2).
+  rowScale?: boolean;
 }
 
 // Cruzamento de duas dimensões (motivo × bundle, canal × plano etc.).
@@ -44,6 +48,7 @@ export function Heatmap({
   tooltipLabel,
   legendLabel,
   rowLabelWidth = 160,
+  rowScale = false,
 }: HeatmapProps) {
   const { lookup, min, max } = useMemo(() => {
     const lookup = new Map<string, HeatmapCell>();
@@ -64,6 +69,20 @@ export function Heatmap({
   const alphaFor = (v: number) => {
     const t = Math.max(0, Math.min(1, (v - min) / (max - min)));
     return 0.1 + t * 0.8; // 10% → 90%
+  };
+  // por linha: max da própria linha (rowScale)
+  const rowMax = useMemo(() => {
+    const m = new Map<string, number>();
+    if (rowScale) {
+      for (const c of cells) {
+        if (c.value != null) m.set(c.row, Math.max(m.get(c.row) ?? 0, c.value));
+      }
+    }
+    return m;
+  }, [cells, rowScale]);
+  const alphaRow = (row: string, v: number) => {
+    const mx = rowMax.get(row) || 1;
+    return 0.1 + Math.max(0, Math.min(1, v / mx)) * 0.8;
   };
 
   return (
@@ -102,10 +121,12 @@ export function Heatmap({
                   const cell = lookup.get(`${row}||${col}`);
                   const v = cell?.value ?? null;
                   const small = cell?.amostra_pequena;
+                  const alpha = v == null ? 0 : (rowScale ? alphaRow(row, v) : alphaFor(v));
+                  const pico = rowScale && v != null && v === (rowMax.get(row) ?? -1) && v > 0;
                   const bg =
                     v == null
                       ? "var(--muted)"
-                      : `color-mix(in oklab, ${color} ${Math.round(alphaFor(v) * 100)}%, transparent)`;
+                      : `color-mix(in oklab, ${color} ${Math.round(alpha * 100)}%, transparent)`;
                   const tooltipText =
                     tooltipLabel && cell
                       ? tooltipLabel(cell)
@@ -119,6 +140,7 @@ export function Heatmap({
                           className="relative h-10 rounded-md flex items-center justify-center text-xs font-medium tabular-nums cursor-default border border-border/40"
                           style={{
                             background: bg,
+                            boxShadow: pico ? `inset 0 0 0 1.5px ${color}` : undefined,
                             backgroundImage: small
                               ? "repeating-linear-gradient(45deg, transparent 0 4px, color-mix(in oklab, var(--foreground) 22%, transparent) 4px 5px)"
                               : undefined,

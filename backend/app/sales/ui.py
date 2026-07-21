@@ -2100,6 +2100,10 @@ def prevendas(request: Request, view: str = Query("funil")):
     user, _role = s
     if view not in {v for v, _ in _PV_VIEWS}:
         view = "funil"
+    from .. import spa as _spa_mod  # redesenho: view migrada entrega o SPA
+    _r = _spa_mod.view_response(request, "prevendas", view)
+    if _r is not None:
+        return _r
     # mesmo serve-stale do Marketing (15/07): funil sempre a ≤10min do Pipedrive
     from ..marketing.ui import _kick_deals_sync
     _kick_deals_sync()
@@ -2125,6 +2129,10 @@ def vendas(request: Request, view: str = Query("funil")):
     user, _role = s
     if view not in {v for v, _ in _VD_VIEWS}:
         view = "funil"
+    from .. import spa as _spa_mod  # redesenho: view migrada entrega o SPA
+    _r = _spa_mod.view_response(request, "vendas", view)
+    if _r is not None:
+        return _r
     # mesmo serve-stale do Marketing (15/07): funil sempre a ≤10min do Pipedrive
     from ..marketing.ui import _kick_deals_sync
     _kick_deals_sync()
@@ -2139,3 +2147,63 @@ def vendas(request: Request, view: str = Query("funil")):
                           "recarregue para ver o fresco); mudanças de etapa a cada hora. "
                           "A decisão é sempre do gestor — o especialista sinaliza.</p>")
     return HTMLResponse(_shell(A, "vendas", _VD_VIEWS, view, content, user))
+
+
+# ---------------------------------------------------------------------------
+# Endpoints JSON do redesenho (Lote 2, 21/07) — embrulham sales/dados.py e
+# _horarios_calc (que já era puro). Auth = mesma sessão das páginas.
+# ---------------------------------------------------------------------------
+@router.get("/api/prevendas")
+def api_prevendas(request: Request, ini: str = Query(""), fim: str = Query("")):
+    A = _deps()
+    A._require_api(request)
+    from .dados import pv_dados
+    hoje = dt.date.today()
+    try:
+        i = dt.date.fromisoformat(ini) if ini else hoje.replace(day=1)
+        f = dt.date.fromisoformat(fim) if fim else hoje
+    except ValueError:
+        i, f = hoje.replace(day=1), hoje
+    from ..marketing.ui import _kick_deals_sync
+    _kick_deals_sync()
+    with A._conn() as c:
+        _ensure_touch(c)
+        return pv_dados(c, i, f)
+
+
+@router.get("/api/prevendas/horarios")
+def api_pv_horarios(request: Request):
+    A = _deps()
+    A._require_api(request)
+    ini, fim, bundle = _horarios_periodo(request)
+    with A._conn() as c:
+        dados = _horarios_calc(c, ini, fim, bundle)
+    # tuplas (dow,h) não serializam como chave JSON — achatar em listas
+    def cel(d):
+        return [{"dow": k[0], "hora": k[1], "n": v} for k, v in d.items()]
+    return {"periodo": {"ini": ini.isoformat(), "fim": fim.isoformat(), "bundle": bundle},
+            "total": dados["total"],
+            "celulas": cel(dados["celulas"]),
+            "celulas_taxa": cel(dados["celulas_taxa"]),
+            "ligacoes": cel(dados["ligacoes"]),
+            "taxa_ini": (dados["taxa_ini"].astimezone(dt.timezone(dt.timedelta(hours=-3))).date().isoformat()
+                          if dados["taxa_ini"] else None),
+            "por_bundle": {k: cel(v) for k, v in dados["por_bundle"].items()},
+            "por_origem": {k: cel(v) for k, v in dados["por_origem"].items()},
+            "por_colab": {k: [{"hora": h, "n": n} for h, n in v.items()]
+                           for k, v in dados["por_colab"].items()}}
+
+
+@router.get("/api/vendas/winloss")
+def api_vd_winloss(request: Request, ini: str = Query(""), fim: str = Query("")):
+    A = _deps()
+    A._require_api(request)
+    from .dados import winloss_dados
+    hoje = dt.date.today()
+    try:
+        i = dt.date.fromisoformat(ini) if ini else hoje.replace(day=1)
+        f = dt.date.fromisoformat(fim) if fim else hoje
+    except ValueError:
+        i, f = hoje.replace(day=1), hoje
+    with A._conn() as c:
+        return winloss_dados(c, i, f)
