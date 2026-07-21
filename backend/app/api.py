@@ -4162,3 +4162,9 @@ app.include_router(_financeiro_router)
 app.include_router(_allhands_router)
 app.include_router(_raiox_router)
 app.include_router(_semana_router)
+
+# frontend React (migração rota a rota — ver app/spa.py); registrado por
+# ÚLTIMO para nunca sombrear rotas existentes: só atende /app + SPA_ROUTES
+from . import spa as _spa  # noqa: E402
+
+_spa.install(app)
