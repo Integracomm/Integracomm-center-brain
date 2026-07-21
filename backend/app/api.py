@@ -780,6 +780,17 @@ def _modelo_precisao(conn: Any) -> dict | None:
         return None
 
 
+@app.get("/api/help")
+def api_help(request: Request):
+    """Textos dos ⓘ 'como ler este campo' — fonte ÚNICA (help_texts.py),
+    compartilhada entre o HTML e o SPA (regra do produto: todo campo nasce
+    com help; feedback Otávio 21/07 — os ⓘ tinham sumido nas telas novas)."""
+    _require_api(request)
+    from .help_texts import HELP
+    return {area: [{"titulo": t0, "texto": x} for t0, x in entradas]
+            for area, entradas in HELP.items()}
+
+
 @app.get("/api/growth/modelo")
 def api_growth_modelo(request: Request):
     """Precisão do modelo + série do risco da carteira (redesenho, ajuste do

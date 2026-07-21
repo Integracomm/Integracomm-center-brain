@@ -1,6 +1,7 @@
 import { CalendarRange, HelpCircle, TrendingDown, Wallet } from "lucide-react";
 import { useState } from "react";
 import { useApi } from "@/hooks/use-api";
+import { Hint } from "@/components/hint";
 import { LoadingSkeleton, ErrorState } from "@/components/states";
 import { KpiCard } from "@/components/kpi-card";
 import { CaveatChip } from "@/components/caveat";
@@ -43,7 +44,7 @@ export function VendasWinLossPage() {
   return (
     <div className="space-y-6">
       <header>
-        <h1 className="font-display text-2xl font-bold tracking-tight">Win/Loss — Análise de Perdas</h1>
+        <h1 className="font-display inline-flex items-center gap-2 text-2xl font-bold tracking-tight">Win/Loss — Análise de Perdas<Hint area="vendas/winloss" titulo="_intro" /></h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Perdas na fase de Vendas (da reunião em diante), por motivo e valor.
         </p>
@@ -83,7 +84,7 @@ export function VendasWinLossPage() {
             </SectionCard>
           )}
 
-          <SectionCard title="Motivos de perda (Pareto)"
+          <SectionCard hint={<Hint area="vendas/winloss" titulo="Motivos de perda" />} title="Motivos de perda (Pareto)"
             subtitle={`por frequência · ${d.sem_motivo} sem motivo preenchido no período`}>
             {d.motivos_perda.length ? (
               <BarListH
@@ -142,7 +143,7 @@ export function VendasWinLossPage() {
             </SectionCard>
           )}
 
-          <SectionCard title="Principais motivos por bundle"
+          <SectionCard hint={<Hint area="vendas/winloss" titulo="Principais motivos de perda por bundle" />} title="Principais motivos por bundle"
             subtitle="concentrado num bundle = preço/produto · espalhado por todos = abordagem">
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
               {d.por_bundle.map((b) => (
@@ -175,19 +176,19 @@ export function VendasWinLossPage() {
           </SectionCard>
 
           <div className="grid gap-6 xl:grid-cols-2">
-            <SectionCard title="Motivo × origem"
-              subtitle="célula = % das perdas do MOTIVO naquela origem · concentrado numa origem = segmentação do Marketing">
-              <Heatmap rows={d.heatmap_motivo_x_origem.rows} cols={d.heatmap_motivo_x_origem.cols}
-                cells={d.heatmap_motivo_x_origem.cells} valueLabel={(v) => formatPct(v)}
-                legendLabel="% das perdas do motivo" rowLabelWidth={190}
-                tooltipLabel={(c) => `${c.row} × ${c.col}: ${formatPct(c.value ?? 0)} (${c.n} deal(s))${c.amostra_pequena ? " · amostra pequena" : ""}`} />
+            <SectionCard title="Origem × motivo"
+              subtitle="eixos INVERTIDOS a pedido: cada linha é uma origem; célula = % das perdas DELA por motivo — responde 'essa origem perde por quê'">
+              <Heatmap rows={d.heatmap_origem_x_motivo.rows} cols={d.heatmap_origem_x_motivo.cols}
+                cells={d.heatmap_origem_x_motivo.cells} valueLabel={(v) => formatPct(v)}
+                legendLabel="% das perdas da origem" rowLabelWidth={120} dense rowScale
+                tooltipLabel={(c) => `${c.row} × ${(c as { col_full?: string }).col_full ?? c.col}: ${formatPct(c.value ?? 0)} (${c.n} deal(s))${c.amostra_pequena ? " · amostra pequena" : ""}`} />
             </SectionCard>
-            <SectionCard title="Motivo × closer"
-              subtitle="concentrado num closer = treino individual · espalhado = processo">
-              <Heatmap rows={d.heatmap_motivo_x_closer.rows} cols={d.heatmap_motivo_x_closer.cols}
-                cells={d.heatmap_motivo_x_closer.cells} valueLabel={(v) => formatPct(v)}
-                legendLabel="% das perdas do motivo" rowLabelWidth={190}
-                tooltipLabel={(c) => `${c.row} × ${c.col}: ${formatPct(c.value ?? 0)} (${c.n} deal(s))${c.amostra_pequena ? " · amostra pequena" : ""}`} />
+            <SectionCard title="Closer × motivo"
+              subtitle="cada linha é um closer; célula = % das perdas DELE por motivo · concentrado num motivo = treino individual">
+              <Heatmap rows={d.heatmap_closer_x_motivo.rows} cols={d.heatmap_closer_x_motivo.cols}
+                cells={d.heatmap_closer_x_motivo.cells} valueLabel={(v) => formatPct(v)}
+                legendLabel="% das perdas do closer" rowLabelWidth={120} dense rowScale
+                tooltipLabel={(c) => `${c.row} × ${(c as { col_full?: string }).col_full ?? c.col}: ${formatPct(c.value ?? 0)} (${c.n} deal(s))${c.amostra_pequena ? " · amostra pequena" : ""}`} />
             </SectionCard>
           </div>
         </>

@@ -4,6 +4,7 @@ import {
   EyeOff, Search, Users,
 } from "lucide-react";
 import { useApi } from "@/hooks/use-api";
+import { Hint } from "@/components/hint";
 import { LoadingSkeleton, ErrorState, EmptyState } from "@/components/states";
 import { KpiCard } from "@/components/kpi-card";
 import { Caveat, CaveatChip } from "@/components/caveat";
@@ -127,7 +128,7 @@ export function GrowthContasPage() {
   return (
     <div className="space-y-6">
       <header>
-        <h1 className="font-display text-2xl font-bold tracking-tight">Contas</h1>
+        <h1 className="font-display inline-flex items-center gap-2 text-2xl font-bold tracking-tight">Contas<Hint area="growth/contas" titulo="_intro" /></h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Todas as contas monitoradas com score de risco, alerta e MRR em jogo.
         </p>

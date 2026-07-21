@@ -1,6 +1,7 @@
 import { CalendarRange, Clock, PhoneMissed, Target, Timer, Users } from "lucide-react";
 import { useState } from "react";
 import { useApi } from "@/hooks/use-api";
+import { Hint } from "@/components/hint";
 import { LoadingSkeleton, ErrorState } from "@/components/states";
 import { KpiCard } from "@/components/kpi-card";
 import { CaveatChip } from "@/components/caveat";
@@ -42,7 +43,7 @@ export function PrevendasPage() {
   return (
     <div className="space-y-6">
       <header>
-        <h1 className="font-display text-2xl font-bold tracking-tight">Qualificação & Speed-to-Lead</h1>
+        <h1 className="font-display inline-flex items-center gap-2 text-2xl font-bold tracking-tight">Qualificação & Speed-to-Lead<Hint area="prevendas/funil" titulo="_intro" /><Hint area="prevendas/speed" titulo="_intro" /></h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Régua oficial do dashboard do time — os números batem com o Pipedrive. O trabalho de
           Pré-vendas vai do Lead ao SQL; Oportunidade e Booking mostram o destino final.
@@ -78,7 +79,7 @@ export function PrevendasPage() {
               subtitle="fila a zerar — lead não tocado esfria" />
           </div>
 
-          <SectionCard title="Funil completo (Lead → Booking)"
+          <SectionCard hint={<Hint area="prevendas/funil" titulo="Funil completo" />} title="Funil completo (Lead → Booking)"
             subtitle={`régua oficial · conversão total ${d.funil.conversao_total_pct != null ? formatPct(d.funil.conversao_total_pct, 1) : "—"} (vem do payload) · pílula = conversão sobre a etapa anterior`}>
             <Funnel etapas={d.funil.etapas.map((e) => ({
               key: e.key, label: e.label, volume: e.volume,
@@ -87,7 +88,7 @@ export function PrevendasPage() {
           </SectionCard>
 
           <div className="grid gap-6 lg:grid-cols-2">
-            <SectionCard title="Conversão por dia de chegada do lead"
+            <SectionCard hint={<Hint area="prevendas/funil" titulo="Conversão por dia de chegada do lead" />} title="Conversão por dia de chegada do lead"
               subtitle="taxa de agendamento pelo dia em que o lead entrou (coorte) — cor E rótulo marcam melhor/pior">
               <BarListH
                 height={Math.max(200, d.dias.length * 40)}
@@ -107,7 +108,7 @@ export function PrevendasPage() {
               />
             </SectionCard>
 
-            <SectionCard title="Qualidade do lead por origem"
+            <SectionCard hint={<Hint area="prevendas/funil" titulo="Qualidade do lead por origem" />} title="Qualidade do lead por origem"
               subtitle="taxa lead→reunião por canal — realimenta a segmentação do Marketing · mínimo 5 leads">
               <BarListH
                 height={Math.max(200, d.origens.length * 40)}
@@ -128,7 +129,7 @@ export function PrevendasPage() {
           </div>
 
           <div className="grid gap-6 lg:grid-cols-2">
-            <SectionCard title="Velocidade do 1º contato × conversão"
+            <SectionCard hint={<Hint area="prevendas/speed" titulo="Velocidade do 1º contato × conversão" />} title="Velocidade do 1º contato × conversão"
               subtitle="a prova com dado próprio de quanto custa lead esperando (coorte do período)">
               {d.tem_first_touch ? (
                 <>
@@ -166,7 +167,7 @@ export function PrevendasPage() {
               )}
             </SectionCard>
 
-            <SectionCard title="Motivos de desqualificação"
+            <SectionCard hint={<Hint area="prevendas/funil" titulo="Motivos de desqualificação" />} title="Motivos de desqualificação"
               subtitle={`perdidos antes do handoff — Pareto · ${d.sem_motivo_desq} sem motivo preenchido`}>
               {d.desq.length ? (
                 <BarListH
@@ -183,6 +184,46 @@ export function PrevendasPage() {
               )}
             </SectionCard>
           </div>
+
+          <SectionCard title="Evolução mensal (6 meses)"
+            subtitle="taxa lead→SQL (régua oficial; retroativa — meses antigos são mais confiáveis) e mediana do 1º contato ('—' = mês anterior à coleta) · a trajetória, não a foto">
+            <Table>
+              <TableHeader>
+                <TableRow className="bg-muted/40 hover:bg-muted/40">
+                  <TableHead className={thCls}>Mês</TableHead>
+                  <TableHead className={thR}>Leads</TableHead>
+                  <TableHead className={thR}>SQL</TableHead>
+                  <TableHead className={thR}>Lead→SQL</TableHead>
+                  <TableHead className={thR}>Speed (med.)</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {d.evolucao.map((m) => (
+                  <TableRow key={m.mes}>
+                    <TableCell className="font-medium">{m.mes}</TableCell>
+                    <TableCell className="text-right tabular-nums">{m.leads}</TableCell>
+                    <TableCell className="text-right tabular-nums">{m.sql}</TableCell>
+                    <TableCell className="text-right tabular-nums">{m.taxa_pct != null ? formatPct(m.taxa_pct, 1) : "—"}</TableCell>
+                    <TableCell className="text-right tabular-nums">{m.speed_min != null ? `${Math.round(m.speed_min)} min` : "—"}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </SectionCard>
+
+          <SectionCard hint={<Hint area="prevendas/funil" titulo="Diagnóstico do especialista" />}
+            title="Diagnóstico do especialista"
+            subtitle={`${d.diagnostico.persona} · regras determinísticas — hipóteses para investigar, não veredito`}>
+            {d.diagnostico.itens.length ? (
+              <ul className="space-y-2">
+                {d.diagnostico.itens.map((i, ix) => (
+                  <li key={ix} className="border-t border-border pt-2 text-sm leading-relaxed first:border-t-0 first:pt-0">→ {i}</li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-sm text-muted-foreground">Sem sinal forte no período.</p>
+            )}
+          </SectionCard>
 
           <SectionCard title="Abordagem e pessoas"
             subtitle="taxa por tipo de 1º contato (mín. 5 leads) · speed por responsável e por origem (mín. 3 leads)">

@@ -6,11 +6,13 @@ export function SectionCard({
   title,
   subtitle,
   right,
+  hint,
   children,
   className,
 }: {
   title: string;
   subtitle?: string;
+  hint?: React.ReactNode;
   right?: React.ReactNode;
   children: React.ReactNode;
   className?: string;
@@ -23,7 +25,7 @@ export function SectionCard({
     >
       <div className="flex items-start justify-between gap-3 mb-3">
         <div className="min-w-0">
-          <h2 className="font-display text-sm font-semibold">{title}</h2>
+          <h2 className="font-display inline-flex items-center gap-1.5 text-sm font-semibold">{title}{hint}</h2>
           {subtitle && (
             <p className="text-xs text-muted-foreground mt-0.5">{subtitle}</p>
           )}

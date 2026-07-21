@@ -1,6 +1,7 @@
 import { CalendarRange, PhoneCall, Target } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useApi } from "@/hooks/use-api";
+import { Hint } from "@/components/hint";
 import { LoadingSkeleton, ErrorState } from "@/components/states";
 import { KpiCard } from "@/components/kpi-card";
 import { SectionCard } from "@/components/blocks/section-card";
@@ -25,8 +26,7 @@ const thCls = "text-xs font-semibold uppercase tracking-wide text-muted-foregrou
 
 type Cel = { dow: number; hora: number; n: number };
 
-function paraCells(cels: Cel[], dias: number[]): { rows: string[]; cols: string[]; cells: HeatmapCell[] } {
-  const horas = [...new Set(cels.map((c) => c.hora))].sort((a, b) => a - b);
+function paraCells(cels: Cel[], dias: number[], horas: number[]): { rows: string[]; cols: string[]; cells: HeatmapCell[] } {
   const rows = horas.map((h) => `${String(h).padStart(2, "0")}h`);
   const cols = dias.map((d) => DOW[d]);
   const cells: HeatmapCell[] = cels
@@ -70,14 +70,19 @@ export function MelhorHorarioPage() {
     return base;
   }, [d]);
 
-  const agend = useMemo(() => (d ? paraCells(d.celulas, diasAtivos) : null), [d, diasAtivos]);
+  // horas em COMUM entre os dois mapas — mesma linha/altura nos dois lados
+  // (feedback Otávio 21/07: 08h de um lado alinhada com 08h do outro)
+  const horasComuns = useMemo(() => {
+    if (!d) return [] as number[];
+    return [...new Set([...d.celulas, ...d.ligacoes, ...d.celulas_taxa].map((c) => c.hora))].sort((a, b) => a - b);
+  }, [d]);
+  const agend = useMemo(() => (d ? paraCells(d.celulas, diasAtivos, horasComuns) : null), [d, diasAtivos, horasComuns]);
 
   // TAXA: numerador (agend. do trecho coberto) ÷ ligações — células com <5
   // ligações vêm marcadas como amostra pequena (regra do backend preservada)
   const taxa = useMemo(() => {
     if (!d || !d.ligacoes.length) return null;
     const ag = new Map(d.celulas_taxa.map((c) => [`${c.dow}|${c.hora}`, c.n]));
-    const horas = [...new Set([...d.ligacoes, ...d.celulas_taxa].map((c) => c.hora))].sort((a, b) => a - b);
     const cells: HeatmapCell[] = [];
     for (const l of d.ligacoes) {
       if (!diasAtivos.includes(l.dow)) continue;
@@ -87,8 +92,26 @@ export function MelhorHorarioPage() {
         value: Math.round((a / l.n) * 100), n: l.n, amostra_pequena: l.n < 5,
       });
     }
-    return { rows: horas.map((h) => `${String(h).padStart(2, "0")}h`), cols: diasAtivos.map((x) => DOW[x]), cells };
-  }, [d, diasAtivos]);
+    // MESMAS linhas do mapa de agendamentos (horasComuns) — lado a lado alinhado
+    return { rows: horasComuns.map((h) => `${String(h).padStart(2, "0")}h`), cols: diasAtivos.map((x) => DOW[x]), cells };
+  }, [d, diasAtivos, horasComuns]);
+
+  // melhores horários: por AGENDAMENTO (contagem) e por TAXA (só células com
+  // 5+ ligações — a regra de amostra do backend)
+  const topAgend = useMemo(() => {
+    if (!d) return [];
+    return [...d.celulas].sort((a, b) => b.n - a.n).slice(0, 5)
+      .map((c) => ({ rot: `${DOW[c.dow]} ${String(c.hora).padStart(2, "0")}h`, v: `${c.n} agendamento(s)` }));
+  }, [d]);
+  const topTaxa = useMemo(() => {
+    if (!d || !d.ligacoes.length) return [];
+    const ag = new Map(d.celulas_taxa.map((c) => [`${c.dow}|${c.hora}`, c.n]));
+    return d.ligacoes.filter((l) => l.n >= 5)
+      .map((l) => ({ dow: l.dow, hora: l.hora, lig: l.n, tx: ((ag.get(`${l.dow}|${l.hora}`) ?? 0) / l.n) * 100 }))
+      .sort((a, b) => b.tx - a.tx).slice(0, 5)
+      .map((c) => ({ rot: `${DOW[c.dow]} ${String(c.hora).padStart(2, "0")}h`,
+                     v: `${c.tx.toFixed(0)}% (${c.lig} ligações)` }));
+  }, [d]);
 
   const horasComerciais = useMemo(() => Array.from({ length: 14 }, (_, i) => i + 7), []);
   const gOrigem = useMemo(() => (d ? grade(d.por_origem, horasComerciais) : null), [d, horasComerciais]);
@@ -105,7 +128,7 @@ export function MelhorHorarioPage() {
   return (
     <div className="space-y-6">
       <header>
-        <h1 className="font-display text-2xl font-bold tracking-tight">Melhor Horário</h1>
+        <h1 className="font-display inline-flex items-center gap-2 text-2xl font-bold tracking-tight">Melhor Horário<Hint area="prevendas/horarios" titulo="_intro" /></h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Quando as reuniões são agendadas (horário de Brasília) e onde a ligação RENDE mais — por
           dia×hora, origem do lead e bundle.
@@ -143,14 +166,16 @@ export function MelhorHorarioPage() {
           </div>
 
           <div className="grid gap-6 xl:grid-cols-2">
-            <SectionCard title="Agendamentos — hora × dia"
-              subtitle="quanto mais escuro, mais agendamentos naquele dia/hora">
+            <SectionCard hint={<Hint area="prevendas/horarios" titulo="Mapa de calor" />}
+              title="Agendamentos — hora × dia"
+              subtitle="quanto mais escuro, mais agendamentos naquele dia/hora · mesmas linhas do mapa ao lado">
               <Heatmap rows={agend.rows} cols={agend.cols} cells={agend.cells}
                 color="var(--chart-1)" rowLabelWidth={54} legendLabel="agendamentos" />
             </SectionCard>
 
-            <SectionCard title="Taxa de agendamento — hora × dia"
-              subtitle="agendamentos ÷ ligações concluídas · hachura = menos de 5 ligações (amostra pequena) · normaliza mutirões">
+            <SectionCard hint={<Hint area="prevendas/horarios" titulo="Taxa de agendamento por horário" />}
+              title="Taxa de agendamento — hora × dia"
+              subtitle="agendamentos ÷ ligações concluídas · hachura = menos de 5 ligações (amostra pequena) · normaliza mutirões · mesmas linhas do mapa ao lado">
               {taxa && taxa.cells.length ? (
                 <Heatmap rows={taxa.rows} cols={taxa.cols} cells={taxa.cells}
                   color="var(--success)" rowLabelWidth={54}
@@ -164,11 +189,40 @@ export function MelhorHorarioPage() {
             </SectionCard>
           </div>
 
-          <SectionCard title="Padrão por origem do lead — origem × hora"
+          <div className="grid gap-6 lg:grid-cols-2">
+            <SectionCard hint={<Hint area="prevendas/horarios" titulo="Top 5 janelas" />}
+              title="Melhores horários por agendamento"
+              subtitle="as 5 janelas dia+hora com mais agendamentos no período">
+              <ul className="space-y-1.5">
+                {topAgend.map((x, i) => (
+                  <li key={x.rot} className="flex justify-between border-t border-border pt-1.5 text-sm first:border-t-0 first:pt-0">
+                    <span><b>{i + 1}º</b> — {x.rot}</span><span className="tabular-nums text-muted-foreground">{x.v}</span>
+                  </li>
+                ))}
+              </ul>
+            </SectionCard>
+            <SectionCard title="Melhores horários por taxa"
+              subtitle="onde a ligação mais converte — só janelas com 5+ ligações (amostra confiável)">
+              {topTaxa.length ? (
+                <ul className="space-y-1.5">
+                  {topTaxa.map((x, i) => (
+                    <li key={x.rot} className="flex justify-between border-t border-border pt-1.5 text-sm first:border-t-0 first:pt-0">
+                      <span><b>{i + 1}º</b> — {x.rot}</span><span className="tabular-nums text-muted-foreground">{x.v}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-sm text-muted-foreground">Sem janelas com 5+ ligações no período.</p>
+              )}
+            </SectionCard>
+          </div>
+
+          <SectionCard hint={<Hint area="prevendas/horarios" titulo="Melhor horário por origem do lead" />}
+            title="Padrão por origem do lead — origem × hora"
             subtitle="escala POR LINHA (compara o padrão de cada origem, independente do volume) · célula contornada = pico da origem">
             {gOrigem && gOrigem.cells.length ? (
               <Heatmap rows={gOrigem.rows} cols={gOrigem.cols} cells={gOrigem.cells}
-                color="var(--chart-2)" rowScale rowLabelWidth={130} legendLabel="agendamentos" />
+                color="var(--chart-2)" rowScale dense rowLabelWidth={110} legendLabel="agendamentos" />
             ) : (
               <p className="text-sm text-muted-foreground">Sem dados por origem no período.</p>
             )}
@@ -201,7 +255,8 @@ export function MelhorHorarioPage() {
             </div>
           </SectionCard>
 
-          <SectionCard title="Padrão por bundle"
+          <SectionCard hint={<Hint area="prevendas/horarios" titulo="Melhores janelas por bundle" />}
+            title="Padrão por bundle"
             subtitle="a melhor janela pode variar por plano — atenção às amostras pequenas">
             <Table>
               <TableHeader>
@@ -225,7 +280,8 @@ export function MelhorHorarioPage() {
             </Table>
           </SectionCard>
 
-          <SectionCard title="Padrão por colaborador — pessoa × hora"
+          <SectionCard hint={<Hint area="prevendas/horarios" titulo="Agendamentos por colaborador × hora" />}
+            title="Padrão por colaborador — pessoa × hora"
             subtitle="escala POR LINHA · célula contornada = pico da pessoa · * = amostra pequena (<30)">
             <ColabGrade porColab={d.por_colab} horas={horasComerciais} />
           </SectionCard>
@@ -249,7 +305,7 @@ function ColabGrade({ porColab, horas }: {
   if (!cells.length) return <p className="text-sm text-muted-foreground">Sem dados por colaborador.</p>;
   return (
     <Heatmap rows={rows.map((k) => rot(k, porColab[k]))} cols={horas.map((h) => `${h}h`)}
-      cells={cells} color="var(--chart-4)" rowScale rowLabelWidth={140} legendLabel="agendamentos" />
+      cells={cells} color="var(--chart-4)" rowScale dense rowLabelWidth={110} legendLabel="agendamentos" />
   );
 }
 

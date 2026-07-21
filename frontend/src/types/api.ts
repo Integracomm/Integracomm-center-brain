@@ -150,6 +150,8 @@ export interface PrevendasPayload {
   por_responsavel: Array<{ nome: string; leads: number; mediana_min: number; pct_15min: number }>;
   por_origem_speed: Array<{ nome: string; leads: number; mediana_min: number; pct_15min: number }>;
   tem_first_touch: boolean;
+  evolucao: Array<{ mes: string; leads: number; sql: number; taxa_pct: number | null; speed_min: number | null }>;
+  diagnostico: { persona: string; itens: string[] };
 }
 
 // ---- Lote 2: /api/vendas/winloss ----
@@ -161,10 +163,10 @@ export interface WinLossPayload {
   por_bundle: Array<{ bundle: string; perdas: number; mrr_perdido: number;
     motivos: Array<{ motivo: string; deals: number; mrr: number | null; pct: number }>;
     outros_motivos: number }>;
-  heatmap_motivo_x_origem: { rows: string[]; cols: string[];
-    cells: Array<{ row: string; col: string; value: number | null; n?: number; amostra_pequena?: boolean }>; unit: string };
-  heatmap_motivo_x_closer: { rows: string[]; cols: string[];
-    cells: Array<{ row: string; col: string; value: number | null; n?: number; amostra_pequena?: boolean }>; unit: string };
+  heatmap_origem_x_motivo: { rows: string[]; cols: string[];
+    cells: Array<{ row: string; col: string; col_full?: string; value: number | null; n?: number; amostra_pequena?: boolean }>; unit: string };
+  heatmap_closer_x_motivo: { rows: string[]; cols: string[];
+    cells: Array<{ row: string; col: string; col_full?: string; value: number | null; n?: number; amostra_pequena?: boolean }>; unit: string };
   evolucao: { meses: string[]; series: Array<{ motivo: string; valores: number[] }> };
   diagnostico: { motivo: string; deals: number; leitura: string;
     concentracao: string | null; fonte: string } | null;

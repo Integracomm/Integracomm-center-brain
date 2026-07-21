@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { CalendarRange, HeartHandshake, TrendingDown, Undo2, Wallet } from "lucide-react";
 import { useApi } from "@/hooks/use-api";
+import { Hint } from "@/components/hint";
 import { LoadingSkeleton, ErrorState } from "@/components/states";
 import { KpiCard } from "@/components/kpi-card";
 import { CaveatChip } from "@/components/caveat";
@@ -57,7 +58,7 @@ export function GrowthCancelamentosPage() {
   return (
     <div className="space-y-6">
       <header>
-        <h1 className="font-display text-2xl font-bold tracking-tight">Cancelamentos</h1>
+        <h1 className="font-display inline-flex items-center gap-2 text-2xl font-bold tracking-tight">Cancelamentos<Hint area="growth/cancelamentos" titulo="_intro" /></h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Churn realizado (planilhas do time — fonte oficial) + pipeline de retenção.
         </p>
@@ -102,6 +103,7 @@ export function GrowthCancelamentosPage() {
           </div>
 
           <SectionCard
+            hint={<Hint area="growth/cancelamentos" titulo="Taxa de cancelamento por bundle" />}
             title="Taxa de cancelamento por plano"
             subtitle={`saídas/mês ÷ base ATUAL de contas · janela de ${d.taxa_geral.janela_meses} mês(es) · B1 fica fora (semestral, não recorrente) — aparece na tabela completa`}
           >
@@ -155,7 +157,7 @@ export function GrowthCancelamentosPage() {
             </Det>
           </SectionCard>
 
-          <SectionCard title="Evolução mensal"
+          <SectionCard hint={<Hint area="growth/cancelamentos" titulo="Evolução mensal" />} title="Evolução mensal"
             subtitle="saídas por mês — total e separado por planos novos (bundles) × antigos/ADS · MRR perdido no eixo direito">
             <TimeSeries
               height={280}
@@ -198,7 +200,7 @@ export function GrowthCancelamentosPage() {
           </SectionCard>
 
           <div className="grid gap-6 lg:grid-cols-2">
-            <SectionCard title="Motivos (Pareto)"
+            <SectionCard hint={<Hint area="growth/cancelamentos" titulo="Motivos informados" />} title="Motivos (Pareto)"
               subtitle={`onde atacar primeiro · ${d.sem_motivo} saída(s) SEM motivo preenchido no período`}>
               {d.motivos.length ? (
                 <BarListH height={Math.max(240, d.motivos.length * 52)} width={250}
@@ -230,7 +232,7 @@ export function GrowthCancelamentosPage() {
               </Det>
             </SectionCard>
 
-            <SectionCard title="Saídas por plano e por equipe" subtitle="todo o período filtrado — top 8 de cada">
+            <SectionCard hint={<Hint area="growth/cancelamentos" titulo="Por plano e por equipe" />} title="Saídas por plano e por equipe" subtitle="todo o período filtrado — top 8 de cada">
               <div className="grid gap-4">
                 <BarListH height={Math.max(220, Math.min(8, d.por_plano.length) * 44)} width={235}
                   data={d.por_plano.slice(0, 8).map((p) => ({ label: p.nome, value: p.saidas }))}

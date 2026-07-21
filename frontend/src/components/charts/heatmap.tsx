@@ -27,6 +27,9 @@ export interface HeatmapProps {
   legendLabel?: string;
   // Largura mínima da coluna de rótulos das linhas.
   rowLabelWidth?: number;
+  // Denso: muitas colunas (ex.: 14 horas) SEM scroll horizontal — célula
+  // estreita, fonte menor (regra Otávio 21/07: nunca rolar para ver o dado).
+  dense?: boolean;
   // Intensidade normalizada POR LINHA (compara o padrão de cada linha,
   // independente do volume) + contorno no pico da linha. Usado nas grades
   // colaborador×hora / origem×hora (Lote 2).
@@ -49,6 +52,7 @@ export function Heatmap({
   legendLabel,
   rowLabelWidth = 160,
   rowScale = false,
+  dense = false,
 }: HeatmapProps) {
   const { lookup, min, max } = useMemo(() => {
     const lookup = new Map<string, HeatmapCell>();
@@ -87,11 +91,11 @@ export function Heatmap({
 
   return (
     <div className="w-full">
-      <div className="overflow-x-auto">
+      <div className={dense ? "" : "overflow-x-auto"}>
         <div
           className="grid gap-1"
           style={{
-            gridTemplateColumns: `${rowLabelWidth}px repeat(${cols.length}, minmax(72px, 1fr))`,
+            gridTemplateColumns: `${rowLabelWidth}px repeat(${cols.length}, minmax(${dense ? 28 : 72}px, 1fr))`,
           }}
         >
           {/* Header row */}
@@ -99,7 +103,7 @@ export function Heatmap({
           {cols.map((c) => (
             <div
               key={c}
-              className="text-[11px] uppercase tracking-wide text-muted-foreground text-center pb-1"
+              className={`${dense ? "text-[9px]" : "text-[11px]"} uppercase tracking-wide text-muted-foreground text-center pb-1`}
             >
               {c}
             </div>
@@ -137,7 +141,7 @@ export function Heatmap({
                     <Tooltip key={`${row}-${col}`}>
                       <TooltipTrigger asChild>
                         <div
-                          className="relative h-10 rounded-md flex items-center justify-center text-xs font-medium tabular-nums cursor-default border border-border/40"
+                          className={`relative ${dense ? "h-8 text-[10px]" : "h-10 text-xs"} rounded-md flex items-center justify-center font-medium tabular-nums cursor-default border border-border/40`}
                           style={{
                             background: bg,
                             boxShadow: pico ? `inset 0 0 0 1.5px ${color}` : undefined,

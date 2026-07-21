@@ -143,6 +143,39 @@ def pv_dados(conn: Any, ini: dt.date, fim: dt.date) -> dict:
                  "pct_15min": round(sum(1 for m in v if m <= 15) / len(v) * 100)}
                 for k, v in sorted(d.items(), key=lambda x: st.median(x[1])) if len(v) >= 3]
 
+    # ---- evolução mensal 6m (mesma régua do _pv_speed: funil oficial
+    # retroativo + speed mediano; mediana >7 dias = mês sem coleta -> None)
+    evolucao = []
+    hoje_e = dt.date.today()
+    mes_e = (hoje_e.replace(day=1) - dt.timedelta(days=150)).replace(day=1)
+    while mes_e <= hoje_e.replace(day=1):
+        prox_e = (mes_e.replace(day=28) + dt.timedelta(days=4)).replace(day=1)
+        fim_e = min(hoje_e, prox_e - dt.timedelta(days=1))
+        pe, _bk, tot_e, _rc = _funil_oficial(conn, mes_e, fim_e)
+        ae, be = _brt(mes_e, fim_e)
+        with conn.cursor() as cur:
+            cur.execute("""SELECT percentile_cont(0.5) WITHIN GROUP
+                                  (ORDER BY EXTRACT(epoch FROM t.first_at - d.add_time) / 60)
+                             FROM sales_first_touch t JOIN mkt_deals_attribution d ON d.deal_id = t.deal_id
+                            WHERE d.add_time >= %s AND d.add_time < %s""", (ae, be))
+            sp = cur.fetchone()[0]
+        sp_v = float(sp) if sp is not None and float(sp) <= 7 * 24 * 60 else None
+        evolucao.append({"mes": mes_e.strftime("%m/%y"), "leads": int(tot_e), "sql": int(pe[3]),
+                         "taxa_pct": round(pe[3] / tot_e * 100, 1) if tot_e else None,
+                         "speed_min": round(sp_v, 1) if sp_v is not None else None})
+        mes_e = prox_e
+
+    # ---- diagnóstico do especialista (mesmas entradas da tela; determinístico)
+    from .ui import _entradas
+    from . import especialista as ESP
+    contato = _entradas(conn, (2, 13), a, b)
+    desq_top = next(((x["motivo"], x["deals"]) for x in desq if x["motivo"] != "(sem motivo)"), None)
+    diagnostico = {"persona": ESP.PERSONA_PREVENDAS,
+                   "itens": ESP.insights_prevendas({
+                       "taxa_contato": contato / leads if leads else None,
+                       "taxa_agend": passou[3] / leads if leads else None,
+                       "desq_top": desq_top})}
+
     razao_15x24 = None
     tx1 = next((x["taxa_pct"] for x in faixas if x["ordem"] == "1"), None)
     tx5 = next((x["taxa_pct"] for x in faixas if x["ordem"] == "5"), None)
@@ -167,6 +200,7 @@ def pv_dados(conn: Any, ini: dt.date, fim: dt.date) -> dict:
         "tipos_contato": tipos,
         "por_responsavel": _bloco(por_quem), "por_origem_speed": _bloco(por_origem_sp),
         "tem_first_touch": bool(mins),
+        "evolucao": evolucao, "diagnostico": diagnostico,
     }
 
 
@@ -234,28 +268,31 @@ def winloss_dados(conn: Any, ini: dt.date, fim: dt.date) -> dict:
     top_motivos = [p["motivo"] for p in perdas if p["motivo"] != "(sem motivo)"][:5]
 
     def _heat(dim_idx: int, top_dim: int = 6) -> dict:
-        """HeatmapMatrix: célula = % das perdas do MOTIVO (linha) na coluna."""
+        """HeatmapMatrix INVERTIDA (Otávio 21/07): linha = origem/closer,
+        coluna = motivo; célula = % das perdas DA LINHA naquele motivo —
+        responde 'qual closer/origem perde por quê'."""
         agg: dict[str, dict[str, int]] = {}
         tot_dim: dict[str, int] = {}
-        tot_motivo: dict[str, int] = {}
         for m, og, ow, n in cruz:
             k = (og, ow)[dim_idx - 1][:24]
             tot_dim[k] = tot_dim.get(k, 0) + n
             if m in top_motivos:
-                agg.setdefault(m, {})[k] = agg.setdefault(m, {}).get(k, 0) + n
-                tot_motivo[m] = tot_motivo.get(m, 0) + n
-        cols = [k for k, _ in sorted(tot_dim.items(), key=lambda x: -x[1])[:top_dim]]
+                agg.setdefault(k, {})[m] = agg.setdefault(k, {}).get(m, 0) + n
+        rows = [k for k, _ in sorted(tot_dim.items(), key=lambda x: -x[1])[:top_dim]]
+        col_full = list(top_motivos)
+        def _c(m):  # coluna curta (header) — nome completo vai no tooltip da célula
+            return m if len(m) <= 18 else m[:17] + "…"
         cells = []
-        for m in top_motivos:
-            for c in cols:
-                n = agg.get(m, {}).get(c)
+        for k in rows:
+            for m in col_full:
+                n = agg.get(k, {}).get(m)
                 if n is None:
                     continue
-                tm = tot_motivo.get(m, 0)
-                cells.append({"row": m[:36], "col": c, "n": n,
-                              "value": round(n / tm * 100) if tm else None,
+                tk = tot_dim.get(k, 0)
+                cells.append({"row": k, "col": _c(m), "col_full": m, "n": n,
+                              "value": round(n / tk * 100) if tk else None,
                               "amostra_pequena": n < 3})
-        return {"rows": [m[:36] for m in top_motivos], "cols": cols,
+        return {"rows": rows, "cols": [_c(m) for m in col_full],
                 "cells": cells, "unit": "pct"}
 
     # evolução 6m por motivo (top 5) — mês corrente é parcial
@@ -299,8 +336,8 @@ def winloss_dados(conn: Any, ini: dt.date, fim: dt.date) -> dict:
         "motivos_perda": perdas,
         "sem_motivo": sum(p["deals"] for p in perdas if p["motivo"] == "(sem motivo)"),
         "por_bundle": cards_bundle,
-        "heatmap_motivo_x_origem": _heat(1),
-        "heatmap_motivo_x_closer": _heat(2),
+        "heatmap_origem_x_motivo": _heat(1),
+        "heatmap_closer_x_motivo": _heat(2),
         "evolucao": {"meses": meses_evo, "series": series},
         "diagnostico": diag,
     }

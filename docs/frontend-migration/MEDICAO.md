@@ -114,3 +114,20 @@ Base para reextrapolar os lotes 2–6 com dado real.
   HTML), 3 endpoints 200 (1,8-3,6s), 2 telas conferidas no navegador com
   dados reais; 56 testes ok.
 - **Interrupção operacional:** 0.
+
+## Rodada de ajustes do Lote 2 (feedback do Otávio, 21/07)
+
+- **Execução: ~40 min** · ciclos de correção: 1 (gerador de strings do script).
+- Itens: (1) **ⓘ "como ler este campo" de volta em TODAS as telas SPA** — raiz
+  resolvida com /api/help servindo os textos do help_texts.py (fonte ÚNICA,
+  HTML e SPA compartilham; componente Hint com cache); (2) PV recuperou a
+  Evolução mensal 6m e o Diagnóstico do especialista (rotulado com persona +
+  'regras determinísticas'); (3) Melhor Horário: heatmaps com as MESMAS linhas
+  de hora (07h alinhado com 07h), listas de melhores horários por agendamento
+  E por taxa (só janelas 5+ ligações), grades origem/colaborador em modo dense
+  — medido no DOM: zero overflow horizontal; (4) Win/Loss: heatmaps INVERTIDOS
+  (origem×motivo e closer×motivo, célula = % das perdas da LINHA — responde
+  'esse closer perde por quê'), dense + rowScale, sem overflow; (5) nav de
+  Vendas completa (7 views). Lição de biblioteca: dense (colunas estreitas sem
+  scroll) e o alinhamento por linhas compartilhadas viram padrão dos próximos
+  heatmaps.

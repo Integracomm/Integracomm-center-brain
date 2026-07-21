@@ -29,6 +29,10 @@ const NAV: Array<{ href: string; label: string; spa: boolean; grupo?: string }> 
   { href: "/prevendas?view=sdrs", label: "Desempenho Individual", spa: false },
   { href: "/vendas?view=winloss", label: "Win/Loss", spa: true, grupo: "Vendas" },
   { href: "/vendas?view=funil", label: "Funil de Fechamento", spa: false },
+  { href: "/vendas?view=ponte", label: "Ponte PV → Vendas", spa: false },
+  { href: "/vendas?view=ciclo", label: "Ciclo & Empacados", spa: false },
+  { href: "/vendas?view=horarios", label: "Melhor Horário", spa: false },
+  { href: "/vendas?view=closers", label: "Desempenho Individual", spa: false },
   { href: "/vendas?view=forecast", label: "Performance & Meta", spa: false },
   { href: "/app", label: "Biblioteca (vitrine)", spa: true, grupo: "Redesenho" },
 ];
