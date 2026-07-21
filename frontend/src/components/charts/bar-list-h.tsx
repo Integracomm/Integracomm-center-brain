@@ -8,6 +8,7 @@ import {
   Legend,
   LabelList,
 } from "recharts";
+import { Cell } from "recharts";
 import { ChartHeight } from "./chart-height";
 import { axisProps, gridProps, tooltipStyle } from "./chart-theme";
 
@@ -28,6 +29,7 @@ export function BarListH<T extends BarListItem>({
   height = 320,
   width = 150,
   xTickFormatter,
+  itemColor,
   valueLabel = (v) => v.toLocaleString("pt-BR"),
   tooltipFormatter,
 }: {
@@ -36,6 +38,8 @@ export function BarListH<T extends BarListItem>({
   height?: number;
   width?: number;
   xTickFormatter?: (v: number) => string;
+  // Cor POR ITEM (ex.: destacar a linha GERAL) — default: `color`.
+  itemColor?: (item: T) => string | undefined;
   // Formatação do rótulo à direita da barra (recebe valor + payload da linha).
   valueLabel?: (v: number, item: T) => string;
   // Tooltip: retorna [conteúdo, título]. Default = valueLabel.
@@ -54,6 +58,7 @@ export function BarListH<T extends BarListItem>({
           type="category"
           dataKey="label"
           width={width}
+          interval={0}
           {...axisProps}
         />
         <RTooltip
@@ -66,6 +71,9 @@ export function BarListH<T extends BarListItem>({
           }
         />
         <Bar dataKey="value" fill={color} radius={[0, 6, 6, 0]}>
+          {itemColor && data.map((it, i) => (
+            <Cell key={i} fill={itemColor(it) ?? color} />
+          ))}
           <LabelList
             dataKey="value"
             position="right"

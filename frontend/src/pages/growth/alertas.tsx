@@ -12,6 +12,10 @@ import {
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
+import {
+  Pagination, PaginationContent, PaginationItem, PaginationLink,
+  PaginationNext, PaginationPrevious,
+} from "@/components/ui/pagination";
 import { RiskBadge, SeverityBadge, stageLabels } from "@/components/growth-badges";
 import type { Alert, AlertsEnvelope, Severity } from "@/types/api";
 
@@ -23,6 +27,8 @@ export function GrowthAlertasPage() {
   const [search, setSearch] = useState("");
   const [sev, setSev] = useState<"todos" | Severity>("todos");
   const [modeloAberto, setModeloAberto] = useState(false);
+  const [page, setPage] = useState(1);
+  const PAGE_SIZE = 25;
 
   const alerts = q.data?.alerts ?? [];
   const filtered = useMemo(() => {
@@ -33,6 +39,9 @@ export function GrowthAlertasPage() {
       return true;
     });
   }, [alerts, search, sev]);
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages);
+  const pageRows = filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
 
   const k = q.data?.kpis;
 
@@ -59,10 +68,10 @@ export function GrowthAlertasPage() {
           <div className="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-card p-4">
             <div className="relative min-w-[220px] flex-1">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input value={search} onChange={(e) => setSearch(e.target.value)}
+              <Input value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }}
                 placeholder="Buscar por nome da conta…" className="pl-9" />
             </div>
-            <Select value={sev} onValueChange={(v) => setSev(v as typeof sev)}>
+            <Select value={sev} onValueChange={(v) => { setSev(v as typeof sev); setPage(1); }}>
               <SelectTrigger className="w-[180px]"><SelectValue placeholder="Severidade" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="todos">Todas</SelectItem>
@@ -90,7 +99,7 @@ export function GrowthAlertasPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {filtered.map((a: Alert) => (
+                  {pageRows.map((a: Alert) => (
                     <TableRow key={a.id}>
                       <TableCell className="max-w-[300px]"><span className="block truncate font-medium">{a.name}</span></TableCell>
                       <TableCell><SeverityBadge sev={a.severity} /></TableCell>
@@ -111,6 +120,29 @@ export function GrowthAlertasPage() {
                   ))}
                 </TableBody>
               </Table>
+              {totalPages > 1 && (
+                <div className="flex items-center justify-between border-t border-border p-3">
+                  <div className="text-xs text-muted-foreground">
+                    Página <span className="tabular-nums">{currentPage}</span> de{" "}
+                    <span className="tabular-nums">{totalPages}</span>
+                  </div>
+                  <Pagination className="mx-0 w-auto justify-end">
+                    <PaginationContent>
+                      <PaginationItem>
+                        <PaginationPrevious href="#"
+                          onClick={(e) => { e.preventDefault(); setPage((p) => Math.max(1, p - 1)); }} />
+                      </PaginationItem>
+                      <PaginationItem>
+                        <PaginationLink href="#" isActive>{currentPage}</PaginationLink>
+                      </PaginationItem>
+                      <PaginationItem>
+                        <PaginationNext href="#"
+                          onClick={(e) => { e.preventDefault(); setPage((p) => Math.min(totalPages, p + 1)); }} />
+                      </PaginationItem>
+                    </PaginationContent>
+                  </Pagination>
+                </div>
+              )}
             </div>
           )}
           <p className="text-xs text-muted-foreground">

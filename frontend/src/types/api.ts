@@ -107,6 +107,8 @@ export interface CancelamentosPayload {
     mes_label: string;
     saidas: number;
     mrr_perdido: number;
+    saidas_novos: number;
+    saidas_antigos: number;
     ticket_medio: number | null;
     tempo_casa_mediano: number | null;
     terminos_start: number;

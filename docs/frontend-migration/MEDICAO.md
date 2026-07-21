@@ -78,3 +78,14 @@ Base para reextrapolar os lotes 2–6 com dado real.
   _modelo_precisao + grw_risk_snapshot).
 - Lição p/ extrapolação: a rodada de ajustes custa na ordem do próprio lote —
   manter nos planos 1 rodada por lote.
+
+## Rodada de ajustes 2 do Lote 1 (feedback com screenshot, 21/07)
+
+- **Execução: ~12 min** · ciclos de correção: 0. Causa-raiz das legendas
+  faltando: o Recharts pula rótulos alternados por padrão (interval auto) —
+  corrigido na BIBLIOTECA (BarListH: interval=0 + altura por linha no chamador
+  + cor por item via Cell), beneficia todas as telas futuras. Itens: motivos
+  com respiro (52px/linha), plano/equipe completos, taxa sem B1 no gráfico com
+  GERAL primeiro e destacado (B1 segue na tabela — nenhum dado some),
+  comparativo novos×antigos de volta na Evolução (campos saidas_novos/antigos
+  no payload, MESMA régua _canc_legado do HTML), paginação em Alertas (25/pág).

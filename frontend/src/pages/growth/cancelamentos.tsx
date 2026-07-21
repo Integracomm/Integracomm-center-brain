@@ -43,10 +43,12 @@ export function GrowthCancelamentosPage() {
 
   const taxaData = useMemo(() => {
     if (!d) return [];
-    return [...d.taxa_bundle, d.taxa_geral]
+    // GERAL primeiro e destacado; B1 fora do GRÁFICO (não entra no cálculo —
+    // Otávio 21/07); ele continua na tabela completa, nenhum dado some.
+    return [d.taxa_geral, ...d.taxa_bundle.filter((b) => b.bundle !== "B1")]
       .filter((b) => b.taxa_clientes_pct != null)
       .map((b) => ({
-        label: b.bundle + (b.recorrente ? "" : " (não recorrente)"),
+        label: b.bundle.startsWith("GERAL") ? "GERAL (sem B1)" : b.bundle,
         value: b.taxa_clientes_pct as number,
         _b: b,
       }));
@@ -101,12 +103,13 @@ export function GrowthCancelamentosPage() {
 
           <SectionCard
             title="Taxa de cancelamento por plano"
-            subtitle={`saídas/mês ÷ base ATUAL de contas · janela de ${d.taxa_geral.janela_meses} mês(es) · B1 é semestral (fora da taxa geral)`}
+            subtitle={`saídas/mês ÷ base ATUAL de contas · janela de ${d.taxa_geral.janela_meses} mês(es) · B1 fica fora (semestral, não recorrente) — aparece na tabela completa`}
           >
             <BarListH
-              height={300}
+              height={Math.max(220, taxaData.length * 44)}
               data={taxaData}
               color="var(--destructive)"
+              itemColor={(it) => (it.label.startsWith("GERAL") ? "var(--chart-1)" : undefined)}
               valueLabel={(v) => `${formatPct(v, 1)}/mês`}
               tooltipFormatter={(v, item) => {
                 const b = (item as { _b: CancTaxaBundle })._b;
@@ -152,13 +155,19 @@ export function GrowthCancelamentosPage() {
             </Det>
           </SectionCard>
 
-          <SectionCard title="Evolução mensal" subtitle="saídas formalizadas e MRR perdido, mês a mês">
+          <SectionCard title="Evolução mensal"
+            subtitle="saídas por mês — total e separado por planos novos (bundles) × antigos/ADS · MRR perdido no eixo direito">
             <TimeSeries
-              height={260}
-              data={d.por_mes.map((m) => ({ mes: m.mes_label, saidas: m.saidas, mrr: m.mrr_perdido }))}
+              height={280}
+              data={d.por_mes.map((m) => ({
+                mes: m.mes_label, saidas: m.saidas, novos: m.saidas_novos,
+                antigos: m.saidas_antigos, mrr: m.mrr_perdido,
+              }))}
               xKey="mes"
               series={[
-                { key: "saidas", label: "Saídas", color: "var(--destructive)" },
+                { key: "saidas", label: "Total", color: "var(--destructive)" },
+                { key: "novos", label: "Planos novos (bundles)", color: "var(--chart-1)" },
+                { key: "antigos", label: "Antigos/ADS", color: "var(--muted-foreground)" },
                 { key: "mrr", label: "MRR perdido", color: "var(--chart-2)", yAxis: "right", dashed: true,
                   valueFormatter: (v) => formatBRL(v) },
               ]}
@@ -192,7 +201,7 @@ export function GrowthCancelamentosPage() {
             <SectionCard title="Motivos (Pareto)"
               subtitle={`onde atacar primeiro · ${d.sem_motivo} saída(s) SEM motivo preenchido no período`}>
               {d.motivos.length ? (
-                <BarListH height={260} width={210}
+                <BarListH height={Math.max(240, d.motivos.length * 52)} width={250}
                   data={d.motivos.map((m) => ({ label: m.motivo, value: m.saidas }))} />
               ) : (
                 <p className="text-sm text-muted-foreground">Nenhum motivo preenchido no período.</p>
@@ -223,10 +232,10 @@ export function GrowthCancelamentosPage() {
 
             <SectionCard title="Saídas por plano e por equipe" subtitle="todo o período filtrado — top 8 de cada">
               <div className="grid gap-4">
-                <BarListH height={220} width={235}
+                <BarListH height={Math.max(220, Math.min(8, d.por_plano.length) * 44)} width={235}
                   data={d.por_plano.slice(0, 8).map((p) => ({ label: p.nome, value: p.saidas }))}
                   color="var(--chart-2)" />
-                <BarListH height={220} width={235}
+                <BarListH height={Math.max(220, Math.min(8, d.por_equipe.length) * 44)} width={235}
                   data={d.por_equipe.slice(0, 8).map((p) => ({ label: p.nome, value: p.saidas }))}
                   color="var(--chart-4)" />
               </div>

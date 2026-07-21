@@ -3874,6 +3874,10 @@ def _cancel_dados(rows: list[dict], f_ini: dt.date, f_fim: dt.date,
         tps = [_f(r["meses"]) for r in cs if r["meses"] is not None]
         por_mes.append({"mes": m.strftime("%Y-%m"), "mes_label": m.strftime("%m/%Y"),
                         "saidas": len(cs), "mrr_perdido": sum(_f(r["valor"]) or 0 for r in cs),
+                        # novos × antigos: MESMA régua do gráfico da tela HTML
+                        # (_canc_legado — visão que o Otávio pediu de volta 21/07)
+                        "saidas_novos": sum(1 for r in cs if not _canc_legado(r)),
+                        "saidas_antigos": sum(1 for r in cs if _canc_legado(r)),
                         "ticket_medio": (_st.mean(vals) if vals else None),
                         "tempo_casa_mediano": (_st.median(tps) if tps else None),
                         "terminos_start": sum(1 for r in term if r["mes"] == m)})
