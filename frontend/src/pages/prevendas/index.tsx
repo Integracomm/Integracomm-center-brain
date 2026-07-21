@@ -185,7 +185,7 @@ export function PrevendasPage() {
             </SectionCard>
           </div>
 
-          <SectionCard title="Evolução mensal (6 meses)"
+          <SectionCard hint={<Hint area="prevendas/speed" titulo="Evolução mensal (6 meses)" />} title="Evolução mensal (6 meses)"
             subtitle="taxa lead→SQL (régua oficial; retroativa — meses antigos são mais confiáveis) e mediana do 1º contato ('—' = mês anterior à coleta) · a trajetória, não a foto">
             <Table>
               <TableHeader>
@@ -225,7 +225,7 @@ export function PrevendasPage() {
             )}
           </SectionCard>
 
-          <SectionCard title="Abordagem e pessoas"
+          <SectionCard hint={<Hint area="prevendas/speed" titulo="Taxa de agendamento por tipo de 1º contato" />} title="Abordagem e pessoas"
             subtitle="taxa por tipo de 1º contato (mín. 5 leads) · speed por responsável e por origem (mín. 3 leads)">
             <Table>
               <TableHeader>

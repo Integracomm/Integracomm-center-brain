@@ -269,7 +269,7 @@ export function GrowthCancelamentosPage() {
             </SectionCard>
           </div>
 
-          <SectionCard title="Fila de retenção (tratativas do mês)"
+          <SectionCard hint={<Hint area="growth/cancelamentos" titulo="Fila de retenção (tratativas)" />} title="Fila de retenção (tratativas do mês)"
             subtitle="lista nominal acionável — mantém tabela por regra do guia">
             {d.tratativas.length === 0 ? (
               <p className="text-sm text-muted-foreground">Nenhuma tratativa aberta no mês.</p>

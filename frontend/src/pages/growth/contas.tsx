@@ -155,6 +155,7 @@ export function GrowthContasPage() {
           </div>
 
           <div className="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-card p-4">
+            <Hint area="growth/contas" titulo="Contas por risco" />
             <div className="relative min-w-[220px] flex-1">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input value={search}

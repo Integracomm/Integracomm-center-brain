@@ -178,6 +178,7 @@ export interface HorariosPayload {
   total: number;
   celulas: Array<{ dow: number; hora: number; n: number }>;
   celulas_taxa: Array<{ dow: number; hora: number; n: number }>;
+  agend_sem_ligacao: number;
   ligacoes: Array<{ dow: number; hora: number; n: number }>;
   taxa_ini: string | null;
   por_bundle: Record<string, Array<{ dow: number; hora: number; n: number }>>;

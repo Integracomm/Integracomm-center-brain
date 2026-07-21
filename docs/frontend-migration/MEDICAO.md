@@ -131,3 +131,19 @@ Base para reextrapolar os lotes 2–6 com dado real.
   Vendas completa (7 views). Lição de biblioteca: dense (colunas estreitas sem
   scroll) e o alinhamento por linhas compartilhadas viram padrão dos próximos
   heatmaps.
+
+## Rodada de ajustes 2 do Lote 2 (21/07)
+
+- **Execução: ~35 min** · ciclos de correção: 2 (encoding de heredoc → script
+  em arquivo; âncora de inserção do help). Itens: (1) **37 usos de ⓘ nas 6
+  telas, 100% com entrada no help** (8 entradas NOVAS escritas no padrão 16/07
+  em help_texts.py — fonte única); (2) régua da TAXA do Melhor Horário
+  refinada na FUNÇÃO COMPARTILHADA (hipótese do Otávio confirmada: agendamento
+  de indicação/inbound sem ligação inflava a taxa) — numerador só com deals
+  que têm ligação registrada, excluídos contados e avisados nas DUAS UIs;
+  (3) headers dos 2 heatmaps equalizados (desalinho 16px → 2px, medido no
+  DOM via headerClassName no SectionCard); (4) nota sob o mapa de taxa com a
+  contagem de agendamentos sem ligação.
+- Nota: a percepção de "menu dentro do Win/Loss antigo" em Vendas é o estado
+  TRANSITÓRIO da migração (SPA e HTML coexistem com shells diferentes até a
+  área migrar inteira — Lote 3 em execução converge Funil/Ponte/Ciclo).

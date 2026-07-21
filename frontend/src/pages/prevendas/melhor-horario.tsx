@@ -167,20 +167,30 @@ export function MelhorHorarioPage() {
 
           <div className="grid gap-6 xl:grid-cols-2">
             <SectionCard hint={<Hint area="prevendas/horarios" titulo="Mapa de calor" />}
+              headerClassName="min-h-[56px]"
               title="Agendamentos — hora × dia"
-              subtitle="quanto mais escuro, mais agendamentos naquele dia/hora · mesmas linhas do mapa ao lado">
+              subtitle="quanto mais escuro, mais agendamentos · mesmas linhas do mapa ao lado · detalhes no ⓘ">
               <Heatmap rows={agend.rows} cols={agend.cols} cells={agend.cells}
                 color="var(--chart-1)" rowLabelWidth={54} legendLabel="agendamentos" />
             </SectionCard>
 
             <SectionCard hint={<Hint area="prevendas/horarios" titulo="Taxa de agendamento por horário" />}
+              headerClassName="min-h-[56px]"
               title="Taxa de agendamento — hora × dia"
-              subtitle="agendamentos ÷ ligações concluídas · hachura = menos de 5 ligações (amostra pequena) · normaliza mutirões · mesmas linhas do mapa ao lado">
+              subtitle="agendamentos com ligação ÷ ligações · hachura = <5 ligações · detalhes no ⓘ">
               {taxa && taxa.cells.length ? (
-                <Heatmap rows={taxa.rows} cols={taxa.cols} cells={taxa.cells}
-                  color="var(--success)" rowLabelWidth={54}
-                  valueLabel={(v) => `${v}%`} legendLabel="taxa"
-                  tooltipLabel={(c) => `${c.row} ${c.col}: ${c.value}% (${c.n} ligação(ões))${c.amostra_pequena ? " · amostra pequena" : ""}`} />
+                <>
+                  <Heatmap rows={taxa.rows} cols={taxa.cols} cells={taxa.cells}
+                    color="var(--success)" rowLabelWidth={54}
+                    valueLabel={(v) => `${v}%`} legendLabel="taxa"
+                    tooltipLabel={(c) => `${c.row} ${c.col}: ${c.value}% (${c.n} ligação(ões))${c.amostra_pequena ? " · amostra pequena" : ""}`} />
+                  {d.agend_sem_ligacao > 0 && (
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      {d.agend_sem_ligacao} agendamento(s) de deals <b>sem ligação registrada</b> (indicação,
+                      inbound direto) ficam fora da taxa — ela mede o rendimento da LIGAÇÃO.
+                    </p>
+                  )}
+                </>
               ) : (
                 <p className="text-sm text-muted-foreground">
                   Sem ligações registradas no período — a seção acende quando a coleta diária preencher.
@@ -201,7 +211,7 @@ export function MelhorHorarioPage() {
                 ))}
               </ul>
             </SectionCard>
-            <SectionCard title="Melhores horários por taxa"
+            <SectionCard hint={<Hint area="prevendas/horarios" titulo="Melhores horários por taxa" />} title="Melhores horários por taxa"
               subtitle="onde a ligação mais converte — só janelas com 5+ ligações (amostra confiável)">
               {topTaxa.length ? (
                 <ul className="space-y-1.5">

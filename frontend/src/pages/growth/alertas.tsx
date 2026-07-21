@@ -67,6 +67,7 @@ export function GrowthAlertasPage() {
           </div>
 
           <div className="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-card p-4">
+            <Hint area="growth/alertas" titulo="Fila de retenção" />
             <div className="relative min-w-[220px] flex-1">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }}
@@ -156,7 +157,11 @@ export function GrowthAlertasPage() {
           <details className="rounded-xl border border-border bg-card"
             onToggle={(e) => setModeloAberto((e.target as HTMLDetailsElement).open)}>
             <summary className="cursor-pointer p-4 text-sm font-medium text-foreground">
-              Precisão do modelo e evolução do risco da carteira
+              Precisão do modelo e evolução do risco da carteira{" "}
+              <span className="inline-flex gap-1 align-middle">
+                <Hint area="growth/alertas" titulo="Precisão do modelo" />
+                <Hint area="growth/alertas" titulo="Evolução do risco da carteira" />
+              </span>
               <span className="ml-2 text-xs font-normal text-muted-foreground">
                 consulta eventual — abre sob demanda
               </span>

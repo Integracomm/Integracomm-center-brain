@@ -751,6 +751,7 @@ def _horarios_calc(conn, ini: dt.date, fim: dt.date, bundle: str) -> dict:
         # existem: numerador e denominador da MESMA janela, com aviso na tela.
         taxa_ini = None
         celulas_taxa = celulas
+        agend_sem_ligacao = 0
         if ligacoes:
             cur.execute("SELECT min(done_at) FROM sales_activities WHERE tipo='call'")
             cob = (cur.fetchone() or [None])[0]
@@ -758,21 +759,34 @@ def _horarios_calc(conn, ini: dt.date, fim: dt.date, bundle: str) -> dict:
             a_dt = dt.datetime.combine(ini, dt.time(0), tzinfo=dt.timezone(dt.timedelta(hours=-3)))
             if cob and cob > a_dt:
                 taxa_ini = cob
-                cur.execute(f"""
-                    WITH primeira AS (
-                        SELECT e.deal_id, min(e.entered_at) AS entered_at
-                          FROM mkt_stage_events e
-                          JOIN mkt_deals_attribution d ON d.deal_id = e.deal_id
-                         WHERE e.stage_id = ANY(%s) AND e.entered_at >= %s AND e.entered_at < %s{filtro_b}
-                         GROUP BY e.deal_id)
-                    SELECT extract(dow  FROM entered_at AT TIME ZONE 'America/Sao_Paulo')::int,
-                           extract(hour FROM entered_at AT TIME ZONE 'America/Sao_Paulo')::int,
-                           count(*)
-                      FROM primeira GROUP BY 1, 2""",
-                    [list(_ST_AGENDA), taxa_ini, b] + args[2:])
-                celulas_taxa = {(dow, h): n for dow, h, n in cur.fetchall()}
+            ini_tx = taxa_ini or a
+            # numerador da TAXA: só agendamentos de deals que TÊM ligação
+            # registrada (Otávio 21/07: indicação/inbound agenda SEM ligação e
+            # inflava a taxa sem significar horário bom). Os sem-ligação são
+            # contados à parte e viram nota na tela — nenhum dado some.
+            cur.execute(f"""
+                WITH primeira AS (
+                    SELECT e.deal_id, min(e.entered_at) AS entered_at,
+                           EXISTS (SELECT 1 FROM sales_activities s
+                                    WHERE s.deal_id = e.deal_id AND s.tipo = 'call') AS tem_lig
+                      FROM mkt_stage_events e
+                      JOIN mkt_deals_attribution d ON d.deal_id = e.deal_id
+                     WHERE e.stage_id = ANY(%s) AND e.entered_at >= %s AND e.entered_at < %s{filtro_b}
+                     GROUP BY e.deal_id)
+                SELECT extract(dow  FROM entered_at AT TIME ZONE 'America/Sao_Paulo')::int,
+                       extract(hour FROM entered_at AT TIME ZONE 'America/Sao_Paulo')::int,
+                       count(*) FILTER (WHERE tem_lig),
+                       count(*) FILTER (WHERE NOT tem_lig)
+                  FROM primeira GROUP BY 1, 2""",
+                [list(_ST_AGENDA), ini_tx, b] + args[2:])
+            celulas_taxa = {}
+            for dow, h, com_lig, sem_lig in cur.fetchall():
+                if com_lig:
+                    celulas_taxa[(dow, h)] = com_lig
+                agend_sem_ligacao += sem_lig
     return {"celulas": celulas, "por_bundle": por_bundle, "por_colab": por_colab,
             "por_origem": por_origem, "ligacoes": ligacoes,
+            "agend_sem_ligacao": agend_sem_ligacao,
             "celulas_taxa": celulas_taxa, "taxa_ini": taxa_ini,
             "total": sum(celulas.values())}
 
@@ -934,6 +948,9 @@ def _pv_horarios(conn, request: Request) -> str:
         heat_taxa = aviso_cob + _tbl([("", "left")] + [(_DOW_NOME[d], "left") for d in dows], linhas_tx)
         sub_taxa = (f" · {tot_lig} ligação(ões) concluída(s) no trecho coberto · taxa geral "
                     f"{tot_ag_tx / tot_lig * 100:.0f}%" if tot_lig else "")
+        if dados.get("agend_sem_ligacao"):
+            sub_taxa += (f" · {dados['agend_sem_ligacao']} agendamento(s) de deals SEM ligação registrada "
+                         "(indicação/inbound) ficam fora da taxa")
 
     # --- ORIGEM do lead: mapa de calor origem × hora (pedido 20/07) + tabela
     # de top janelas (a tabela preserva o DIA; o mapa compara o padrão de hora)
@@ -2185,6 +2202,7 @@ def api_pv_horarios(request: Request):
             "total": dados["total"],
             "celulas": cel(dados["celulas"]),
             "celulas_taxa": cel(dados["celulas_taxa"]),
+            "agend_sem_ligacao": dados.get("agend_sem_ligacao", 0),
             "ligacoes": cel(dados["ligacoes"]),
             "taxa_ini": (dados["taxa_ini"].astimezone(dt.timezone(dt.timedelta(hours=-3))).date().isoformat()
                           if dados["taxa_ini"] else None),

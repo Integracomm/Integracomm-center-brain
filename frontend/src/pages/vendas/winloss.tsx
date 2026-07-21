@@ -72,7 +72,7 @@ export function VendasWinLossPage() {
           </div>
 
           {d.diagnostico && (
-            <SectionCard title="Diagnóstico dominante"
+            <SectionCard hint={<Hint area="vendas/winloss" titulo="Diagnóstico dominante" />} title="Diagnóstico dominante"
               subtitle={`gerado por ${d.diagnostico.fonte} — hipótese para investigar, não veredito`}>
               <p className="text-sm leading-relaxed">
                 → Motivo nº 1: <b>“{d.diagnostico.motivo}”</b> ({d.diagnostico.deals} deals). Leitura:{" "}
@@ -126,7 +126,7 @@ export function VendasWinLossPage() {
           </SectionCard>
 
           {d.evolucao.meses.length >= 2 && d.evolucao.series.length > 0 && (
-            <SectionCard title="Evolução dos motivos (6 meses)"
+            <SectionCard hint={<Hint area="vendas/winloss" titulo="Evolução dos motivos" />} title="Evolução dos motivos (6 meses)"
               subtitle="perdas por mês do fechamento, top 5 motivos · o mês corrente é PARCIAL — não conclua por ele">
               <TimeSeries
                 height={260}
@@ -176,14 +176,14 @@ export function VendasWinLossPage() {
           </SectionCard>
 
           <div className="grid gap-6 xl:grid-cols-2">
-            <SectionCard title="Origem × motivo"
+            <SectionCard hint={<Hint area="vendas/winloss" titulo="Origem × motivo" />} title="Origem × motivo"
               subtitle="eixos INVERTIDOS a pedido: cada linha é uma origem; célula = % das perdas DELA por motivo — responde 'essa origem perde por quê'">
               <Heatmap rows={d.heatmap_origem_x_motivo.rows} cols={d.heatmap_origem_x_motivo.cols}
                 cells={d.heatmap_origem_x_motivo.cells} valueLabel={(v) => formatPct(v)}
                 legendLabel="% das perdas da origem" rowLabelWidth={120} dense rowScale
                 tooltipLabel={(c) => `${c.row} × ${(c as { col_full?: string }).col_full ?? c.col}: ${formatPct(c.value ?? 0)} (${c.n} deal(s))${c.amostra_pequena ? " · amostra pequena" : ""}`} />
             </SectionCard>
-            <SectionCard title="Closer × motivo"
+            <SectionCard hint={<Hint area="vendas/winloss" titulo="Closer × motivo" />} title="Closer × motivo"
               subtitle="cada linha é um closer; célula = % das perdas DELE por motivo · concentrado num motivo = treino individual">
               <Heatmap rows={d.heatmap_closer_x_motivo.rows} cols={d.heatmap_closer_x_motivo.cols}
                 cells={d.heatmap_closer_x_motivo.cells} valueLabel={(v) => formatPct(v)}
