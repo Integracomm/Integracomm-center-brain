@@ -75,9 +75,19 @@ export function GrowthContasPage() {
     () => Array.from(new Set(scores.map((s) => s.squad).filter(Boolean))).sort() as string[],
     [scores]);
 
+  // ?ids= : recorte EXATO vindo de um link (ex.: "7 contas PIORARAM de faixa"
+  // na Central). O HTML antigo já mandava esse parâmetro; o SPA o ignorava e o
+  // link caía na lista inteira (Otávio 22/07). Filtro fica visível e removível.
+  const idsDoLink = useMemo(() => {
+    const raw = new URLSearchParams(window.location.search).get("ids");
+    return raw ? new Set(raw.split(",").filter(Boolean)) : null;
+  }, []);
+  const [usarIds, setUsarIds] = useState(true);
+
   const filtered = useMemo(() => {
     const s = search.trim().toLowerCase();
     return scores.filter((sc) => {
+      if (idsDoLink && usarIds && !idsDoLink.has(sc.account_id)) return false;
       if (s && !sc.name.toLowerCase().includes(s)) return false;
       if (risco !== "todos" && sc.risk_band !== risco) return false;
       if (alerta === "com" && !sc.alert_sev) return false;
@@ -91,7 +101,7 @@ export function GrowthContasPage() {
       if (execf === "critica" && !(sc.exec_score != null && sc.exec_score < 40)) return false;
       return true;
     });
-  }, [scores, search, risco, alerta, squad, plano, execf]);
+  }, [scores, search, risco, alerta, squad, plano, execf, idsDoLink, usarIds]);
 
   const sorted = useMemo(() => {
     const arr = [...filtered];
@@ -208,6 +218,13 @@ export function GrowthContasPage() {
                 <SelectItem value="atrasos">Com entregas atrasadas</SelectItem>
               </SelectContent>
             </Select>
+            {idsDoLink && usarIds && (
+              <button onClick={() => { setUsarIds(false); setPage(1); }}
+                className="rounded-full border border-primary/50 px-3 py-1 text-xs text-primary hover:bg-primary/10"
+                title="mostrar todas as contas">
+                recorte do link: {idsDoLink.size} conta(s) · ver todas ✕
+              </button>
+            )}
             <div className="ml-auto text-xs text-muted-foreground">
               <strong className="tabular-nums text-foreground">{sorted.length}</strong> de{" "}
               <span className="tabular-nums">{scores.length}</span> contas
