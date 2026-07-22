@@ -71,7 +71,9 @@ const NAV: Array<{ href: string; label: string; spa: boolean; grupo?: string }> 
 // Nav da CENTRAL (/) — ORDEM do hub antigo (Otávio 22/07: a ordem antiga
 // agradava mais), em 3 blocos: Admin · Áreas · Visões da empresa.
 const NAV_CENTRAL: Array<{ href: string; label: string; spa: boolean; grupo?: string }> = [
-  { href: "/", label: "Início", spa: true, grupo: "Admin" },
+  // "Central", não "Início": a home única (que virá para todos) é que será o
+  // início — a Central é a visão do admin (Otávio 22/07)
+  { href: "/", label: "Central", spa: true, grupo: "Admin" },
   { href: "/admin", label: "Painel Administrativo", spa: false },
   { href: "/allhands", label: "All Hands", spa: false },
   { href: "/growth?view=contas", label: "Growth / Assessoria", spa: true, grupo: "Áreas" },
@@ -160,7 +162,7 @@ function Shell({ children }: { children: React.ReactNode }) {
           {itens.map((n) => {
             const ativa = ehAtiva(n.href);
             const cab = n.grupo ? (
-              <div key={`g-${n.grupo}`} className="mb-1 mt-6 px-3 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/60 first:mt-0">
+              <div key={`g-${n.grupo}`} className="mb-1.5 mt-9 px-3 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/60 first:mt-0">
                 {n.grupo}
               </div>
             ) : null;
