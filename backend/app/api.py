@@ -852,6 +852,11 @@ def api_central(request: Request):
                                       "manchete": manchete, "detalhe": detalhe})
                 prioridades.append({"titulo": o["title"], "racional": o["rationale"],
                                     "metric": o["metric"], "impacto": imp, "acoes": acoes_obj})
+            # CRITÉRIO DE PRIORIZAÇÃO (Otávio 22/07: "precisamos ter um critério
+            # de ordem"): maior impacto ESTIMADO primeiro, pelo piso da faixa
+            # (cenário conservador — ordenar pelo otimista premiaria estimativa
+            # incerta). Sem impacto estimável fica por último, e a tela DIZ isso.
+            prioridades.sort(key=lambda p: -((p["impacto"] or {}).get("faixa") or [0])[0])
         except Exception:  # noqa: BLE001 — bloco nunca derruba a central
             prioridades = []
     return {"stats": stats, "marketing": mkt, "vendas": sales, "operacoes": ops,

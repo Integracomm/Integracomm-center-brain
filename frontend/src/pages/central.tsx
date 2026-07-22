@@ -74,9 +74,15 @@ export function CentralPage() {
                   <div key={p.titulo} className="rounded-xl border border-border p-4">
                     <div className="flex flex-wrap items-baseline justify-between gap-2">
                       <b className="text-sm">{i + 1}. {p.titulo}</b>
-                      {p.impacto?.faixa && (
+                      {p.impacto?.faixa ? (
                         <Badge variant="outline" className="border-primary/50 text-primary">
                           impacto {faixaBRL(p.impacto.faixa)}
+                        </Badge>
+                      ) : (
+                        // Otávio 22/07: o card sem estimativa PERDEU essa
+                        // informação — ausência de número não é ausência de item
+                        <Badge variant="outline" className="text-muted-foreground">
+                          impacto não estimado
                         </Badge>
                       )}
                     </div>

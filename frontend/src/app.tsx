@@ -68,18 +68,20 @@ const NAV: Array<{ href: string; label: string; spa: boolean; grupo?: string }> 
   { href: "/app", label: "Biblioteca (vitrine)", spa: true, grupo: "Redesenho" },
 ];
 
-// Nav da CENTRAL (/): as portas de entrada de cada área + visões transversais
+// Nav da CENTRAL (/) — ORDEM do hub antigo (Otávio 22/07: a ordem antiga
+// agradava mais), em 3 blocos: Admin · Áreas · Visões da empresa.
 const NAV_CENTRAL: Array<{ href: string; label: string; spa: boolean; grupo?: string }> = [
-  { href: "/semana", label: "Ações da Semana", spa: true, grupo: "Visões transversais" },
-  { href: "/raiox", label: "Raio-X por Bundle", spa: true },
+  { href: "/", label: "Início", spa: true, grupo: "Admin" },
+  { href: "/admin", label: "Painel Administrativo", spa: false },
+  { href: "/allhands", label: "All Hands", spa: false },
   { href: "/growth?view=contas", label: "Growth / Assessoria", spa: true, grupo: "Áreas" },
   { href: "/marketing?view=visao", label: "Marketing", spa: true },
   { href: "/prevendas?view=funil", label: "Pré-vendas", spa: true },
   { href: "/vendas?view=funil", label: "Vendas", spa: true },
-  { href: "/financeiro?view=visao", label: "Financeiro", spa: true },
   { href: "/operacoes", label: "Operações", spa: false },
-  { href: "/admin", label: "Administrativo", spa: false, grupo: "Admin" },
-  { href: "/allhands", label: "All Hands", spa: false },
+  { href: "/financeiro?view=visao", label: "Financeiro", spa: true },
+  { href: "/semana", label: "Ações da Semana", spa: true, grupo: "Visões da empresa" },
+  { href: "/raiox", label: "Raio-X por Bundle", spa: true },
 ];
 
 function PrevendasRouter() {
@@ -146,8 +148,9 @@ function Shell({ children }: { children: React.ReactNode }) {
         <nav className="flex flex-1 flex-col gap-1">
           {itens.map((n) => {
             const ativa = n.spa && (n.href === atual || (n.href === "/app" && window.location.pathname === "/app"));
+            // espaçamento enxugado (Otávio 22/07: "mal espaçado")
             const cab = n.grupo ? (
-              <div key={`g-${n.grupo}`} className="mb-1 mt-4 px-3 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/70 first:mt-0">
+              <div key={`g-${n.grupo}`} className="mb-0.5 mt-3 px-3 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/60 first:mt-0">
                 {n.grupo}
               </div>
             ) : null;
@@ -158,7 +161,7 @@ function Shell({ children }: { children: React.ReactNode }) {
               <span key={n.href} className="contents">
               {cab}
               <a href={n.href}
-                className={`rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+                className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
                   ativa ? "bg-primary/10 text-primary"
                     : "text-muted-foreground hover:bg-muted hover:text-foreground"
                 }`}>
