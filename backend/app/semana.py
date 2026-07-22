@@ -748,6 +748,12 @@ def api_semana_foco(request: Request, team: str = Query("")):
         return _J({"error": "sessao"}, status_code=401)
     if team not in _TEAM_LBL:
         return {"team": team, "team_label": None, "acoes": []}
+    # o banner é do time DA PESSOA: sem esta linha bastava trocar ?team= para
+    # ler as ações de outra área por fora do menu (22/07)
+    _user, _role = s
+    if _role != "admin" and team not in A._areas_of(_user, _role):
+        from fastapi.responses import JSONResponse as _J
+        return _J({"error": "sem acesso a esta área"}, status_code=403)
     with A._conn() as c:
         acs = [a for a in _acoes(c, _seg()) if a["team"] == team][:2]
     out = []
@@ -759,7 +765,10 @@ def api_semana_foco(request: Request, team: str = Query("")):
             links.append({"url": url, "label": str(lbl)})
         out.append({"manchete": manchete, "detalhe": detalhe, "lag": a.get("lag"),
                     "objetivo": a.get("objetivo"), "links": links})
-    return {"team": team, "team_label": _TEAM_LBL[team], "acoes": out}
+    # `pode_abrir` evita link morto: as Ações da Semana viraram do admin, e o
+    # banner é a única porta que o gestor via para elas (22/07)
+    return {"team": team, "team_label": _TEAM_LBL[team], "acoes": out,
+            "pode_abrir": _role == "admin"}
 
 
 @router.get("/api/semana/painel")
@@ -770,6 +779,9 @@ def api_semana_painel(request: Request):
         from fastapi.responses import JSONResponse as _J
         return _J({"error": "sessao"}, status_code=401)
     _user, role = s
+    if role != "admin":  # mesmo motivo da tela: conteúdo de todos os times
+        from fastapi.responses import JSONResponse as _J
+        return _J({"error": "as Ações da Semana são do administrador"}, status_code=403)
     edita = role == "admin"
     week = _seg()
     with A._conn() as c:
@@ -829,6 +841,12 @@ def semana_page(request: Request):
     if not s:
         return RedirectResponse("/login", status_code=302)
     user, role = s
+    # SÓ ADMIN (Otávio 22/07): a tela lista os objetivos e as ações de TODOS os
+    # times, com cliente e negócio nominais. Antes abria para qualquer sessão
+    # logada (só a EDIÇÃO era do admin) — tirar do menu escondia, não protegia.
+    # O gestor vê o foco do time DELE no banner da própria área.
+    if role != "admin":
+        return RedirectResponse("/", status_code=302)
     from .help_texts import _hint
     edita = role == "admin"
     # redesenho: rota própria (sem ?view=) — mesmo chaveamento, view sintética
@@ -1044,9 +1062,14 @@ def semana_salvar(request: Request, acao: str = Form(...), titulo: str = Form(""
 
 # ---- endpoints JSON (mesmas funções; integração/automação) ----
 def _api_guard(request: Request):
+    """Sessão de ADMIN, ou None. Toda a API das Ações da Semana é do admin
+    (Otávio 22/07) — objetivos, ações e revisão descrevem TODOS os times, com
+    cliente e negócio nominais. Antes as três LEITURAS (objetivos/acoes/revisao)
+    passavam com qualquer sessão logada, então fechar só a tela não bastava.
+    O foco do time da própria pessoa segue em /api/semana/foco."""
     A = _deps()
     s = A._session(request)
-    return s
+    return s if (s and s[1] == "admin") else None
 
 
 @router.post("/api/semana/propor")

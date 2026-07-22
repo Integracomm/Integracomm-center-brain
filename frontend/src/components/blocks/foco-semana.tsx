@@ -7,7 +7,7 @@ import { useApi } from "@/hooks/use-api";
 // shell do SPA e vale para TODAS as áreas de uma vez.
 
 interface Foco {
-  team: string; team_label: string | null;
+  team: string; team_label: string | null; pode_abrir?: boolean;
   acoes: Array<{ manchete: string; detalhe: string; lag: string | null;
     objetivo: string | null; links: Array<{ url: string; label: string }> }>;
 }
@@ -29,9 +29,13 @@ export function FocoSemana({ pathname }: { pathname: string }) {
     <div className="mb-6 rounded-xl border border-border bg-card p-4">
       <div className="text-[10px] font-semibold uppercase tracking-widest text-primary">
         Seu foco desta semana{" "}
-        <a href="/semana" className="font-normal normal-case tracking-normal text-muted-foreground hover:underline">
-          · ver Ações da Semana →
-        </a>
+        {/* a tela cheia das Ações da Semana virou do admin (22/07): para o
+            gestor o link seria um beco sem saída */}
+        {q.data.pode_abrir && (
+          <a href="/semana" className="font-normal normal-case tracking-normal text-muted-foreground hover:underline">
+            · ver Ações da Semana →
+          </a>
+        )}
       </div>
       {q.data.acoes.map((a, i) => (
         <div key={i} className="pt-1.5 text-sm leading-relaxed">
