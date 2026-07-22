@@ -43,14 +43,24 @@ if [ "$CODIGO" -eq 124 ] || [ "$CODIGO" -eq 137 ]; then
     # ele seguiria consumindo gateway e RAM com a trava já liberada. A imagem é
     # slim (sem pkill/pgrep), então o alvo vem do `docker top`, que dá o PID no
     # HOST — e o kill sai daqui mesmo.
-    PIDS=$(docker top deploy-app-1 -eo pid,args 2>/dev/null \
-           | grep -E 'run_portfolio|daily_run|sync_cancelamentos|sync_marketing' \
-           | awk '{print $1}')
+    # o padrão pega o script E qualquer etapa `python -m scripts.X` (hoje
+    # run_portfolio, sync_cancelamentos, sync_marketing, check_nps_fill; amanhã
+    # o que entrar). NÃO casa com o painel, que é `python -m uvicorn`.
+    alvos() {
+        docker top deploy-app-1 -eo pid,args 2>/dev/null \
+            | grep -E 'daily_run|python -m scripts\.' | awk '{print $1}'
+    }
+    PIDS=$(alvos)
     if [ -n "$PIDS" ]; then
         echo "    matando o que sobrou dentro do container: $PIDS"
         kill -TERM $PIDS 2>/dev/null
         sleep 10
-        kill -KILL $PIDS 2>/dev/null
+        RESTO=$(alvos)
+        [ -n "$RESTO" ] && kill -KILL $RESTO 2>/dev/null
+        sleep 2
+        SOBROU=$(docker top deploy-app-1 -eo pid,args 2>/dev/null \
+                 | grep -E 'daily_run|python -m scripts\.')
+        [ -n "$SOBROU" ] && echo "    ATENÇÃO, sobreviveu ao kill: $SOBROU"
     fi
 elif [ "$CODIGO" -ne 0 ]; then
     echo "=== $(agora) FALHOU: código $CODIGO ==="
