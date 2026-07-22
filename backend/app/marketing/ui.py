@@ -1600,9 +1600,8 @@ def marketing(request: Request, view: str = Query("visao")):
               "lag": lambda: _lag(c), "planejador": lambda: _planejador(c, request),
               "criativos": lambda: _criativos(c, request),
               "ciclo": lambda: _ciclo_vida(c)}[view]
-        content = fn() + ("<p class=foot>Cache local das fontes — deals do Pipedrive re-sincronizam ao abrir a área "
-                          "(defasagem ≤10 min; recarregue para ver o fresco); mudanças de etapa a cada hora; "
-                          "Meta/Google/planilhas na coleta diária 06h. A decisão é sempre do gestor.</p>")
+        from ..help_texts import rodape as _rodape  # fonte única (HTML + SPA)
+        content = fn() + f"<p class=foot>{_rodape('marketing')}</p>"
     return HTMLResponse(_shell(A, role, view, content, usermail=user))
 
 

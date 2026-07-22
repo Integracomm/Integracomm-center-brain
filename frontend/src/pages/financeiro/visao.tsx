@@ -213,10 +213,10 @@ export function FinanceiroVisaoPage() {
             <Tabela meses={d.historico.meses} linhas={d.historico.linhas} destaque={d.historico.destaque} />
           </SectionCard>
 
+          {/* o rodapé de FONTE vem do shell (fonte única em help_texts.RODAPES) */}
           <p className="text-xs text-muted-foreground">
             A <b>Saúde da Receita Recorrente</b> (ISR, Quick Ratio, crossover B2-B5 × antigos) tem aba
             própria: <a href="/financeiro?view=receita" className="text-primary hover:underline">Receita Recorrente</a>.
-            Fonte: planilha Planejamento_Receita_2026 (cache 10 min) + espelho do Pipedrive (≤10 min).
           </p>
         </>
       )}

@@ -2259,9 +2259,8 @@ def prevendas(request: Request, view: str = Query("funil")):
         fn = {"funil": _pv_funil, "speed": _pv_speed, "horarios": _pv_horarios,
               "sdrs": _pv_sdrs,
               "ponte": lambda cc, rr: _vd_ponte(cc, rr, area="prevendas")}[view]
-        content = fn(c, request) + ("<p class=foot>Fonte: Pipedrive — deals re-sincronizam ao abrir a área (defasagem ≤10 min; "
-                          "recarregue para ver o fresco); mudanças de etapa a cada hora. "
-                          "A decisão é sempre do gestor — o especialista sinaliza.</p>")
+        from ..help_texts import rodape as _rodape  # fonte única (HTML + SPA)
+        content = fn(c, request) + f"<p class=foot>{_rodape('prevendas')}</p>"
     return HTMLResponse(_shell(A, "prevendas", _PV_VIEWS, view, content, user))
 
 
@@ -2288,9 +2287,8 @@ def vendas(request: Request, view: str = Query("funil")):
         fn = {"funil": _vd_funil, "ponte": _vd_ponte, "winloss": _vd_winloss,
               "ciclo": _vd_ciclo, "horarios": _vd_horarios, "closers": _vd_closers,
               "forecast": _vd_forecast}[view]
-        content = fn(c, request) + ("<p class=foot>Fonte: Pipedrive — deals re-sincronizam ao abrir a área (defasagem ≤10 min; "
-                          "recarregue para ver o fresco); mudanças de etapa a cada hora. "
-                          "A decisão é sempre do gestor — o especialista sinaliza.</p>")
+        from ..help_texts import rodape as _rodape  # fonte única (HTML + SPA)
+        content = fn(c, request) + f"<p class=foot>{_rodape('vendas')}</p>"
     return HTMLResponse(_shell(A, "vendas", _VD_VIEWS, view, content, user))
 
 

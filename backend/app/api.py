@@ -797,6 +797,18 @@ def api_help(request: Request):
             for area, entradas in HELP.items()}
 
 
+@app.get("/api/rodape")
+def api_rodape(request: Request):
+    """Rodapé de FONTE por área (procedência do dado + defasagem) + o e-mail da
+    sessão. Vivia inline nos handlers HTML e sumia nas telas migradas
+    (regressão 22/07, irmã do banner de foco): agora vem da fonte única
+    help_texts.RODAPES, servindo HTML e SPA."""
+    user, _role = _require_api(request)
+    from .help_texts import RODAPES
+    return {"usuario": user, "coleta": "dados via cache local (coleta 06h)",
+            "rodapes": RODAPES}
+
+
 @app.get("/api/growth/modelo")
 def api_growth_modelo(request: Request):
     """Precisão do modelo + série do risco da carteira (redesenho, ajuste do

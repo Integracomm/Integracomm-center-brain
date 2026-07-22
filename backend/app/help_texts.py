@@ -47,6 +47,10 @@ HELP: dict[str, list[tuple[str, str]]] = {
         ("Bookings × meta mês a mês", "Como ler: cada barra é um mês de contratos fechados. Verde = meta batida; vermelha = abaixo; o tracinho marca onde a meta estava; meses futuros aparecem vazados (só a meta). O número de contratos está embaixo de cada mês.\nFique de olho: vários meses vermelhos mas com a QUANTIDADE de contratos em dia = o problema é o valor dos contratos (muito plano barato no mix), não o volume de vendas."),
         ("Inadimplência e churn", "Como ler: um chip colorido por mês. Inadimplência: verde até 4%, amarelo até 8%, vermelho acima. Cancelamento (churn): verde até 5%, amarelo até 9%. Meses futuros mostram o alvo, esmaecidos.\nFique de olho: inadimplência e cancelamento subindo JUNTOS costuma indicar o mesmo grupo de clientes com problema de cobrança ou de valor percebido — cruze com a aba Cancelamentos do Growth."),
     ],
+    # RODAPÉ DE FONTE por área — de onde vem o dado e qual a defasagem.
+    # Vivia inline em cada handler HTML e SUMIU nas telas migradas (regressão
+    # 22/07, irmã do banner de foco): agora é FONTE ÚNICA, consumida pelo HTML
+    # e pelo SPA (/api/rodape). Ver RODAPES no fim do arquivo.
     # Ações da Semana: mesma situação do Raio-X — a tela HTML usa _hint()
     # inline; o SPA lê via /api/help. Texto do _intro = o mesmo já validado.
     "semana": [
@@ -260,6 +264,40 @@ HELP: dict[str, list[tuple[str, str]]] = {
 # a Ponte PV→Vendas é ESPELHADA nas duas áreas (14/07: as duas gestoras
 # querem a visão) — mesmo conteúdo, mesmo help
 HELP["prevendas/ponte"] = HELP["vendas/ponte"]
+
+
+# ---------------------------------------------------------------------------
+# RODAPÉ DE FONTE por área (procedência do dado + defasagem). Vivia inline em
+# cada handler HTML; com as telas no SPA o rodapé sumia (regressão 22/07,
+# irmã do banner 'seu foco desta semana'). Agora é FONTE ÚNICA: o HTML lê
+# daqui e o SPA consome via /api/rodape.
+# ---------------------------------------------------------------------------
+RODAPES: dict[str, str] = {
+    "growth": ("Derivados do Postgres próprio (LGPD: sem conteúdo bruto). "
+               "O agente calcula, exibe e sinaliza — nunca age."),
+    "marketing": ("Cache local das fontes — deals do Pipedrive re-sincronizam ao abrir a área "
+                  "(defasagem ≤10 min; recarregue para ver o fresco); mudanças de etapa a cada hora; "
+                  "Meta/Google/planilhas na coleta diária 06h. A decisão é sempre do gestor."),
+    "prevendas": ("Fonte: Pipedrive — deals re-sincronizam ao abrir a área (defasagem ≤10 min; "
+                  "recarregue para ver o fresco); mudanças de etapa a cada hora. "
+                  "A decisão é sempre do gestor — o especialista sinaliza."),
+    "vendas": ("Fonte: Pipedrive — deals re-sincronizam ao abrir a área (defasagem ≤10 min; "
+               "recarregue para ver o fresco); mudanças de etapa a cada hora. "
+               "A decisão é sempre do gestor — o especialista sinaliza."),
+    "financeiro": ("Fonte: planilha Planejamento_Receita_2026 (cache 10 min) + espelho do Pipedrive "
+                   "(re-sincroniza ao abrir, defasagem ≤10 min). Recebimento/inadimplência em tempo "
+                   "real entram quando os dados do Omie abrirem — por ora, no histórico mensal."),
+    "raiox": ("Composição das fontes já usadas por cada área (coorte do Ciclo de Vida, Ponte, "
+              "planilha financeira, cancelamentos, squads), filtradas pelo bundle — nenhuma régua "
+              "recalculada aqui. A leitura do especialista é hipótese, não veredito."),
+    "semana": ("Objetivos derivados dos gaps já medidos (bookings por bundle × meta, MRR em risco, "
+               "ritmo de leads); nada vira foco de time sem confirmação humana. As ações citam dados "
+               "reais e a defasagem esperada de cada correção."),
+}
+
+
+def rodape(area: str) -> str:
+    return RODAPES.get(area, "")
 
 
 def _norm(s: str) -> str:

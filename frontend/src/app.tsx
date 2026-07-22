@@ -24,6 +24,7 @@ import { FinanceiroVisaoPage } from "@/pages/financeiro/visao";
 import { RaioXPage } from "@/pages/raiox";
 import { SemanaPage } from "@/pages/semana";
 import { FocoSemana } from "@/components/blocks/foco-semana";
+import { RodapeFonte, UsuarioRail } from "@/components/blocks/rodape-fonte";
 
 // A aplicação atual navega por QUERY (?view=) dentro de cada área — o SPA
 // respeita as MESMAS URLs (favoritos/links continuam valendo). Views ainda
@@ -153,15 +154,21 @@ function Shell({ children }: { children: React.ReactNode }) {
             ← Início (central)
           </a>
         </nav>
-        <div className="flex items-center justify-between border-t border-border pt-3">
-          <a href="/logout" className="text-xs text-muted-foreground hover:text-foreground">sair</a>
-          <ThemeToggle />
+        <div className="space-y-2 border-t border-border pt-3">
+          {/* e-mail da sessão + origem do dado — estavam no rail do HTML */}
+          <UsuarioRail />
+          <div className="flex items-center justify-between">
+            <a href="/logout" className="text-xs text-muted-foreground hover:text-foreground">sair</a>
+            <ThemeToggle />
+          </div>
         </div>
       </aside>
       <main className="min-w-0 flex-1 p-6 lg:p-8">
         {/* foco da semana do time da área — antes vinha do _shell HTML */}
         <FocoSemana pathname={area} />
         {children}
+        {/* procedência do dado + defasagem — estava no rodapé do HTML */}
+        <RodapeFonte pathname={area} />
       </main>
     </div>
   );
