@@ -3,6 +3,50 @@
 Regra combinada (21/07): discrepância de número ou dúvida de conteúdo NÃO para o
 lote — entra aqui e o Otávio decide tudo junto no fim do lote.
 
+## EM ABERTO — Central: reconstrução (feedback Otávio 22/07)
+
+**Contexto honesto:** a Central entregue no Lote 5 saiu INCOMPLETA — 4 blocos do
+hub HTML não foram portados e os cards compactos de área viraram seções grandes
+(piorou a leitura). Isto aqui é a especificação para terminar; cada item é
+independente e pode ser commitado sozinho.
+
+**1. Blocos que faltam, na ORDEM CANÔNICA do hub** (ver `api.py`, corpo do
+`_render_hub`, comentário "mudou → saúde → raio-x compacto → cards de área →
+iniciativas → defasagem"):
+   1. Prioridades da Semana (existe) → 2. O que mudou desde ontem (existe) →
+   3. **Números-chave do mês** (`kpi_html`) → 4. **Saúde por área** (`hbar`,
+   ordenado da área que mais demanda atenção) → 5. **Raio-X compacto por
+   bundle** (`raiox.mini_cards_html` — precisa de versão em dados) →
+   6. **Áreas** (`area_cards` — CARDS COMPACTOS lado a lado, não seções
+   grandes) → 7. **Iniciativas de maior horizonte** (gargalos com impacto R$
+   que não viraram objetivo da semana) → 8. Defasagens (recolhida).
+   *A ordem importa: é a rotina de leitura diária do Otávio.*
+
+**2. Design de "Prioridades da Semana":** hoje "parecem informações juntas e
+jogadas". Precisa de hierarquia — impacto em R$ como âncora visual, separação
+clara entre objetivos, e as ações por área legíveis de relance.
+   - JÁ FEITO: critério de ordem (maior impacto pelo PISO da faixa; sem
+     estimativa por último) e o selo "impacto não estimado".
+
+**3. Design de "O que mudou desde ontem":** destacar as mudanças que exigem ação
+(ex.: conta ENTROU em crítico) das informativas.
+   - JÁ FEITO: cada linha leva ao recorte exato (`?ids=` honrado na tela de
+     Contas, com chip "recorte do link: N conta(s) · ver todas").
+
+**4. HOME ÚNICA (decidido pelo Otávio 22/07, via AskUserQuestion):**
+   - Nova tela inicial para TODOS (admin e gestores). Sidebar mostra só o que a
+     pessoa acessa: as áreas dela + "Visões da empresa".
+   - Resolve dois problemas REAIS e anteriores à migração: (a) o gestor com
+     várias áreas cai hoje na 1ª área em ordem ALFABÉTICA (`sorted(áreas)[0]`
+     em `api.py` login) — arbitrário; (b) ele NÃO tem como trocar de área pela
+     interface (o "← Início" só existia para admin).
+   - A Central vira item do bloco **Admin** (já renomeada de "Início" para
+     "Central" no menu).
+   - Conteúdo da home: atalhos do que a pessoa acessa + o foco da semana do
+     time dela (`/api/semana/foco` já existe).
+   - **Raio-X por Bundle: VISÍVEL para todos os gestores** (decidido) — hoje o
+     handler já libera por sessão; falta só entrar na navegação deles.
+
 ## Lote 0
 
 1. **Bundle JS de 755 KB (225 KB gzip)** — Recharts é o peso. Funciona normal;
