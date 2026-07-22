@@ -305,6 +305,22 @@ Base para reextrapolar os lotes 2–6 com dado real.
   build falha ALTO no COPY — melhor que OOM silencioso.
 - **Lição para a fundação:** qualquer passo pesado (build, compilação) tem que
   rodar ONDE há recurso. A instância de produção serve; não compila.
+- **Recuperação (22/07, após reboot manual do Otávio no console do Lightsail):**
+  containers subiram sozinhos (restart policy), site 200. Detalhe perigoso
+  encontrado: o `.env` já tinha as flags dos Lotes 2-3 mas a imagem era a
+  ANTIGA (o build nunca terminou) — views apontadas p/ um SPA que não as tinha.
+  Resolvido pelo deploy correto, não por remendo de flag.
+- **Deploy pelo caminho novo — comparação medida:** build no servidor virou só
+  `COPY` (segundos, sem bun); RAM do host **511 MB de 1907** logo após o
+  deploy, contra saturação total antes; pacote = 1,0 MB de código + 0,3 MB de
+  dist. Bundle conferido pelo HASH (index-DALxIIAw.js local == produção).
+  7 endpoints novos respondendo 401 (rota existe e exige sessão), zero erro no
+  log. `deploy.ps1` tem prompt interativo com worktree suja — os 4 passos
+  foram rodados à mão (o runbook já previa isso).
+- **Escopo do que foi a produção:** código dos Lotes 2-3-4, mas as flags do
+  servidor mantêm Marketing em `canais,origens` — as 8 telas do Lote 4 seguem
+  em HTML até o Otávio validar localmente (regra: validação local antes do
+  deploy). Basta ampliar `SPA_MARKETING_VIEWS` quando ele aprovar.
 
 ## Lote 4 — Marketing pesado: as 8 views restantes (22/07)
 
