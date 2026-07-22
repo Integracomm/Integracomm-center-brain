@@ -23,6 +23,7 @@ import { MktCicloVidaPage } from "@/pages/marketing/ciclo-vida";
 import { FinanceiroVisaoPage } from "@/pages/financeiro/visao";
 import { RaioXPage } from "@/pages/raiox";
 import { SemanaPage } from "@/pages/semana";
+import { FocoSemana } from "@/components/blocks/foco-semana";
 
 // A aplicação atual navega por QUERY (?view=) dentro de cada área — o SPA
 // respeita as MESMAS URLs (favoritos/links continuam valendo). Views ainda
@@ -157,7 +158,11 @@ function Shell({ children }: { children: React.ReactNode }) {
           <ThemeToggle />
         </div>
       </aside>
-      <main className="min-w-0 flex-1 p-6 lg:p-8">{children}</main>
+      <main className="min-w-0 flex-1 p-6 lg:p-8">
+        {/* foco da semana do time da área — antes vinha do _shell HTML */}
+        <FocoSemana pathname={area} />
+        {children}
+      </main>
     </div>
   );
 }

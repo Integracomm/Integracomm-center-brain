@@ -11,6 +11,12 @@ export function useApi<T>(path: string) {
 
   useEffect(() => {
     let vivo = true;
+    // path vazio = "não busque nada" — permite fetch CONDICIONAL sem quebrar a
+    // regra dos hooks (ex.: banner de foco só nas áreas que têm time)
+    if (!path) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError(null);
     apiGet<T>(path)

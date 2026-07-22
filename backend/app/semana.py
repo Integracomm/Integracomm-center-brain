@@ -735,6 +735,33 @@ def foco_time_html(conn, team: str) -> str:
 # decomposição antes de confirmar). As AÇÕES de escrita seguem no POST
 # /semana/salvar já existente — o SPA posta lá e refaz o fetch.
 # ---------------------------------------------------------------------------
+@router.get("/api/semana/foco")
+def api_semana_foco(request: Request, team: str = Query("")):
+    """Banner 'seu foco desta semana' do time — o MESMO conteúdo de
+    foco_time_html (máx. 2 ações), em dados. Regressão 22/07: o banner era
+    injetado pelo _shell HTML da área; com a view no SPA, o shell não roda
+    mais e o foco sumia das áreas migradas."""
+    A = _deps()
+    s = A._session(request)
+    if not s:
+        from fastapi.responses import JSONResponse as _J
+        return _J({"error": "sessao"}, status_code=401)
+    if team not in _TEAM_LBL:
+        return {"team": team, "team_label": None, "acoes": []}
+    with A._conn() as c:
+        acs = [a for a in _acoes(c, _seg()) if a["team"] == team][:2]
+    out = []
+    for a in acs:
+        manchete, detalhe = _acao_split(a["texto"])
+        links = []
+        for lk in ((a.get("refs") or {}).get("links") or []):
+            url, lbl = (lk[0], lk[1]) if isinstance(lk, (list, tuple)) else (lk, "abrir")
+            links.append({"url": url, "label": str(lbl)})
+        out.append({"manchete": manchete, "detalhe": detalhe, "lag": a.get("lag"),
+                    "objetivo": a.get("objetivo"), "links": links})
+    return {"team": team, "team_label": _TEAM_LBL[team], "acoes": out}
+
+
 @router.get("/api/semana/painel")
 def api_semana_painel(request: Request):
     A = _deps()
