@@ -171,13 +171,20 @@ function Shell({ children }: { children: React.ReactNode }) {
           <span className="inline-block h-6 w-6 rounded-full bg-primary" />
           <span className="font-display text-sm font-bold">Integracomm IA</span>
         </div>
-        {/* itens COLADOS dentro do grupo e respiro MAIOR entre grupos — antes
-            a distância entre irmãos passava da distância entre blocos */}
+        {/* itens COLADOS dentro do grupo e respiro MAIOR entre grupos (Otávio
+            22/07, 2ª volta). O `first:mt-0` de antes NUNCA funcionava: cada par
+            cabeçalho+item mora num <span class=contents>, então TODO cabeçalho
+            era :first-child do seu span e ficava sem margem — a distância entre
+            irmãos acabava maior que a distância entre blocos. Agora o respiro é
+            decidido pelo ÍNDICE, e o rótulo do grupo tem cor própria. */}
         <nav className="flex flex-1 flex-col">
-          {itens.map((n) => {
+          {itens.map((n, i) => {
             const ativa = ehAtiva(n.href);
             const cab = n.grupo ? (
-              <div key={`g-${n.grupo}`} className="mb-1.5 mt-9 px-3 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/60 first:mt-0">
+              <div key={`g-${n.grupo}`}
+                className={`mb-1 px-3 text-[10px] font-semibold uppercase tracking-widest text-primary/75 ${
+                  i === 0 ? "" : "mt-7"
+                }`}>
                 {n.grupo}
               </div>
             ) : null;
@@ -188,7 +195,7 @@ function Shell({ children }: { children: React.ReactNode }) {
               <span key={n.href} className="contents">
               {cab}
               <a href={n.href} aria-current={ativa ? "page" : undefined}
-                className={`rounded-lg py-1.5 pl-3 pr-3 text-sm font-medium transition-colors ${
+                className={`rounded-lg py-1 pl-3 pr-3 text-sm font-medium transition-colors ${
                   ativa
                     // acento dourado à esquerda, como no painel HTML
                     ? "border-l-2 border-primary bg-primary/10 pl-[10px] text-primary"

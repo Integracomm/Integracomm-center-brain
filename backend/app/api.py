@@ -942,7 +942,11 @@ def api_home(request: Request):
         from .semana import _acoes, _acao_split, _seg, _TEAM_LBL
         with _conn() as c:
             acs = _acoes(c, _seg())
-        times = [t for t in _TEAM_LBL if t in minhas] or list(_TEAM_LBL)
+        # SÓ os times das áreas da pessoa. O fallback "sem área de time -> mostra
+        # todos" que existia aqui vazava as ações das outras áreas (elas trazem
+        # nome de cliente e de negócio) para quem só cuida de Financeiro ou
+        # Operações — regressão pega pelo Otávio em 22/07.
+        times = [t for t in _TEAM_LBL if t in minhas]
         for t in times:
             do_time = [a for a in acs if a["team"] == t][:2]
             if not do_time:
