@@ -271,7 +271,7 @@ export function MelhorHorarioPage() {
               {atd && atd.cells.length ? (
                 <>
                   <Heatmap rows={atd.rows} cols={atd.cols} cells={atd.cells}
-                    color="var(--success)" rowScale dense tall rowLabelWidth={110}
+                    color="var(--success)" rowScale dense tall rowLabelWidth={96}
                     valueLabel={(v) => `${v}%`}
                     subLabel={(c) => (c.n != null ? String(c.n) : null)}
                     legendLabel="atendimento"
@@ -311,7 +311,7 @@ export function MelhorHorarioPage() {
               subtitle="quando o lead de cada canal AGENDA · escala POR LINHA (compara o padrão independente do volume) · célula contornada = pico">
               {gOrigem && gOrigem.cells.length ? (
                 <Heatmap rows={gOrigem.rows} cols={gOrigem.cols} cells={gOrigem.cells}
-                  color="var(--chart-2)" rowScale dense tall rowLabelWidth={110}
+                  color="var(--chart-2)" rowScale dense tall rowLabelWidth={96}
                   legendLabel="agendamentos" />
               ) : (
                 <p className="text-sm text-muted-foreground">Sem dados por origem no período.</p>

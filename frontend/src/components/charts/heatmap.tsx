@@ -102,9 +102,12 @@ export function Heatmap({
     <div className="w-full">
       <div className={dense ? "" : "overflow-x-auto"}>
         <div
-          className="grid gap-1"
+          className={dense ? "grid gap-0.5" : "grid gap-1"}
           style={{
-            gridTemplateColumns: `${rowLabelWidth}px repeat(${cols.length}, minmax(${dense ? 28 : 72}px, 1fr))`,
+            // o valor denso e o PISO da coluna: com espaco sobrando o 1fr
+            // estica. 26px cabe "100%" a 10px e da folga p/ 15 colunas dentro
+            // de meia tela (22/07: as celulas vazavam o card pela direita)
+            gridTemplateColumns: `${rowLabelWidth}px repeat(${cols.length}, minmax(${dense ? 26 : 72}px, 1fr))`,
           }}
         >
           {/* Header row */}
@@ -125,7 +128,7 @@ export function Heatmap({
               // e re-render instável das linhas)
               <Fragment key={row}>
                 <div
-                  className="text-xs text-foreground/80 pr-2 flex items-center truncate"
+                  className={`text-xs text-foreground/80 ${dense ? "pr-1.5" : "pr-2"} flex items-center truncate`}
                   title={row}
                 >
                   {row}
