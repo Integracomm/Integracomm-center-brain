@@ -39,10 +39,13 @@ _PWD_KEY: dict[str, str] = {
     "admin": "AUTH_ADMIN_PASSWORD",
     "gestor_growth": "AUTH_GESTOR_GROWTH_PASSWORD",
 }
-ROLE_HOME: dict[str, str] = {"admin": "/", "gestor_growth": "/growth",
-                             "gestor_marketing": "/marketing",
-                             "gestor_prevendas": "/prevendas", "gestor_vendas": "/vendas",
-                             "gestor_operacoes": "/operacoes"}
+# HOME ÚNICA (Otávio 22/07): "/" é a tela inicial de TODOS. Antes o gestor caía
+# na 1ª área em ordem ALFABÉTICA e não tinha como trocar de área pela interface
+# (o "← Início" só existia para o admin). A Central do admin mudou para /central.
+ROLE_HOME: dict[str, str] = {"admin": "/", "gestor_growth": "/",
+                             "gestor_marketing": "/",
+                             "gestor_prevendas": "/", "gestor_vendas": "/",
+                             "gestor_operacoes": "/"}
 
 # Áreas do produto (controle de acesso POR CONTA — admin marca no hub quais
 # áreas cada conta enxerga). Chave = slug usado na coluna users.areas (csv).

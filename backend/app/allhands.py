@@ -362,7 +362,7 @@ def _form_page(mes_sel: dt.date | None = None, destaques: list | None = None,
 <meta name=viewport content="width=device-width,initial-scale=1"><title>All Hands — gerar apresentação</title>
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;600;700;800&display=swap" rel=stylesheet>
 <style>{_FORM_CSS}</style></head><body>
-<a href="/">← voltar à central</a>
+<a href="/central">← voltar à central</a>
 <h1>APRESENTAÇÃO <span style="color:#ffc107">ALL HANDS</span></h1>
 <p style="color:#9a9a9a;max-width:860px">Os slides de dados (funil, vendas por plano, clientes por plano, churn, evolução e metas)
 são preenchidos automaticamente com as mesmas réguas do painel. Preencha abaixo só o conteúdo do mês —
@@ -772,7 +772,7 @@ def _gerar_html(mes: dt.date, d: dict, destaques: list[dict], novos: dict | None
             "style='background:#1a1a1a;color:#ffc107;border:1px solid #ffc107'>Baixar PPTX ↓</button>"
             "<button type=submit style='background:none;border:none;color:#ffc107;cursor:pointer;"
             "font-size:13px;font-family:inherit;padding:0 6px'>← ajustar conteúdo</button>"
-            "</form><a href='/'>central</a>"
+            "</form><a href='/central'>central</a>"
             "<span style='color:#777;font-size:12px'>PDF: orientação paisagem, 1 página por slide · "
             "PPTX: arquivo editável no PowerPoint · ajustar conteúdo mantém tudo preenchido</span></div>"
             + "".join(slides) + "</body></html>")

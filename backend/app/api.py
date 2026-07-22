@@ -141,9 +141,9 @@ def _require_area(request: Request, area: str):
     user, role = s
     if role == "admin" or area in _areas_of(user, role):
         return s, None
-    minhas = sorted(_areas_of(user, role))
-    destino = AREA_HOME.get(minhas[0], "/login") if minhas else "/login"
-    return None, RedirectResponse(destino, status_code=302)
+    # sem acesso à área: volta para a HOME ÚNICA, que lista o que a pessoa
+    # de fato acessa (antes ia para a 1ª área em ordem alfabética)
+    return None, RedirectResponse("/" if _areas_of(user, role) else "/login", status_code=302)
 
 
 def _require_api(request: Request) -> tuple[str, str]:
@@ -312,12 +312,10 @@ async def do_login(request: Request):
     clear_login_fails(key)
     with _conn() as c, c.cursor() as cur:  # auditoria: quem entrou, quando
         cur.execute("INSERT INTO audit_log (actor, action, scope) VALUES (%s,'login','painel')", (user,))
-    if user in USERS:
-        home = ROLE_HOME[role]
-    else:  # usuário do banco: 1ª área liberada define a home
-        minhas = sorted(_areas_of(user, role))
-        home = AREA_HOME.get(minhas[0], ROLE_HOME.get(role, "/login")) if minhas else ROLE_HOME.get(role, "/login")
-    resp = RedirectResponse(home, status_code=303)
+    # HOME ÚNICA (22/07): todo mundo cai em "/". A regra antiga mandava o
+    # usuário do banco para a 1ª área em ordem ALFABÉTICA — arbitrária para quem
+    # cuida de mais de uma, e sem caminho de volta pela interface.
+    resp = RedirectResponse(ROLE_HOME.get(role, "/"), status_code=303)
     resp.set_cookie(COOKIE, make_token(user, role), max_age=12 * 3600, httponly=True,
                     samesite="lax", secure=(request.url.scheme == "https"))
     return resp
@@ -554,19 +552,41 @@ def _is_dec(v: Any) -> bool:
 
 
 # --- Painéis HTML ------------------------------------------------------------
-# `/` = HUB central (inteligência que enxerga todas as áreas; hoje só Growth
-# está ativa — as demais são placeholders da casca modular).
-# `/growth` = área de Growth/Assessoria (gestor_growth ou admin).
+# `/`        = HOME ÚNICA de todo mundo (22/07): atalhos do que a pessoa acessa
+#              + o foco da semana do time dela.
+# `/central` = a Central do admin (era `/`; a inteligência cross-área).
+# `/growth`  = área de Growth/Assessoria (gestor_growth ou admin).
 @app.get("/", response_class=HTMLResponse)
+def home(request: Request):
+    """Tela inicial de TODOS. Resolve dois problemas anteriores à migração: o
+    gestor com várias áreas caía na 1ª em ordem alfabética, e não tinha como
+    trocar de área pela interface."""
+    s = _session(request)
+    if not s:
+        return RedirectResponse("/login", status_code=302)
+    user, role = s
+    from . import spa as _spa_mod
+    _r = _spa_mod.view_response(request, "home", "visao")
+    if _r is not None:
+        return _r
+    # sem o SPA habilitado não existe home em HTML: mantém o comportamento
+    # antigo (admin → Central; gestor → 1ª área liberada) para não deixar
+    # ninguém sem tela
+    if role == "admin":
+        return RedirectResponse("/central", status_code=302)
+    minhas = sorted(_areas_of(user, role))
+    return RedirectResponse(AREA_HOME.get(minhas[0], "/growth") if minhas else "/growth",
+                            status_code=302)
+
+
+@app.get("/central", response_class=HTMLResponse)
 def hub(request: Request):
     s = _session(request)
     if not s:
         return RedirectResponse("/login", status_code=302)
     user, role = s
-    if role != "admin":  # RBAC: hub central é do admin; gestor vai direto à sua área
-        return RedirectResponse(ROLE_HOME.get(role, "/growth"), status_code=302)
-    # redesenho: o SPA entra DEPOIS do RBAC — o redirect do gestor continua
-    # valendo, e só o admin (que de fato vê a central) recebe a tela nova
+    if role != "admin":  # RBAC: a Central é do admin; gestor volta para a home
+        return RedirectResponse("/", status_code=302)
     from . import spa as _spa_mod
     _r = _spa_mod.view_response(request, "central", "visao")
     if _r is not None:
@@ -886,6 +906,54 @@ def api_central(request: Request):
             "fontes_paradas": vermelhas, "prioridades": prioridades,
             "kpis": kpis, "saude": saude, "bundles": bundles, "areas": areas,
             "horizonte": horizonte, "defasagens": defasagens}
+
+
+@app.get("/api/home")
+def api_home(request: Request):
+    """A HOME ÚNICA em dados (Otávio 22/07): o que ESTA pessoa acessa.
+
+    A navegação passa a ser derivada das áreas liberadas para a conta (a mesma
+    régua do RBAC, `_areas_of`) em vez de fixa por papel — o gestor com várias
+    áreas escolhe, em vez de cair na primeira em ordem alfabética.
+
+    Raio-X por Bundle é VISÍVEL PARA TODOS os gestores (decidido 22/07): o
+    handler já liberava por sessão; faltava entrar na navegação deles."""
+    user, role = _require_api(request)
+    minhas = _areas_of(user, role)
+    # ordem CANÔNICA do painel (a mesma do sidebar), não alfabética: a ordem
+    # alfabética é justamente o que tornava arbitrária a entrada do gestor
+    ordem = ["growth", "marketing", "prevendas", "vendas", "operacoes", "financeiro"]
+    areas = [{"slug": a, "nome": AREAS[a], "href": AREA_HOME[a]}
+             for a in ordem if a in minhas and a in AREAS]
+    visoes = [{"slug": "semana", "nome": "Ações da Semana", "href": "/semana",
+               "descricao": "os objetivos confirmados da empresa e o que cada time faz por eles"},
+              {"slug": "raiox", "nome": "Raio-X por Bundle", "href": "/raiox",
+               "descricao": "a cadeia completa de cada plano: aquisição, funil, meta e churn"}]
+    admin = [{"slug": "central", "nome": "Central", "href": "/central",
+              "descricao": "o cockpit cross-área: prioridades da semana, saúde de cada área e o que mudou"},
+             {"slug": "admin", "nome": "Painel Administrativo", "href": "/admin",
+              "descricao": "contas, permissões por área e saúde das integrações"},
+             {"slug": "allhands", "nome": "All Hands", "href": "/allhands",
+              "descricao": "slides do mês fechado com os dados do painel"}] if role == "admin" else []
+    # foco da semana do time da pessoa — quem cuida de uma área só vê o dela;
+    # quem cuida de várias vê o de cada uma (a home é o lugar de comparar)
+    focos = []
+    try:
+        from .semana import _acoes, _acao_split, _seg, _TEAM_LBL
+        with _conn() as c:
+            acs = _acoes(c, _seg())
+        times = [t for t in _TEAM_LBL if t in minhas] or list(_TEAM_LBL)
+        for t in times:
+            do_time = [a for a in acs if a["team"] == t][:2]
+            if not do_time:
+                continue
+            focos.append({"team": t, "team_label": _TEAM_LBL[t],
+                          "acoes": [dict(zip(("manchete", "detalhe"), _acao_split(a["texto"])))
+                                    | {"objetivo": a.get("objetivo")} for a in do_time]})
+    except Exception:  # noqa: BLE001 — o foco nunca derruba a home
+        focos = []
+    return {"usuario": user, "role": role, "areas": areas, "visoes": visoes,
+            "admin": admin, "focos": focos}
 
 
 @app.get("/api/rodape")
@@ -2492,7 +2560,8 @@ a.init:hover .ig{color:var(--brand)}
  <aside class=rail>
    <div class=brand><div class=logo></div><div><div class=bt>Integracomm IA</div><div class=bs>Central</div></div></div>
    <nav>
-     <a class="nav-item__HOME_ON__" href="/">Início</a>
+     <a class="nav-item" href="/">← Início</a>
+     <a class="nav-item__HOME_ON__" href="/central">Central</a>
      <a class="nav-item__ADM_ON__" href="/admin">Painel Administrativo</a>
      <div class="nav-h">Áreas</div>
      <a class="nav-item" href="/growth">Growth / Assessoria</a>
@@ -3396,7 +3465,7 @@ __SCRIPT__
 </body></html>"""
 
     # ---- navegação (view ativa; sessão define o papel — sem role na URL) ----
-    nav = "<a class='nav-item' href='/'>← Início (central)</a>"
+    nav = "<a class='nav-item' href='/'>← Início</a>"
     for v, label in (("contas", "Contas"), ("alertas", "Alertas"),
                      ("carga", "Análise dos Squads"), ("cancelamentos", "Cancelamentos"),
                      ("playbooks", "Playbooks"), ("relatorios", "Relatórios")):

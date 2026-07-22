@@ -26,6 +26,8 @@ import { SemanaPage } from "@/pages/semana";
 import { FocoSemana } from "@/components/blocks/foco-semana";
 import { RodapeFonte, UsuarioRail } from "@/components/blocks/rodape-fonte";
 import { CentralPage } from "@/pages/central";
+import { HomePage, type HomePayload } from "@/pages/home";
+import { useApi } from "@/hooks/use-api";
 
 // A aplicação atual navega por QUERY (?view=) dentro de cada área — o SPA
 // respeita as MESMAS URLs (favoritos/links continuam valendo). Views ainda
@@ -68,12 +70,11 @@ const NAV: Array<{ href: string; label: string; spa: boolean; grupo?: string }> 
   { href: "/app", label: "Biblioteca (vitrine)", spa: true, grupo: "Redesenho" },
 ];
 
-// Nav da CENTRAL (/) — ORDEM do hub antigo (Otávio 22/07: a ordem antiga
+// Nav da CENTRAL (/central) — ORDEM do hub antigo (Otávio 22/07: a ordem antiga
 // agradava mais), em 3 blocos: Admin · Áreas · Visões da empresa.
 const NAV_CENTRAL: Array<{ href: string; label: string; spa: boolean; grupo?: string }> = [
-  // "Central", não "Início": a home única (que virá para todos) é que será o
-  // início — a Central é a visão do admin (Otávio 22/07)
-  { href: "/", label: "Central", spa: true, grupo: "Admin" },
+  // a Central é a visão do ADMIN; o "início" de todo mundo é a home única (/)
+  { href: "/central", label: "Central", spa: true, grupo: "Admin" },
   { href: "/admin", label: "Painel Administrativo", spa: false },
   { href: "/allhands", label: "All Hands", spa: false },
   { href: "/growth?view=contas", label: "Growth / Assessoria", spa: true, grupo: "Áreas" },
@@ -133,9 +134,23 @@ function Shell({ children }: { children: React.ReactNode }) {
   // apareciam também os itens de PV/Vendas — o painel sempre foi 1 nav por
   // área). A vitrine só aparece quando se está nela.
   const area = window.location.pathname;
-  // A CENTRAL (/) é a porta de entrada do admin: em vez da nav de uma área,
-  // lista as áreas + as visões transversais (o hub HTML fazia o mesmo).
-  const itens = area === "/" ? NAV_CENTRAL
+  // HOME ÚNICA (/): a nav mostra SÓ o que ESTA pessoa acessa — as áreas dela +
+  // as visões da empresa (+ Admin, se for admin). Vem de /api/home, que deriva
+  // das áreas liberadas para a conta; nada é fixo por papel (Otávio 22/07).
+  const home = useApi<HomePayload>(area === "/" ? "/api/home" : "");
+  const navHome: Array<{ href: string; label: string; spa: boolean; grupo?: string }> = [
+    { href: "/", label: "Início", spa: true },
+    ...(home.data?.areas ?? []).map((a, i) => ({
+      href: a.href, label: a.nome, spa: true, grupo: i === 0 ? "Áreas" : undefined })),
+    ...(home.data?.visoes ?? []).map((v, i) => ({
+      href: v.href, label: v.nome, spa: true, grupo: i === 0 ? "Visões da empresa" : undefined })),
+    ...(home.data?.admin ?? []).map((a, i) => ({
+      href: a.href, label: a.nome, spa: a.slug === "central", grupo: i === 0 ? "Admin" : undefined })),
+  ];
+  // A CENTRAL (/central) é a visão cross-área do admin: em vez da nav de uma
+  // área, lista as áreas + as visões transversais (o hub HTML fazia o mesmo).
+  const itens = area === "/" ? navHome
+    : area === "/central" ? NAV_CENTRAL
     : NAV.filter((n) => (area === "/app" ? n.href === "/app" : n.href.startsWith(`${area}?`)));
   const viewPadrao = area === "/prevendas" || area === "/vendas" ? "funil"
     : area === "/marketing" || area === "/financeiro" ? "visao" : "contas";
@@ -185,8 +200,8 @@ function Shell({ children }: { children: React.ReactNode }) {
             );
           })}
           {area !== "/" && (
-            <a href="/" className="rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground">
-              ← Início (central)
+            <a href="/" className="mt-9 rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground">
+              ← Início
             </a>
           )}
         </nav>
@@ -219,7 +234,8 @@ export function App() {
         <Route path="/financeiro" element={<FinanceiroVisaoPage />} />
         <Route path="/raiox" element={<RaioXPage />} />
         <Route path="/semana" element={<SemanaPage />} />
-        <Route path="/" element={<CentralPage />} />
+        <Route path="/" element={<HomePage />} />
+        <Route path="/central" element={<CentralPage />} />
         <Route path="/prevendas" element={<PrevendasRouter />} />
         <Route path="/vendas" element={<VendasRouter />} />
         <Route path="/app" element={<BibliotecaPage />} />

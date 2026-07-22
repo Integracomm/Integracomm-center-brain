@@ -69,7 +69,7 @@ def _shell(A, role: str, view: str, content: str, usermail: str = "",
                 content = foco_time_html(_c, _team) + content
     except Exception:  # noqa: BLE001 — banner nunca derruba a área
         pass
-    nav = "<a class='nav-item' href='/'>← Início (central)</a>" if role == "admin" else ""
+    nav = "<a class='nav-item' href='/'>← Início</a>"
     for v, label in _VIEWS:
         cls = "nav-item active" if v == view else "nav-item"
         nav += f"<a class='{cls}' href='/marketing?view={v}'>{label}</a>"

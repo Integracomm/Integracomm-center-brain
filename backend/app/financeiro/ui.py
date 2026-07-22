@@ -490,7 +490,7 @@ def financeiro(request: Request, view: str = Query("visao")):
             content = _visao(c, request)
     from ..marketing.ui import _shell as MS
     html = MS(A, "admin", view, content, usermail=user, help_area="financeiro")
-    nav = "<a class='nav-item' href='/'>← Início (central)</a>"
+    nav = "<a class='nav-item' href='/'>← Início</a>"
     for v, label in _VIEWS:
         cls = "nav-item active" if v == view else "nav-item"
         nav += f"<a class='{cls}' href='/financeiro?view={v}'>{label}</a>"

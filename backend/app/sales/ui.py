@@ -77,7 +77,7 @@ def _brt(a: dt.date, b: dt.date) -> tuple[str, str]:
 
 def _shell(A, area: str, views, view: str, content: str, usermail: str) -> str:
     titulo = "Pré-vendas · Qualificação" if area == "prevendas" else "Vendas · Fechamento"
-    nav = "<a class='nav-item' href='/'>← Início (central)</a>"
+    nav = "<a class='nav-item' href='/'>← Início</a>"
     for v, label in views:
         cls = "nav-item active" if v == view else "nav-item"
         nav += f"<a class='{cls}' href='/{area}?view={v}'>{label}</a>"
