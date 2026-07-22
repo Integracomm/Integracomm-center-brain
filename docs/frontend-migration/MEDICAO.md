@@ -342,3 +342,33 @@ Base para reextrapolar os lotes 2–6 com dado real.
 - **Estado do redesenho:** Growth 3 · **Marketing 10** · Pré-vendas 4 ·
   Vendas 4. Restam: PV sdrs, Vendas horarios/closers/forecast,
   Central/Raio-X/Financeiro/Semana, cauda (Admin fica HTML).
+
+## Lote 5 (parte 1) — Financeiro e Raio-X (22/07)
+
+- **Execução: ~45 min** · ciclos de correção: 0.
+- **Financeiro (Planejamento × Realizado):** `financeiro/dados.py` novo
+  embrulhando o compute de `_visao` — planilha (`planejamento_financeiro`) +
+  `_funil_oficial` AO VIVO. Réguas preservadas: mês corrente = ao vivo,
+  passados = planilha, futuros = meta; verde/vermelho compara com o RITMO do
+  mês (71% em 22/07), não com 100%; recebimento/inadimplência/churn do mês
+  seguem PROJEÇÃO (sem Omie). Os 2 SVGs manuais viraram TimeSeries da
+  biblioteca, com `caveats` marcando os pontos de projeção. Os 8 ⓘ da área já
+  existiam com os títulos exatos — nada a escrever.
+  **Paridade 7/7 cards** (3 "divergências" eram o separador de milhar do meu
+  próprio check — 1.237 no HTML vs 1237 na busca; mesmo artefato do Lote 2).
+  A aba Receita Recorrente segue HTML (não estava no escopo).
+- **Raio-X por Bundle:** `_dados_bundle` JÁ era puro — o endpoint só embrulha,
+  somando `_fatos`, `_leitura_heuristica`/`_leitura_llm` (com o cache de 20h
+  intacto) e `_insights_areas`. Serializador `_json_safe` genérico
+  (date/Decimal/tupla) preserva a ESTRUTURA do compute. Os bullets nasceram
+  com HTML (`<b>`, `<span class=note>`): o payload manda TEXTO
+  (`_sem_tags`) — perde a ênfase visual, mantém o conteúdo.
+  **Chaveamento:** `/raiox` é rota própria (sem `?view=`); em vez de inventar
+  mecanismo, usa a view sintética `visao` (`SPA_RAIOX_VIEWS=visao`).
+  **ⓘ:** a área `raiox` não existia no help_texts (a tela HTML usa `_hint()`
+  inline) — 9 entradas novas escritas no padrão 16/07.
+  **Paridade OK em 3 bundles** (TODOS: 120/1255 won, 146 cancelamentos, 270
+  contas; B3: 16/93, 11, 50; B5: 2/5, 0, 9).
+- **Estado:** Growth 3 · Marketing 10 · PV 4 · Vendas 4 · **Financeiro 1** ·
+  **Raio-X 1**. Falta no Lote 5: Semana (942 linhas, tem POSTs de confirmação)
+  e Central (o hub, o maior de todos).

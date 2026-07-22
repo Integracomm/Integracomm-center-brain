@@ -20,6 +20,8 @@ import { MktLagPage } from "@/pages/marketing/lag";
 import { MktPlanejadorPage } from "@/pages/marketing/planejador";
 import { MktCriativosPage } from "@/pages/marketing/criativos";
 import { MktCicloVidaPage } from "@/pages/marketing/ciclo-vida";
+import { FinanceiroVisaoPage } from "@/pages/financeiro/visao";
+import { RaioXPage } from "@/pages/raiox";
 
 // A aplicação atual navega por QUERY (?view=) dentro de cada área — o SPA
 // respeita as MESMAS URLs (favoritos/links continuam valendo). Views ainda
@@ -57,6 +59,8 @@ const NAV: Array<{ href: string; label: string; spa: boolean; grupo?: string }> 
   { href: "/vendas?view=horarios", label: "Melhor Horário", spa: false },
   { href: "/vendas?view=closers", label: "Desempenho Individual", spa: false },
   { href: "/vendas?view=forecast", label: "Performance & Meta", spa: false },
+  { href: "/financeiro?view=visao", label: "Planejamento x Realizado", spa: true, grupo: "Financeiro" },
+  { href: "/financeiro?view=receita", label: "Receita Recorrente", spa: false },
   { href: "/app", label: "Biblioteca (vitrine)", spa: true, grupo: "Redesenho" },
 ];
 
@@ -110,7 +114,7 @@ function Shell({ children }: { children: React.ReactNode }) {
   const itens = NAV.filter((n) =>
     area === "/app" ? n.href === "/app" : n.href.startsWith(`${area}?`));
   const viewPadrao = area === "/prevendas" || area === "/vendas" ? "funil"
-    : area === "/marketing" ? "visao" : "contas";
+    : area === "/marketing" || area === "/financeiro" ? "visao" : "contas";
   const atual = `${area}?view=${params.get("view") ?? viewPadrao}`;
   return (
     <div className="flex min-h-screen bg-background text-foreground">
@@ -163,6 +167,8 @@ export function App() {
       <Routes>
         <Route path="/growth" element={<GrowthRouter />} />
         <Route path="/marketing" element={<MarketingRouter />} />
+        <Route path="/financeiro" element={<FinanceiroVisaoPage />} />
+        <Route path="/raiox" element={<RaioXPage />} />
         <Route path="/prevendas" element={<PrevendasRouter />} />
         <Route path="/vendas" element={<VendasRouter />} />
         <Route path="/app" element={<BibliotecaPage />} />

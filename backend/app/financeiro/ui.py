@@ -469,6 +469,10 @@ def financeiro(request: Request, view: str = Query("visao")):
     user, _role = s
     if view not in {v for v, _ in _VIEWS}:
         view = "visao"
+    from .. import spa as _spa_mod  # redesenho: view migrada entrega o SPA
+    _r = _spa_mod.view_response(request, "financeiro", view)
+    if _r is not None:
+        return _r
     # mesmo serve-stale das áreas que leem o funil (Marketing/Vendas/Pré-vendas)
     from ..marketing.ui import _kick_deals_sync
     _kick_deals_sync()
@@ -494,3 +498,17 @@ def financeiro(request: Request, view: str = Query("visao")):
                 .replace("Marketing · Tráfego & Leads", "Financeiro · Receita & Metas"))
     html = re.sub(r"<nav>.*?</nav>", "<nav>" + nav + "</nav>", html, count=1, flags=re.S)
     return HTMLResponse(html)
+
+
+# ---------------------------------------------------------------------------
+# Endpoint JSON do redesenho (Lote 5, 22/07) — embrulha financeiro/dados.py
+# ---------------------------------------------------------------------------
+@router.get("/api/financeiro/visao")
+def api_fin_visao(request: Request):
+    A = _deps()
+    A._require_api(request)
+    from ..marketing.ui import _kick_deals_sync
+    from .dados import fin_visao_dados
+    _kick_deals_sync()  # mesmo serve-stale da tela
+    with A._conn() as c:
+        return fin_visao_dados(c)

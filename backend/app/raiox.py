@@ -801,6 +801,55 @@ def mini_cards_html(conn, coorte: list[dict]) -> str:
         + out + "</div></section>")
 
 
+# ---------------------------------------------------------------------------
+# Endpoint JSON do redesenho (Lote 5, 22/07) — EMBRULHA _dados_bundle (que já
+# era puro) + a mesma leitura/insights da tela. Nenhuma régua recalculada.
+# ---------------------------------------------------------------------------
+def _json_safe(v):
+    """dict/list/tupla com date/Decimal -> JSON. Mantém a ESTRUTURA do compute."""
+    import decimal
+    if isinstance(v, dict):
+        return {str(k): _json_safe(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_json_safe(x) for x in v]
+    if isinstance(v, (dt.date, dt.datetime)):
+        return v.isoformat()
+    if isinstance(v, decimal.Decimal):
+        return float(v)
+    return v
+
+
+def _sem_tags(s: str) -> str:
+    """Os bullets de _insights_areas trazem <b>/<span class=note> (nasceram p/
+    HTML). O SPA recebe TEXTO — o conteúdo é o mesmo, só sem ênfase visual."""
+    import re as _re
+    return _re.sub(r"<[^>]+>", "", s).replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+
+
+@router.get("/api/raiox")
+def api_raiox(request: Request, b: str = Query("TODOS"), j: int = Query(120)):
+    A = _deps()
+    A._require_api(request)
+    if b not in _BUNDLES:
+        b = "TODOS"
+    if j not in (30, 90, 120):
+        j = 120
+    with A._conn() as c:
+        d = _dados_bundle(c, b, j)
+        fatos = _fatos(d)
+        heur = _leitura_heuristica(d)
+        llm = _leitura_llm(c, b, fatos)
+        areas = [{"area": a, "href": href, "link": lbl, "bullets": [_sem_tags(x) for x in bl]}
+                 for a, href, lbl, bl in _insights_areas(d)]
+    return {"bundle": b, "rotulo": _rotulo(b), "janela": j,
+            "bundles": list(_BUNDLES), "janelas": [30, 90, 120],
+            "dados": _json_safe(d), "fatos": fatos,
+            "leitura": {"texto": llm or heur, "via_llm": bool(llm),
+                        "alternativa": heur if llm else None,
+                        "fonte": "Claude (cache 20h)" if llm else "regras determinísticas"},
+            "areas": areas}
+
+
 @router.get("/raiox", response_class=HTMLResponse)
 def raiox(request: Request, b: str = Query("TODOS"), j: int = Query(120)):
     A = _deps()
@@ -813,6 +862,12 @@ def raiox(request: Request, b: str = Query("TODOS"), j: int = Query(120)):
         b = "TODOS"
     if j not in (30, 90, 120):
         j = 120
+    # redesenho: /raiox é rota própria (sem ?view=) — usa o MESMO chaveamento
+    # das áreas, com a view sintética "visao" (env SPA_RAIOX_VIEWS=visao)
+    from . import spa as _spa_mod
+    _r = _spa_mod.view_response(request, "raiox", "visao")
+    if _r is not None:
+        return _r
     with A._conn() as c:
         with c.cursor() as cur:
             cur.execute("INSERT INTO audit_log (actor, action, scope) VALUES (%s,'view',%s)",
