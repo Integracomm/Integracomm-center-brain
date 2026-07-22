@@ -10,30 +10,34 @@ hub HTML não foram portados e os cards compactos de área viraram seções gran
 (piorou a leitura). Isto aqui é a especificação para terminar; cada item é
 independente e pode ser commitado sozinho.
 
-**1. Blocos que faltam, na ORDEM CANÔNICA do hub** (ver `api.py`, corpo do
-`_render_hub`, comentário "mudou → saúde → raio-x compacto → cards de área →
-iniciativas → defasagem"):
-   1. Prioridades da Semana (existe) → 2. O que mudou desde ontem (existe) →
-   3. **Números-chave do mês** (`kpi_html`) → 4. **Saúde por área** (`hbar`,
-   ordenado da área que mais demanda atenção) → 5. **Raio-X compacto por
-   bundle** (`raiox.mini_cards_html` — precisa de versão em dados) →
-   6. **Áreas** (`area_cards` — CARDS COMPACTOS lado a lado, não seções
-   grandes) → 7. **Iniciativas de maior horizonte** (gargalos com impacto R$
-   que não viraram objetivo da semana) → 8. Defasagens (recolhida).
-   *A ordem importa: é a rotina de leitura diária do Otávio.*
+**1. Blocos que faltavam, na ORDEM CANÔNICA do hub — FEITO (22/07, `06132ac`).**
+   Ordem entregue: 1. Prioridades da Semana → 2. O que mudou desde ontem →
+   3. Números-chave do mês → 4. Saúde por área (pior primeiro) → 5. Raio-X
+   compacto por bundle → 6. Áreas (cards COMPACTOS lado a lado) →
+   7. Iniciativas de maior horizonte → 8. Defasagens (recolhida).
+   Como: o cálculo saiu do `_render_hub` e virou função pura compartilhada
+   (`_hub_saude`, `_hub_kpis`, `_hub_area_cards`, `_hub_horizonte`,
+   `_hub_defasagem_linhas`, `raiox.mini_cards_dados`) — o endpoint EMBRULHA a
+   mesma régua e o `_render_hub` só formata. Diff do HTML renderizado contra o
+   commit anterior, com dados reais: idêntico, fora o rótulo "MRR com alerta
+   aberto" (decisão do Lote 1, aplicada agora nas duas telas) e o ponto de
+   status nos chips de Operações/Financeiro.
 
-**2. Design de "Prioridades da Semana":** hoje "parecem informações juntas e
-jogadas". Precisa de hierarquia — impacto em R$ como âncora visual, separação
-clara entre objetivos, e as ações por área legíveis de relance.
-   - JÁ FEITO: critério de ordem (maior impacto pelo PISO da faixa; sem
-     estimativa por último) e o selo "impacto não estimado".
+**2. Design de "Prioridades da Semana" — FEITO (22/07).** O impacto em R$ virou
+   âncora visual (número grande à direita, não chip solto), rank grande à
+   esquerda, cada objetivo num card fechado e as ações por área em linhas com o
+   rótulo do time fixo na margem.
+   - Antes: critério de ordem (maior impacto pelo PISO da faixa; sem estimativa
+     por último) e o selo "impacto não estimado".
 
-**3. Design de "O que mudou desde ontem":** destacar as mudanças que exigem ação
-(ex.: conta ENTROU em crítico) das informativas.
-   - JÁ FEITO: cada linha leva ao recorte exato (`?ids=` honrado na tela de
+**3. Design de "O que mudou desde ontem" — FEITO (22/07).** Os itens passaram a
+   carregar `tom` do backend (`_hub_mudancas_itens`) e a tela separa **exige
+   ação** (entrou em crítico, piorou de faixa, CPL subiu, iniciativa atrasada)
+   do informativo.
+   - Antes: cada linha leva ao recorte exato (`?ids=` honrado na tela de
      Contas, com chip "recorte do link: N conta(s) · ver todas").
 
-**4. HOME ÚNICA (decidido pelo Otávio 22/07, via AskUserQuestion):**
+**4. HOME ÚNICA (decidido pelo Otávio 22/07, via AskUserQuestion) — EM ABERTO:**
    - Nova tela inicial para TODOS (admin e gestores). Sidebar mostra só o que a
      pessoa acessa: as áreas dela + "Visões da empresa".
    - Resolve dois problemas REAIS e anteriores à migração: (a) o gestor com
