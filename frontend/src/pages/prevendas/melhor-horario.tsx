@@ -266,12 +266,12 @@ export function MelhorHorarioPage() {
             <SectionCard hint={<Hint area="prevendas/horarios" titulo="Atendimento de ligações por origem" />}
               headerClassName="min-h-[72px]"
               title="Atendimento de ligações — origem × hora"
-              subtitle={`das ligações FEITAS na hora, % que o lead ATENDEU (embaixo, o nº de ligações — a % sozinha engana em amostra pequena) · escala por linha · hachura = <5 ligações${
+              subtitle={`das ligações FEITAS na hora, % que o lead ATENDEU (embaixo, o nº de ligações — a % sozinha engana em amostra pequena) · escala por linha · role de lado se o período abrir muitas horas · hachura = <5 ligações${
                 d.atendimento_ini ? ` · desfecho desde ${d.atendimento_ini.split("-").reverse().join("/")}` : ""}`}>
               {atd && atd.cells.length ? (
                 <>
                   <Heatmap rows={atd.rows} cols={atd.cols} cells={atd.cells}
-                    color="var(--success)" rowScale dense tall rowLabelWidth={96}
+                    color="var(--success)" rowScale dense tall scrollX rowLabelWidth={110}
                     valueLabel={(v) => `${v}%`}
                     subLabel={(c) => (c.n != null ? String(c.n) : null)}
                     legendLabel="atendimento"
@@ -311,7 +311,7 @@ export function MelhorHorarioPage() {
               subtitle="quando o lead de cada canal AGENDA · escala POR LINHA (compara o padrão independente do volume) · célula contornada = pico">
               {gOrigem && gOrigem.cells.length ? (
                 <Heatmap rows={gOrigem.rows} cols={gOrigem.cols} cells={gOrigem.cells}
-                  color="var(--chart-2)" rowScale dense tall rowLabelWidth={96}
+                  color="var(--chart-2)" rowScale dense tall scrollX rowLabelWidth={110}
                   legendLabel="agendamentos" />
               ) : (
                 <p className="text-sm text-muted-foreground">Sem dados por origem no período.</p>

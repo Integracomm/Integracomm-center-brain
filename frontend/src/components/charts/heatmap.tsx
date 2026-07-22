@@ -37,6 +37,12 @@ export interface HeatmapProps {
   // Denso: muitas colunas (ex.: 14 horas) SEM scroll horizontal — célula
   // estreita, fonte menor (regra Otávio 21/07: nunca rolar para ver o dado).
   dense?: boolean;
+  // EXCEÇÃO à regra de nunca rolar (Otávio 22/07): quando o nº de colunas é
+  // aberto pelo filtro (ex.: "ano todo" abre mais horas), a grade não cabe em
+  // largura nenhuma. Aí é melhor rolar de lado com célula legível do que
+  // espremer até vazar o card. O rótulo da linha fica FIXO na esquerda, senão
+  // some ao rolar e o dado perde o nome.
+  scrollX?: boolean;
   // Intensidade normalizada POR LINHA (compara o padrão de cada linha,
   // independente do volume) + contorno no pico da linha. Usado nas grades
   // colaborador×hora / origem×hora (Lote 2).
@@ -62,6 +68,7 @@ export function Heatmap({
   rowLabelWidth = 160,
   rowScale = false,
   dense = false,
+  scrollX = false,
 }: HeatmapProps) {
   const { lookup, min, max } = useMemo(() => {
     const lookup = new Map<string, HeatmapCell>();
@@ -100,18 +107,24 @@ export function Heatmap({
 
   return (
     <div className="w-full">
-      <div className={dense ? "" : "overflow-x-auto"}>
+      <div className={scrollX || !dense ? "overflow-x-auto" : ""}>
         <div
-          className={dense ? "grid gap-0.5" : "grid gap-1"}
+          // o gap apertado era p/ caber sem rolar; com scrollX a largura deixou
+          // de ser restricao, entao volta o respiro
+          className={dense && !scrollX ? "grid gap-0.5" : "grid gap-1"}
           style={{
             // o valor denso e o PISO da coluna: com espaco sobrando o 1fr
             // estica. 26px cabe "100%" a 10px e da folga p/ 15 colunas dentro
             // de meia tela (22/07: as celulas vazavam o card pela direita)
-            gridTemplateColumns: `${rowLabelWidth}px repeat(${cols.length}, minmax(${dense ? 26 : 72}px, 1fr))`,
+            gridTemplateColumns: `${rowLabelWidth}px repeat(${cols.length}, minmax(${
+              scrollX ? 40 : dense ? 26 : 72
+            }px, 1fr))`,
+            width: scrollX ? "max-content" : undefined,
+            minWidth: scrollX ? "100%" : undefined,
           }}
         >
           {/* Header row */}
-          <div />
+          <div className={scrollX ? "sticky left-0 z-10 bg-card" : ""} />
           {cols.map((c) => (
             <div
               key={c}
@@ -128,7 +141,9 @@ export function Heatmap({
               // e re-render instável das linhas)
               <Fragment key={row}>
                 <div
-                  className={`text-xs text-foreground/80 ${dense ? "pr-1.5" : "pr-2"} flex items-center truncate`}
+                  className={`text-xs text-foreground/80 ${dense && !scrollX ? "pr-1.5" : "pr-2"} flex items-center truncate${
+                    scrollX ? " sticky left-0 z-10 bg-card" : ""
+                  }`}
                   title={row}
                 >
                   {row}

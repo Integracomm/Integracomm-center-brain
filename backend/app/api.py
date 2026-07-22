@@ -371,10 +371,16 @@ def logout():
 
 
 def _audit_view(conn: Any, role: str, scope: str = "growth/dashboard") -> None:
+    """Registra uma abertura de tela. `role` é o E-MAIL da sessão.
+
+    O ator era gravado como "painel:<e-mail>" (22/07): o painel de permissões
+    casa o ator com o e-mail da conta, e com o prefixo NUNCA casava — todo
+    gestor aparecia com 0 acessos. Agora grava o e-mail puro; a leitura tira o
+    prefixo do histórico já gravado."""
     with conn.cursor() as cur:
         cur.execute(
             "INSERT INTO audit_log (actor, action, scope) VALUES (%s,%s,%s)",
-            (f"painel:{role}", "view", scope),
+            (role, "view", scope),
         )
 
 
@@ -694,8 +700,16 @@ def admin_panel(request: Request):
         llm = month_summary(c)
         teams = _teams_html(c) + _integracoes_html(_integracoes_status(c))
         with c.cursor() as cur:
-            cur.execute("""SELECT actor, count(*), max(at) FROM audit_log
-                            WHERE action='view' GROUP BY actor""")
+            # ACESSOS = telas abertas; ÚLTIMO LOGIN = entrada de fato. A coluna
+            # "Último login" lia o max de VIEW (22/07): quem entrava e navegava
+            # só em telas migradas aparecia como se nunca tivesse usado — foi o
+            # caso do Eduardo, com 5 logins e a coluna vazia. `regexp_replace`
+            # tira o prefixo "painel:" do histórico gravado antes da correção.
+            cur.execute("""SELECT regexp_replace(actor, '^painel:', '') AS quem,
+                                  count(*) FILTER (WHERE action='view')  AS views,
+                                  max(at)  FILTER (WHERE action='login') AS ult_login
+                             FROM audit_log WHERE action IN ('view', 'login')
+                            GROUP BY 1""")
             acessos = {a: (n, ult) for a, n, ult in cur.fetchall()}
     for u in users:
         n, ult = acessos.get(u["email"], (0, None))

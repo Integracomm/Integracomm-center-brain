@@ -51,7 +51,26 @@ def view_response(request: Request, area: str, view: str):
                    os.environ.get(f"SPA_{area.upper()}_VIEWS", "").split(",") if v.strip()}
     if view not in habilitadas:
         return None
+    _audita(request, f"{area}/{view}")
     return _index(request)
+
+
+def _audita(request: Request, scope: str) -> None:
+    """Registra a abertura da tela no audit_log.
+
+    Cada handler chamava `_audit_view` DEPOIS do chaveamento do SPA, então toda
+    view migrada parou de contar acesso — a tela de permissões passou a mostrar
+    gestores com 0 acessos (22/07). Aqui é o ponto único por onde passam todas
+    as views migradas, então o registro volta a valer para todas de uma vez."""
+    from . import api as A
+    try:
+        s = A._session(request)
+        if not s:
+            return
+        with A._conn() as c:
+            A._audit_view(c, s[0], scope=scope)
+    except Exception:  # noqa: BLE001 — auditoria nunca derruba a tela
+        pass
 
 
 def install(app) -> None:
