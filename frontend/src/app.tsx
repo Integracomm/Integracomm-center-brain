@@ -22,6 +22,7 @@ import { MktCriativosPage } from "@/pages/marketing/criativos";
 import { MktCicloVidaPage } from "@/pages/marketing/ciclo-vida";
 import { FinanceiroVisaoPage } from "@/pages/financeiro/visao";
 import { RaioXPage } from "@/pages/raiox";
+import { SemanaPage } from "@/pages/semana";
 
 // A aplicação atual navega por QUERY (?view=) dentro de cada área — o SPA
 // respeita as MESMAS URLs (favoritos/links continuam valendo). Views ainda
@@ -169,6 +170,7 @@ export function App() {
         <Route path="/marketing" element={<MarketingRouter />} />
         <Route path="/financeiro" element={<FinanceiroVisaoPage />} />
         <Route path="/raiox" element={<RaioXPage />} />
+        <Route path="/semana" element={<SemanaPage />} />
         <Route path="/prevendas" element={<PrevendasRouter />} />
         <Route path="/vendas" element={<VendasRouter />} />
         <Route path="/app" element={<BibliotecaPage />} />

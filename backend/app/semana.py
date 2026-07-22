@@ -729,6 +729,72 @@ def foco_time_html(conn, team: str) -> str:
 # ---------------------------------------------------------------------------
 # página /semana + endpoints
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Endpoint JSON do redesenho (Lote 5, 22/07) — o ESTADO INTEIRO da tela numa
+# chamada, com a MESMA orquestração do handler HTML (inclusive a prévia da
+# decomposição antes de confirmar). As AÇÕES de escrita seguem no POST
+# /semana/salvar já existente — o SPA posta lá e refaz o fetch.
+# ---------------------------------------------------------------------------
+@router.get("/api/semana/painel")
+def api_semana_painel(request: Request):
+    A = _deps()
+    s = A._session(request)
+    if not s:
+        from fastapi.responses import JSONResponse as _J
+        return _J({"error": "sessao"}, status_code=401)
+    _user, role = s
+    edita = role == "admin"
+    week = _seg()
+    with A._conn() as c:
+        if edita:
+            _propor(c, week)  # segunda de manhã: proposta pronta ao abrir
+        objs = _objetivos(c, week)
+        acs = _acoes(c, week)
+        rev = _revisar(c, week - dt.timedelta(days=7))
+        confirmada = any(o["status"] == "confirmado" for o in objs)
+        # PRÉVIA da decomposição antes de confirmar (mesma regra do HTML)
+        if not confirmada and objs:
+            titulo_por_id = {o["id"]: o["title"] for o in objs}
+            acs = [{"team": t, "texto": tx, "refs": rf, "lag": lg,
+                    "objetivo": titulo_por_id.get(oid, "")}
+                   for oid, t, tx, rf, lg in _gerar_acoes(c, objs)]
+
+    times_por_obj: dict[str, list[str]] = {}
+    for a in acs:
+        times_por_obj.setdefault(a["objetivo"], [])
+        lbl = _TEAM_LBL.get(a["team"], a["team"])
+        if lbl not in times_por_obj[a["objetivo"]]:
+            times_por_obj[a["objetivo"]].append(lbl)
+
+    def _links(refs):
+        out = []
+        for lk in (refs.get("links") or []):
+            url, lbl = (lk[0], lk[1]) if isinstance(lk, (list, tuple)) else (lk, "abrir")
+            out.append({"url": url, "label": str(lbl)})
+        return out
+
+    acoes = []
+    for a in acs:
+        manchete, detalhe = _acao_split(a["texto"])
+        acoes.append({"team": a["team"], "team_label": _TEAM_LBL.get(a["team"], a["team"]),
+                      "objetivo": a["objetivo"], "manchete": manchete, "detalhe": detalhe,
+                      "links": _links(a.get("refs") or {}), "lag": a.get("lag")})
+    return {
+        "week": week.isoformat(), "week_label": week.strftime("%d/%m"),
+        "week_anterior_label": (week - dt.timedelta(days=7)).strftime("%d/%m"),
+        "edita": edita, "confirmada": confirmada,
+        "objetivos": [dict(o, times=times_por_obj.get(o["title"], [])) for o in objs],
+        "acoes": acoes,
+        "times_ordem": ["marketing", "prevendas", "vendas", "growth"],
+        "revisao": [{"objetivo": r["objetivo"], "nota": r["nota"], "maturacao": r["maturacao"]}
+                    for r in rev],
+        "metricas": ([{"v": "", "lbl": "— livre —"}]
+                     + [{"v": f"{b}:{k}", "lbl": f"{b} {k}"}
+                        for b in ("B1", "B2", "B3", "B4", "B5") for k in ("bookings", "churn")]
+                     + [{"v": "leads", "lbl": "leads"}]),
+    }
+
+
 @router.get("/semana", response_class=HTMLResponse)
 def semana_page(request: Request):
     A = _deps()
@@ -738,6 +804,11 @@ def semana_page(request: Request):
     user, role = s
     from .help_texts import _hint
     edita = role == "admin"
+    # redesenho: rota própria (sem ?view=) — mesmo chaveamento, view sintética
+    from . import spa as _spa_mod
+    _r = _spa_mod.view_response(request, "semana", "visao")
+    if _r is not None:
+        return _r
     week = _seg()
     with A._conn() as c:
         with c.cursor() as cur:
