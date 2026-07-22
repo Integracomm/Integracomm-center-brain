@@ -25,6 +25,7 @@ import { RaioXPage } from "@/pages/raiox";
 import { SemanaPage } from "@/pages/semana";
 import { FocoSemana } from "@/components/blocks/foco-semana";
 import { RodapeFonte, UsuarioRail } from "@/components/blocks/rodape-fonte";
+import { CentralPage } from "@/pages/central";
 
 // A aplicação atual navega por QUERY (?view=) dentro de cada área — o SPA
 // respeita as MESMAS URLs (favoritos/links continuam valendo). Views ainda
@@ -65,6 +66,20 @@ const NAV: Array<{ href: string; label: string; spa: boolean; grupo?: string }> 
   { href: "/financeiro?view=visao", label: "Planejamento x Realizado", spa: true, grupo: "Financeiro" },
   { href: "/financeiro?view=receita", label: "Receita Recorrente", spa: false },
   { href: "/app", label: "Biblioteca (vitrine)", spa: true, grupo: "Redesenho" },
+];
+
+// Nav da CENTRAL (/): as portas de entrada de cada área + visões transversais
+const NAV_CENTRAL: Array<{ href: string; label: string; spa: boolean; grupo?: string }> = [
+  { href: "/semana", label: "Ações da Semana", spa: true, grupo: "Visões transversais" },
+  { href: "/raiox", label: "Raio-X por Bundle", spa: true },
+  { href: "/growth?view=contas", label: "Growth / Assessoria", spa: true, grupo: "Áreas" },
+  { href: "/marketing?view=visao", label: "Marketing", spa: true },
+  { href: "/prevendas?view=funil", label: "Pré-vendas", spa: true },
+  { href: "/vendas?view=funil", label: "Vendas", spa: true },
+  { href: "/financeiro?view=visao", label: "Financeiro", spa: true },
+  { href: "/operacoes", label: "Operações", spa: false },
+  { href: "/admin", label: "Administrativo", spa: false, grupo: "Admin" },
+  { href: "/allhands", label: "All Hands", spa: false },
 ];
 
 function PrevendasRouter() {
@@ -114,8 +129,10 @@ function Shell({ children }: { children: React.ReactNode }) {
   // apareciam também os itens de PV/Vendas — o painel sempre foi 1 nav por
   // área). A vitrine só aparece quando se está nela.
   const area = window.location.pathname;
-  const itens = NAV.filter((n) =>
-    area === "/app" ? n.href === "/app" : n.href.startsWith(`${area}?`));
+  // A CENTRAL (/) é a porta de entrada do admin: em vez da nav de uma área,
+  // lista as áreas + as visões transversais (o hub HTML fazia o mesmo).
+  const itens = area === "/" ? NAV_CENTRAL
+    : NAV.filter((n) => (area === "/app" ? n.href === "/app" : n.href.startsWith(`${area}?`)));
   const viewPadrao = area === "/prevendas" || area === "/vendas" ? "funil"
     : area === "/marketing" || area === "/financeiro" ? "visao" : "contas";
   const atual = `${area}?view=${params.get("view") ?? viewPadrao}`;
@@ -150,9 +167,11 @@ function Shell({ children }: { children: React.ReactNode }) {
               </span>
             );
           })}
-          <a href="/" className="rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground">
-            ← Início (central)
-          </a>
+          {area !== "/" && (
+            <a href="/" className="rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground">
+              ← Início (central)
+            </a>
+          )}
         </nav>
         <div className="space-y-2 border-t border-border pt-3">
           {/* e-mail da sessão + origem do dado — estavam no rail do HTML */}
@@ -183,6 +202,7 @@ export function App() {
         <Route path="/financeiro" element={<FinanceiroVisaoPage />} />
         <Route path="/raiox" element={<RaioXPage />} />
         <Route path="/semana" element={<SemanaPage />} />
+        <Route path="/" element={<CentralPage />} />
         <Route path="/prevendas" element={<PrevendasRouter />} />
         <Route path="/vendas" element={<VendasRouter />} />
         <Route path="/app" element={<BibliotecaPage />} />

@@ -372,3 +372,49 @@ Base para reextrapolar os lotes 2–6 com dado real.
 - **Estado:** Growth 3 · Marketing 10 · PV 4 · Vendas 4 · **Financeiro 1** ·
   **Raio-X 1**. Falta no Lote 5: Semana (942 linhas, tem POSTs de confirmação)
   e Central (o hub, o maior de todos).
+
+## Lote 5 (parte 2) — Semana + as 3 REGRESSÕES do shell (22/07)
+
+- **Ações da Semana:** única tela com ESCRITA. Decisão: o SPA não duplica a
+  lógica de escrita — `GET /api/semana/painel` devolve o estado inteiro (com a
+  prévia da decomposição antes de confirmar) e as 6 ações postam no
+  `/semana/salvar` que JÁ existia. Paridade OK (4 objetivos, 8 ações em 4
+  times, 3 revisões) conferida SEM disparar escrita.
+- **REGRESSÃO 1 (achada pelo Otávio):** o banner "Seu foco desta semana" sumiu
+  de TODAS as áreas migradas. Causa: `foco_time_html` era injetado pelo _shell
+  HTML — com a view no SPA, o shell não roda. Fix: `/api/semana/foco?team=` +
+  componente no SHELL do SPA (resolve as 4 áreas e as futuras de uma vez).
+- **REGRESSÕES 2 e 3 (achadas por varredura, antes de virarem reclamação):** o
+  RODAPÉ DE FONTE de cada área (procedência do dado + defasagem) e o e-mail da
+  sessão + "coleta 06h" no rail também vinham do shell HTML. Fix pelo mesmo
+  princípio dos helps: `help_texts.RODAPES` como fonte ÚNICA — os handlers HTML
+  passaram a ler de lá (zero string inline) e o SPA consome via `/api/rodape`;
+  componentes no SHELL.
+- **Lição (o padrão das 3):** o shell HTML fazia coisas que ninguém tinha
+  escrito na lista de "o que a tela tem". Toda migração de área deve inventariar
+  o que o SHELL injeta, não só o que o handler renderiza.
+
+## Lote 5 (parte 3) — CENTRAL: o hub (22/07)
+
+- **Execução: ~35 min** · ciclos: 0. **LOTE 5 COMPLETO.**
+- `GET /api/central` COMPÕE as funções que já existiam (`_hub_stats`,
+  `_hub_mkt_stats`, `_hub_sales_stats`, `_hub_op_stats`, `_hub_impactos`,
+  `_hub_lags`) — todas já retornavam dados. Duas devolviam HTML:
+  - `_hub_mudancas` foi SEPARADA em `_hub_mudancas_itens` (lista de
+    (texto, link) — a matéria-prima) + o renderizador HTML que a consome. O
+    HTML antigo segue idêntico; o SPA lê os mesmos itens.
+  - "Prioridades da Semana" é composta dos objetivos CONFIRMADOS +
+    `_impacto_objetivo` (que já existia e devolve dict) + as ações por time.
+- **RBAC preservado:** o chaveamento do SPA entra DEPOIS do redirect por papel
+  — gestor continua indo direto para a própria área; só o admin vê a central.
+- **Nav própria da central** (`NAV_CENTRAL`): a nav do SPA filtra por área e em
+  `/` ficaria VAZIA — agora lista as áreas + visões transversais, como o hub
+  HTML fazia. O "← Início (central)" some quando já se está nela.
+- **Paridade OK:** 267 contas / 11 críticos / MRR 186,7k; mkt 1238 leads;
+  vendas 23 bookings / R$ 177,9k; ops 15 de 40 com 19 atrasadas; 4 itens de
+  "o que mudou"; lags 4d/3d/60d; as 4 prioridades com faixa de impacto
+  (B1 R$ 58,7-82,7k · B3 R$ 5,0-42,8k · B2 R$ 11,7-16,5k).
+- **Estado do redesenho:** Growth 3 · Marketing 10 · PV 4 · Vendas 4 ·
+  Financeiro 1 · Raio-X 1 · Semana 1 · **Central 1**. Resta a CAUDA (Lote 6):
+  PV sdrs, Vendas horarios/closers/forecast, Growth carga/playbooks/relatorios,
+  Financeiro receita, Operações — e Admin/All Hands seguem HTML por decisão.

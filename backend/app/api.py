@@ -565,6 +565,12 @@ def hub(request: Request):
     user, role = s
     if role != "admin":  # RBAC: hub central é do admin; gestor vai direto à sua área
         return RedirectResponse(ROLE_HOME.get(role, "/growth"), status_code=302)
+    # redesenho: o SPA entra DEPOIS do RBAC — o redirect do gestor continua
+    # valendo, e só o admin (que de fato vê a central) recebe a tela nova
+    from . import spa as _spa_mod
+    _r = _spa_mod.view_response(request, "central", "visao")
+    if _r is not None:
+        return _r
     with _conn() as c:
         _audit_view(c, user, scope="hub")
         stats = _hub_stats(c)
@@ -795,6 +801,62 @@ def api_help(request: Request):
     from .help_texts import HELP
     return {area: [{"titulo": t0, "texto": x} for t0, x in entradas]
             for area, entradas in HELP.items()}
+
+
+@app.get("/api/central")
+def api_central(request: Request):
+    """Central (hub do admin) em dados — Lote 5. COMPÕE as mesmas funções da
+    tela HTML (_hub_stats/_hub_mkt_stats/_hub_sales_stats/_hub_op_stats,
+    _hub_impactos, _hub_lags, _hub_mudancas_itens) e os objetivos da semana
+    com o impacto em R$ de cada um (_impacto_objetivo). Nenhuma régua nova."""
+    import re as _re
+    _user, role = _require_api(request)
+    if role != "admin":
+        return JSONResponse({"error": "a central é do administrador"}, status_code=403)
+    sem_tags = lambda s: _re.sub(r"<[^>]+>", "", s or "")  # noqa: E731
+    with _conn() as c:
+        stats = _hub_stats(c)
+        mkt = _hub_mkt_stats(c)
+        sales = _hub_sales_stats(c)
+        ops = _hub_op_stats(c)
+        grava_snapshot_risco(c)
+        try:
+            from .marketing.ui import _ciclo_coorte
+            coorte = _ciclo_coorte(c)[0]
+        except Exception:  # noqa: BLE001
+            coorte = None
+        impactos = _hub_impactos(c, mkt, sales, coorte=coorte)
+        lags = _hub_lags(c, coorte=coorte)
+        mudancas = [{"texto": sem_tags(t), "url": h} for t, h in _hub_mudancas_itens(c)]
+        try:
+            vermelhas = [r["fonte"] for r in _integracoes_status(c) if r["status"] == "vermelho"]
+        except Exception:  # noqa: BLE001
+            vermelhas = []
+        # Prioridades da Semana: os objetivos CONFIRMADOS + o impacto em R$ de
+        # cada um (mesma função da tela) + as ações por time
+        prioridades = []
+        try:
+            from .semana import _acoes, _impacto_objetivo, _objetivos, _seg, _TEAM_LBL, _acao_split
+            week = _seg()
+            objs = [o for o in _objetivos(c, week) if o["status"] == "confirmado"]
+            acs = _acoes(c, week)
+            for o in objs:
+                imp = _impacto_objetivo(c, o, impactos)
+                acoes_obj = []
+                for a in acs:
+                    if a["objetivo"] != o["title"]:
+                        continue
+                    manchete, detalhe = _acao_split(a["texto"])
+                    acoes_obj.append({"team": a["team"],
+                                      "team_label": _TEAM_LBL.get(a["team"], a["team"]),
+                                      "manchete": manchete, "detalhe": detalhe})
+                prioridades.append({"titulo": o["title"], "racional": o["rationale"],
+                                    "metric": o["metric"], "impacto": imp, "acoes": acoes_obj})
+        except Exception:  # noqa: BLE001 — bloco nunca derruba a central
+            prioridades = []
+    return {"stats": stats, "marketing": mkt, "vendas": sales, "operacoes": ops,
+            "impactos": impactos, "lags": lags, "mudancas": mudancas,
+            "fontes_paradas": vermelhas, "prioridades": prioridades}
 
 
 @app.get("/api/rodape")
@@ -1556,9 +1618,11 @@ def _receita_recorrente_html() -> str:
         f"<p class=note style='margin:10px 0 0'>{cross_txt}</p></div></section>")
 
 
-def _hub_mudancas(conn: Any) -> str:
+def _hub_mudancas_itens(conn: Any) -> list[tuple[str, str]]:
     """'O que mudou desde ontem' (14/07): deltas das últimas 24h/última rodada,
-    derivados dos dados existentes — a rotina diária de 30 segundos do gestor."""
+    derivados dos dados existentes — a rotina diária de 30 segundos do gestor.
+    Devolve os ITENS (texto, link); a versão HTML e o SPA renderizam os mesmos
+    (separação feita no redesenho 22/07 — antes o HTML era a única saída)."""
     itens: list[tuple[str, str]] = []
     try:
         with conn.cursor() as cur:
@@ -1656,6 +1720,12 @@ def _hub_mudancas(conn: Any) -> str:
                 itens.append((f"<b style='color:var(--status-critico)'>{atr}</b> iniciativa(s) viraram ATRASADAS desde ontem", "/operacoes"))
     except Exception:  # noqa: BLE001 — resumo nunca derruba o hub
         pass
+    return itens
+
+
+def _hub_mudancas(conn: Any) -> str:
+    """Renderiza os itens acima como a seção HTML (o SPA consome os ITENS)."""
+    itens = _hub_mudancas_itens(conn)
     if not itens:
         return ""
     lis = "".join(f"<a href='{href}' style='display:flex;gap:9px;align-items:center;padding:7px 0;"
