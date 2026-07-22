@@ -98,21 +98,13 @@ export function MelhorHorarioPage() {
     return { rows: horasComuns.map((h) => `${String(h).padStart(2, "0")}h`), cols: diasAtivos.map((x) => DOW[x]), cells };
   }, [d, diasAtivos, horasComuns]);
 
-  // melhores horários: por AGENDAMENTO (contagem) e por TAXA (só células com
-  // 5+ ligações — a regra de amostra do backend)
+  // melhores janelas por AGENDAMENTO (contagem) — integradas ao card do mapa.
+  // O ranking por TAXA saiu com o mapa de conversão da ligação (Otávio 22/07):
+  // a taxa geral sobrevive no KPI, com a ressalva dos sem-ligação ao lado.
   const topAgend = useMemo(() => {
     if (!d) return [];
     return [...d.celulas].sort((a, b) => b.n - a.n).slice(0, 5)
       .map((c) => ({ rot: `${DOW[c.dow]} ${String(c.hora).padStart(2, "0")}h`, v: `${c.n} agendamento(s)` }));
-  }, [d]);
-  const topTaxa = useMemo(() => {
-    if (!d || !d.ligacoes.length) return [];
-    const ag = new Map(d.celulas_taxa.map((c) => [`${c.dow}|${c.hora}`, c.n]));
-    return d.ligacoes.filter((l) => l.n >= 5)
-      .map((l) => ({ dow: l.dow, hora: l.hora, lig: l.n, tx: ((ag.get(`${l.dow}|${l.hora}`) ?? 0) / l.n) * 100 }))
-      .sort((a, b) => b.tx - a.tx).slice(0, 5)
-      .map((c) => ({ rot: `${DOW[c.dow]} ${String(c.hora).padStart(2, "0")}h`,
-                     v: `${c.tx.toFixed(0)}% (${c.lig} ligações)` }));
   }, [d]);
 
   // ATENDIMENTO por origem × hora (Otávio 22/07: 'que horas os leads de meta
@@ -142,22 +134,31 @@ export function MelhorHorarioPage() {
     return { rows, cols: horas.map((h) => `${h}h`), cells };
   }, [d]);
 
-  // melhores janelas de APROVEITAMENTO da ligação: canal+hora onde o lead mais
-  // atende (só 5+ ligações — mesma régua de amostra dos demais rankings)
-  const topAtend = useMemo(() => {
+  // melhor janela de aproveitamento DE CADA CANAL (Otávio 22/07: ranking geral
+  // repetia o mesmo canal; a decisão é 'a que horas eu ligo para ESTE canal').
+  // Uma linha por canal, ordenada por volume de ligações; só horas com 5+
+  // ligações concorrem — canal sem amostra aparece sinalizado, não some.
+  const melhorPorCanal = useMemo(() => {
     if (!d || !d.atendimento.length) return [];
-    const porChave = new Map<string, { canal: string; hora: number; a: number; l: number }>();
+    const porCanal = new Map<string, { hora: number; a: number; l: number }[]>();
     for (const r of d.atendimento) {
-      const k = `${r.canal}|${r.hora}`;
-      const v = porChave.get(k) ?? { canal: r.canal, hora: r.hora, a: 0, l: 0 };
-      v.a += r.atendidas; v.l += r.ligacoes;
-      porChave.set(k, v);
+      const arr = porCanal.get(r.canal) ?? [];
+      const ex = arr.find((x) => x.hora === r.hora);
+      if (ex) { ex.a += r.atendidas; ex.l += r.ligacoes; }
+      else arr.push({ hora: r.hora, a: r.atendidas, l: r.ligacoes });
+      porCanal.set(r.canal, arr);
     }
-    return [...porChave.values()].filter((v) => v.l >= 5)
-      .map((v) => ({ ...v, tx: (v.a / v.l) * 100 }))
-      .sort((x, y) => y.tx - x.tx).slice(0, 5)
-      .map((v) => ({ rot: `${v.canal} · ${String(v.hora).padStart(2, "0")}h`,
-                     v: `${v.tx.toFixed(0)}% (${v.a}/${v.l} ligações)` }));
+    return [...porCanal.entries()]
+      .map(([canal, horas]) => {
+        const totL = horas.reduce((s, x) => s + x.l, 0);
+        const totA = horas.reduce((s, x) => s + x.a, 0);
+        const elegiveis = horas.filter((x) => x.l >= 5);
+        const best = elegiveis.length
+          ? elegiveis.reduce((b, x) => (x.a / x.l > b.a / b.l ? x : b))
+          : null;
+        return { canal, totL, geral: totL ? (totA / totL) * 100 : 0, best };
+      })
+      .sort((x, y) => y.totL - x.totL);
   }, [d]);
 
   const horasComerciais = useMemo(() => Array.from({ length: 14 }, (_, i) => i + 7), []);
@@ -207,55 +208,42 @@ export function MelhorHorarioPage() {
               value={totLig.toLocaleString("pt-BR")}
               subtitle={d.taxa_ini ? `registradas a partir de ${d.taxa_ini.split("-").reverse().join("/")}` : undefined}
               caveat={d.taxa_ini ? "a taxa considera só o trecho com ligações registradas — numerador e denominador da MESMA janela" : undefined} />
-            <KpiCard icon={Target} tone="success" title="Taxa geral (trecho coberto)"
+            <KpiCard icon={Target} tone="success" title="Conversão da ligação (trecho coberto)"
               value={totLig ? formatPct((totAgTx / totLig) * 100) : "—"}
-              subtitle="ligações que converteram ÷ ligações feitas" />
+              subtitle="ligações que converteram em reunião ÷ ligações feitas"
+              caveat={d.agend_sem_ligacao > 0
+                ? `${d.agend_sem_ligacao} agendamento(s) de deals sem ligação registrada (indicação, inbound direto) ficam fora — esta taxa mede o rendimento da LIGAÇÃO`
+                : undefined} />
           </div>
 
-          {/* Agendamentos ocupa a linha inteira (Otávio 22/07); os dois mapas
-              por ORIGEM ficam lado a lado mais abaixo — mesmo assunto */}
+          {/* Agendamentos: mapa + top janelas no MESMO card (Otávio 22/07 — o
+              mapa sozinho em largura total ficava grande demais, e a lista é a
+              leitura direta dele). Os dois mapas por ORIGEM vêm depois. */}
           <SectionCard hint={<Hint area="prevendas/horarios" titulo="Mapa de calor" />}
             title="Agendamentos — hora × dia"
             subtitle="quanto mais escuro, mais agendamentos naquele dia/hora · detalhes no ⓘ">
-            <Heatmap rows={agend.rows} cols={agend.cols} cells={agend.cells}
-              color="var(--chart-1)" rowLabelWidth={54} legendLabel="agendamentos" />
+            <div className="grid gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+              <Heatmap rows={agend.rows} cols={agend.cols} cells={agend.cells}
+                color="var(--chart-1)" rowLabelWidth={54} dense legendLabel="agendamentos" />
+              <div>
+                <div className="mb-1 inline-flex items-center gap-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Melhores horários por agendamento
+                  <Hint area="prevendas/horarios" titulo="Top 5 janelas" />
+                </div>
+                <p className="mb-2 text-xs text-muted-foreground">
+                  as 5 janelas dia+hora com mais agendamentos no período
+                </p>
+                <ul className="space-y-1.5">
+                  {topAgend.map((x, i) => (
+                    <li key={x.rot} className="flex justify-between gap-3 border-t border-border pt-1.5 text-sm first:border-t-0 first:pt-0">
+                      <span><b>{i + 1}º</b> — {x.rot}</span>
+                      <span className="shrink-0 tabular-nums text-muted-foreground">{x.v}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
           </SectionCard>
-
-          <div className="grid gap-6 lg:grid-cols-2">
-            <SectionCard hint={<Hint area="prevendas/horarios" titulo="Top 5 janelas" />}
-              title="Melhores horários por agendamento"
-              subtitle="as 5 janelas dia+hora com mais agendamentos no período">
-              <ul className="space-y-1.5">
-                {topAgend.map((x, i) => (
-                  <li key={x.rot} className="flex justify-between border-t border-border pt-1.5 text-sm first:border-t-0 first:pt-0">
-                    <span><b>{i + 1}º</b> — {x.rot}</span><span className="tabular-nums text-muted-foreground">{x.v}</span>
-                  </li>
-                ))}
-              </ul>
-            </SectionCard>
-            <SectionCard hint={<Hint area="prevendas/horarios" titulo="Melhores horários por taxa" />} title="Melhores horários por taxa"
-              subtitle="onde a ligação mais converte — só janelas com 5+ ligações (amostra confiável)">
-              {topTaxa.length ? (
-                <>
-                  <ul className="space-y-1.5">
-                    {topTaxa.map((x, i) => (
-                      <li key={x.rot} className="flex justify-between border-t border-border pt-1.5 text-sm first:border-t-0 first:pt-0">
-                        <span><b>{i + 1}º</b> — {x.rot}</span><span className="tabular-nums text-muted-foreground">{x.v}</span>
-                      </li>
-                    ))}
-                  </ul>
-                  {d.agend_sem_ligacao > 0 && (
-                    <p className="mt-2 text-xs text-muted-foreground">
-                      {d.agend_sem_ligacao} agendamento(s) de deals <b>sem ligação registrada</b> (indicação,
-                      inbound direto) ficam fora desta taxa — ela mede o rendimento da LIGAÇÃO.
-                    </p>
-                  )}
-                </>
-              ) : (
-                <p className="text-sm text-muted-foreground">Sem janelas com 5+ ligações no período.</p>
-              )}
-            </SectionCard>
-          </div>
 
           {/* Bloco ORIGEM: quando o lead de cada canal ATENDE × quando ele
               AGENDA — lado a lado porque respondem à mesma pergunta */}
@@ -273,21 +261,23 @@ export function MelhorHorarioPage() {
                     tooltipLabel={(c) => `${c.row} ${c.col}: ${c.value}% atendidas (${c.n} ligação(ões))${c.amostra_pequena ? " · amostra pequena" : ""}`} />
                   <div className="mt-3">
                     <div className="mb-1 inline-flex items-center gap-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                      Melhores janelas de aproveitamento
+                      Melhor janela de cada canal
                       <Hint area="prevendas/horarios" titulo="Melhores janelas de aproveitamento" />
                     </div>
-                    {topAtend.length ? (
-                      <ul className="space-y-1.5">
-                        {topAtend.map((x, i) => (
-                          <li key={x.rot} className="flex justify-between border-t border-border pt-1.5 text-sm first:border-t-0 first:pt-0">
-                            <span><b>{i + 1}º</b> — {x.rot}</span>
-                            <span className="tabular-nums text-muted-foreground">{x.v}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className="text-sm text-muted-foreground">Sem janelas com 5+ ligações no período.</p>
-                    )}
+                    <ul className="space-y-1.5">
+                      {melhorPorCanal.map((x) => (
+                        <li key={x.canal} className="flex justify-between gap-3 border-t border-border pt-1.5 text-sm first:border-t-0 first:pt-0">
+                          <span className="truncate"><b>{x.canal}</b>{x.best && (
+                            <span className="text-muted-foreground"> · melhor às {String(x.best.hora).padStart(2, "0")}h</span>
+                          )}</span>
+                          <span className="shrink-0 tabular-nums text-muted-foreground">
+                            {x.best
+                              ? `${((x.best.a / x.best.l) * 100).toFixed(0)}% (${x.best.a}/${x.best.l}) · geral ${x.geral.toFixed(0)}%`
+                              : `sem hora com 5+ ligações · geral ${x.geral.toFixed(0)}%`}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
                   </div>
                 </>
               ) : (

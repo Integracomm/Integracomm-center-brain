@@ -1090,20 +1090,31 @@ def _pv_horarios(conn, request: Request) -> str:
                          f"<b>{escape(cn)}</b></td>"
                          f"<td style='{_tdo};text-align:right' title='{tot_at} atendida(s) em {tot_l} ligação(ões)'>"
                          f"{tot_at / tot_l * 100:.0f}%</td>{tds}</tr>")
-        # ranking das janelas canal+hora com melhor aproveitamento (5+ ligações)
-        top_at = sorted(((cn, h, v[0], v[1]) for cn, cel_a in por_canal.items()
-                         for h, v in cel_a.items() if v[1] >= 5),
-                        key=lambda x: -(x[2] / x[3]))[:5]
+        # melhor janela DE CADA CANAL (Otávio 22/07: ranking geral repetia o
+        # mesmo canal; a decisão é 'a que horas eu ligo para ESTE canal') —
+        # uma linha por canal, só horas com 5+ ligações concorrem
         top_at_html = ""
-        for i, (cn, h, a_n, l_n) in enumerate(top_at, 1):
+        for cn in sorted(por_canal, key=lambda x: -sum(v[1] for v in por_canal[x].values())):
+            cel_a = por_canal[cn]
+            tot_l_c = sum(v[1] for v in cel_a.values())
+            tot_a_c = sum(v[0] for v in cel_a.values())
+            eleg = {h: v for h, v in cel_a.items() if v[1] >= 5}
+            if eleg:
+                bh = max(eleg, key=lambda h: eleg[h][0] / eleg[h][1])
+                ba, bl = eleg[bh]
+                esq = f"<b>{escape(cn)}</b> · melhor às {bh:02d}h"
+                dir_ = f"{ba / bl * 100:.0f}% ({ba}/{bl}) · geral {tot_a_c / tot_l_c * 100:.0f}%"
+            else:
+                esq = f"<b>{escape(cn)}</b>"
+                dir_ = f"sem hora com 5+ ligações · geral {tot_a_c / tot_l_c * 100:.0f}%"
             top_at_html += (f"<div style='display:flex;justify-content:space-between;gap:10px;padding:5px 0;"
                             f"border-top:1px solid var(--border);font-size:var(--fs-sm)'>"
-                            f"<span><b>{i}º</b> — {escape(cn)} · {h:02d}h</span>"
+                            f"<span>{esq}</span>"
                             f"<span style='color:var(--text-muted);font-variant-numeric:tabular-nums'>"
-                            f"{a_n / l_n * 100:.0f}% ({a_n}/{l_n} ligações)</span></div>")
-        top_at_sec = (("<section><h2>Melhores janelas de aproveitamento</h2>"
-                       "<p class=secsub>canal + hora em que o lead MAIS atende — só janelas com 5+ ligações · "
-                       "aproveitamento da DISCAGEM (atendeu), não conversão em reunião</p>"
+                            f"{dir_}</span></div>")
+        top_at_sec = (("<section><h2>Melhor janela de cada canal</h2>"
+                       "<p class=secsub>a hora em que o lead de cada canal MAIS atende — só horas com 5+ ligações "
+                       "concorrem · aproveitamento da DISCAGEM (atendeu), não conversão em reunião</p>"
                        + _card(top_at_html) + "</section>") if top_at_html else "")
         ths_a = (_tho.format(al="left", h="Canal") + _tho.format(al="right", h="Geral")
                  + "".join(_tho.format(al="center", h=str(h)) for h in horas_o))

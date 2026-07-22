@@ -262,3 +262,22 @@ Base para reextrapolar os lotes 2–6 com dado real.
   horários por taxa").
 - Paridade HTML×payload do ranking novo: OK (Google Ads 08h 83%, 09h 80%,
   12h 80%; Orgânico 11h 54%). tsc limpo, 56 pytest ok.
+
+## Ajustes 22/07 (3ª rodada, feedback com screenshot)
+
+- **Mapa de agendamentos ocupava a tela toda**: em largura total as células
+  ficaram enormes. Agora o mapa e a lista "Melhores horários por agendamento"
+  dividem o MESMO card (grid 2fr/1fr, mapa em modo `dense`) — a lista é a
+  leitura direta do mapa, não merecia card próprio.
+- **"Melhores horários por taxa" REMOVIDA do SPA**: era a lista do mapa de
+  conversão que saiu na rodada anterior — ficou órfã embaixo do mapa errado.
+  A taxa geral sobrevive no KPI (renomeado p/ "Conversão da ligação"), que
+  herdou a ressalva dos agendamentos sem ligação. O HTML antigo mantém a
+  seção de taxa (é a tela legada; o SPA é quem define o desenho novo).
+- **"Melhores janelas de aproveitamento" → "Melhor janela de cada canal"**:
+  o ranking global repetia o mesmo canal em várias posições (Google Ads 3×).
+  Agora é UMA linha por canal (ordenada por volume) com a melhor hora dele,
+  a taxa daquela hora e a taxa geral do canal; canal sem hora com 5+ ligações
+  aparece assim mesmo, com a geral — nada some. Mudança feita nas DUAS UIs +
+  help reescrito.
+- Paridade: 6/6 canais batendo HTML×payload, zero canais repetidos.
