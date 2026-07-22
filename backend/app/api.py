@@ -25,12 +25,28 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Red
 from .agents.growth.scoring import _top_driver, action_guideline
 from .auth import (AREA_HOME, AREAS, COOKIE, ROLE_HOME, USERS, authenticate_db,
                    check_login, clear_login_fails, create_user, list_users,
-                   login_blocked, make_token, record_login_fail, set_user_areas,
-                   set_user_status, user_areas, verify_token)
+                   login_blocked, make_token, record_login_fail, set_user_admin,
+                   set_user_areas, set_user_status, user_areas, verify_token)
 from .db import persistence as P
 from .help_texts import _hint
 
 app = FastAPI(title="Integracomm IA — Growth", docs_url="/api/docs")
+
+
+@app.middleware("http")
+async def _sem_cache_no_conteudo(request: Request, call_next):
+    """Tela e API autenticadas NÃO ficam no cache do navegador (22/07).
+
+    Pego ao testar o rebaixamento de um admin: o servidor já devolvia o redirect
+    correto, mas o navegador servia a Central do próprio cache e a pessoa
+    continuava vendo a tela depois de perder o acesso. Vale para o botão Voltar
+    também. Os assets de /spa/ têm hash no nome e seguem cacheáveis — é o que
+    torna a 2ª carga barata."""
+    resp = await call_next(request)
+    caminho = request.url.path
+    if not (caminho.startswith("/spa/") or caminho.startswith("/favicon")):
+        resp.headers["Cache-Control"] = "no-store, must-revalidate"
+    return resp
 
 
 @app.on_event("startup")
@@ -85,33 +101,41 @@ def _visible_agents(role: str) -> list[str]:
 
 
 # --- sessão / login ----------------------------------------------------------
-_DB_USER_CACHE: dict[str, tuple[float, bool]] = {}  # e-mail -> (ts, ativo?)
+_DB_USER_CACHE: dict[str, tuple[float, bool, str | None]] = {}  # e-mail -> (ts, ativo?, papel)
 
 
-def _db_user_active(email: str) -> bool:
-    """Usuário do BANCO ainda está aprovado? (cache 60s — bloqueio derruba a
-    sessão em até 1 min, sem custo de 1 query por clique)."""
+def _db_user_state(email: str) -> tuple[bool, str | None]:
+    """(ativo?, papel efetivo) do usuário do BANCO — cache 60s, sem custo de 1
+    query por clique. O papel vem do banco e não do cookie porque o admin pode
+    promover/rebaixar uma conta (22/07): assim a mudança vale NA HORA, como os
+    outros interruptores do painel, em vez de esperar o próximo login."""
     import time as _t
     hit = _DB_USER_CACHE.get(email)
     if hit and _t.monotonic() - hit[0] < 60:
-        return hit[1]
+        return hit[1], hit[2]
     try:
         with _conn() as c, c.cursor() as cur:
-            cur.execute("SELECT status FROM users WHERE email=%s", (email,))
+            cur.execute("SELECT status, role, is_admin FROM users WHERE email=%s", (email,))
             row = cur.fetchone()
         ok = bool(row and row[0] == "aprovado")
+        papel = ("admin" if row[2] else row[1]) if row else None
     except Exception:  # noqa: BLE001 — banco fora: não derrubar sessões válidas
-        ok = True
-    _DB_USER_CACHE[email] = (_t.monotonic(), ok)
-    return ok
+        ok, papel = True, None
+    _DB_USER_CACHE[email] = (_t.monotonic(), ok, papel)
+    return ok, papel
 
 
 def _session(request: Request) -> tuple[str, str] | None:
-    """(user, role) da sessão, ou None. Usuário do banco bloqueado perde a sessão."""
+    """(user, role) da sessão, ou None. Usuário do banco bloqueado perde a
+    sessão, e o papel do BANCO vence o que está no cookie (rebaixar tem de
+    valer na hora — cookie antigo não pode manter privilégio)."""
     s = verify_token(request.cookies.get(COOKIE))
-    if s and s[0] not in USERS and not _db_user_active(s[0]):
+    if not s or s[0] in USERS:
+        return s
+    ativo, papel = _db_user_state(s[0])
+    if not ativo:
         return None
-    return s
+    return (s[0], papel) if papel else s
 
 
 _AREA_CACHE: dict[str, tuple[float, set]] = {}
@@ -1032,6 +1056,35 @@ def api_user_status(user_id: str, request: Request, payload: dict = Body(...)):
                                               status_code=400)
 
 
+@app.post("/api/users/{user_id}/admin")
+def api_user_admin(user_id: str, request: Request, payload: dict = Body(...)):
+    """Promove/rebaixa uma conta a ADMINISTRADORA (Otávio 22/07). Só admin.
+
+    É um sinalizador à parte do `role`: rebaixar devolve a conta exatamente ao
+    papel e às áreas que ela tinha. O admin NÃO pode rebaixar a si mesmo — seria
+    a única ação do painel capaz de tirar o próprio acesso no meio do uso."""
+    actor, role = _require_api(request)
+    if role != "admin":
+        return JSONResponse({"error": "só o administrador gerencia contas"}, status_code=403)
+    valor = payload.get("admin")
+    if not isinstance(valor, bool):
+        return JSONResponse({"error": "admin (true/false) é obrigatório"}, status_code=400)
+    with _conn() as c:
+        ok, email = set_user_admin(c, user_id, valor)
+        if ok and email == actor and not valor:
+            set_user_admin(c, user_id, True)  # desfaz: ninguém se auto-rebaixa
+            return JSONResponse({"error": "você não pode remover o seu próprio acesso de administrador"},
+                                status_code=400)
+        if ok:
+            with c.cursor() as cur:
+                cur.execute("INSERT INTO audit_log (actor, action, scope) VALUES (%s,%s,%s)",
+                            (actor, "user_admin", f"usuario:{user_id}:{'admin' if valor else 'gestor'}"))
+    # vale na hora: zera o papel em cache da pessoa afetada e as áreas dela
+    _DB_USER_CACHE.pop(email, None)
+    _AREA_CACHE.pop(email, None)
+    return {"ok": ok} if ok else JSONResponse({"error": "usuário não encontrado"}, status_code=400)
+
+
 @app.post("/api/users/{user_id}/areas")
 def api_user_areas(user_id: str, request: Request, payload: dict = Body(...)):
     """Define as ÁREAS que a conta enxerga (checkboxes do hub). Só admin."""
@@ -1550,7 +1603,7 @@ def _teams_html(conn) -> str:
             "font-family:var(--font-body);font-size:var(--fs-xs);padding:5px 8px}</style></section>")
 
 
-def _admin_html(users: list[dict]) -> str:
+def _admin_html(users: list[dict], atual: str = "") -> str:
     """Painel administrativo: linha por conta com interruptor POR ÁREA (aplica
     na hora via /api/users/{id}/areas), nº de acessos e último login (audit_log),
     aprovar/bloquear e busca — modelo do painel da calculadora."""
@@ -1565,26 +1618,40 @@ def _admin_html(users: list[dict]) -> str:
             acts += f"<button class=abtn onclick=\"userSt('{u['id']}','aprovado')\">aprovar</button> "
         if u["status"] != "bloqueado":
             acts += f"<button class=abtn onclick=\"userSt('{u['id']}','bloqueado')\">bloquear</button>"
+        adm = u.get("is_admin")
+        # conta admin enxerga tudo: os interruptores de área ficam travados p/
+        # não prometerem um recorte que o papel ignora
         tgls = "".join(
             f"<td class=tgl-td><label class=tgl><input type=checkbox data-uid='{u['id']}' value='{slug}' "
-            f"{'checked' if slug in (u.get('areas') or []) else ''} onchange=\"tglArea('{u['id']}')\">"
+            f"{'checked' if (adm or slug in (u.get('areas') or [])) else ''} "
+            f"{'disabled' if adm else ''} onchange=\"tglArea('{u['id']}')\">"
             f"<span></span></label></td>" for slug in AREAS)
+        eu = u["email"] == atual  # ninguém se auto-rebaixa
+        tgl_adm = (f"<td class=tgl-td><label class=tgl title=\"{'seu próprio acesso' if eu else 'acesso de administrador'}\">"
+                   f"<input type=checkbox {'checked' if adm else ''} {'disabled' if eu else ''} "
+                   f"onchange=\"tglAdmin('{u['id']}',this.checked)\"><span></span></label></td>")
         rows += (f"<tr data-busca=\"{escape((u['name'] + ' ' + u['email']).lower())}\">"
                  f"<td><b>{escape(u['name'][:34])}</b><br><span class=amail>{escape(u['email'][:44])}</span></td>"
                  f"<td>{_chip(u['status'], _UST.get(u['status'], '--status-semdados'))}<div style='margin-top:5px'>{acts}</div></td>"
                  f"<td class=anum>{u.get('views', 0)}</td>"
                  f"<td class=anum>{escape(u.get('last_seen') or '—')}</td>"
-                 f"{tgls}</tr>")
+                 f"{tgl_adm}{tgls}</tr>")
     return (
         "<div class=central style='padding:0;overflow-x:auto'>"
         "<div style='padding:14px 16px 0'><input id=abusca placeholder='pesquisar por nome ou e-mail…' oninput='aFiltra()' "
         "style='width:100%;max-width:420px;background:var(--bg-panel);border:1px solid var(--border-strong);border-radius:var(--radius-sm);color:var(--text);font-family:var(--font-body);font-size:var(--fs-sm);padding:9px 11px'></div>"
-        "<table class=atbl><tr><th>Usuário</th><th>Status</th><th>Acessos</th><th>Último login</th>" + ths + "</tr>"
+        "<table class=atbl><tr><th>Usuário</th><th>Status</th><th>Acessos</th><th>Último login</th>"
+        "<th class=adm-th>Admin</th>" + ths + "</tr>"
         + rows + "</table></div>"
         "<script>"
         "function userSt(id,st){if(st==='bloqueado'&&!confirm('Bloquear esta conta?'))return;"
         "fetch('/api/users/'+id+'/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:st})})"
         ".then(function(r){return r.json();}).then(function(j){if(j.error)alert(j.error);else location.reload();}).catch(function(){alert('falha de rede');});}"
+        "function tglAdmin(id,v){if(v&&!confirm('Tornar esta conta ADMINISTRADORA? "
+        "Ela passa a ver a Central, o Painel Administrativo, as Acoes da Semana e "
+        "todas as areas.')){location.reload();return;}"
+        "fetch('/api/users/'+id+'/admin',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({admin:v})})"
+        ".then(function(r){return r.json();}).then(function(j){if(j.error)alert(j.error);location.reload();}).catch(function(){alert('falha de rede');location.reload();});}"
         "function tglArea(id){var areas=[].slice.call(document.querySelectorAll(\"input[data-uid='\"+id+\"']:checked\")).map(function(c){return c.value;});"
         "fetch('/api/users/'+id+'/areas',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({areas:areas})})"
         ".then(function(r){return r.json();}).then(function(j){if(j.error){alert(j.error);location.reload();}}).catch(function(){alert('falha de rede');location.reload();});}"
@@ -1598,6 +1665,8 @@ def _admin_html(users: list[dict]) -> str:
         ".amail{color:var(--text-muted);font-size:var(--fs-xs)}"
         ".anum{font-variant-numeric:tabular-nums;white-space:nowrap}"
         ".tgl-td{text-align:center}"
+        ".adm-th{color:var(--brand)}"
+        ".tgl input:disabled+span{opacity:.45;cursor:not-allowed}"
         ".tgl{position:relative;display:inline-block;width:38px;height:21px;cursor:pointer}"
         ".tgl input{opacity:0;width:0;height:0}"
         ".tgl span{position:absolute;inset:0;background:var(--surface-3);border:1px solid var(--border-strong);border-radius:999px;transition:background .15s}"
@@ -2591,7 +2660,7 @@ __BODY__
             + _llm_budget_html(llm) + teams_html +
             "<section><h2>Contas e permissões</h2>"
             "<p class=secsub>pendentes primeiro · os interruptores aplicam NA HORA (vale em até 60s) · busca por nome/e-mail</p>"
-            + _admin_html(users or []))
+            + _admin_html(users or [], atual=role))  # `role` aqui é o e-mail da sessão
     else:
         # COCKPIT (17/07): camadas em ordem de atenção — foco da semana → o que
         # mudou → saúde → raio-x compacto → cards de área → iniciativas →

@@ -116,6 +116,11 @@ CREATE TABLE IF NOT EXISTS users (
     approved_at   TIMESTAMPTZ
 );
 ALTER TABLE users ADD COLUMN IF NOT EXISTS areas TEXT;  -- csv de slugs (ver AREAS)
+-- promover a admin é um SINALIZADOR à parte, não uma troca de `role` (22/07):
+-- assim rebaixar devolve a conta EXATAMENTE ao que era (papel e áreas de origem
+-- preservados). Os admins de bootstrap (.env) não estão nesta tabela, então
+-- sempre sobra um caminho de entrada mesmo que ninguém aqui seja admin.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT false;
 """
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -162,11 +167,14 @@ def authenticate_db(conn: Any, email: str, password: str) -> tuple[str | None, s
     ensure_users_table(conn)
     email = (email or "").strip().lower()
     with conn.cursor() as cur:
-        cur.execute("SELECT password_hash, role, status FROM users WHERE email=%s", (email,))
+        cur.execute("SELECT password_hash, role, status, is_admin FROM users WHERE email=%s",
+                    (email,))
         row = cur.fetchone()
     if not row:
         return None, None
-    pwd_hash, role, status = row
+    pwd_hash, role, status, is_admin = row
+    if is_admin:
+        role = "admin"
     if not bcrypt.checkpw((password or "").encode(), pwd_hash.encode()):
         return None, "senha incorreta"
     if status == "pendente":
@@ -179,12 +187,13 @@ def authenticate_db(conn: Any, email: str, password: str) -> tuple[str | None, s
 def list_users(conn: Any) -> list[dict]:
     ensure_users_table(conn)
     with conn.cursor() as cur:
-        cur.execute("""SELECT id, email, name, role, status, created_at, areas
+        cur.execute("""SELECT id, email, name, role, status, created_at, areas, is_admin
                          FROM users ORDER BY (status='pendente') DESC, created_at DESC""")
-        return [{"id": str(i), "email": e, "name": n, "role": r, "status": s,
-                 "created_at": c.isoformat(),
-                 "areas": sorted(a.split(",")) if a else sorted(_ROLE_AREAS.get(r, set()))}
-                for i, e, n, r, s, c, a in cur.fetchall()]
+        return [{"id": str(i), "email": e, "name": n, "role": ("admin" if adm else r),
+                 "is_admin": bool(adm), "status": s, "created_at": c.isoformat(),
+                 "areas": (sorted(AREAS) if adm else
+                           sorted(a.split(",")) if a else sorted(_ROLE_AREAS.get(r, set())))}
+                for i, e, n, r, s, c, a, adm in cur.fetchall()]
 
 
 def user_areas(conn: Any, email: str, role: str) -> set[str]:
@@ -194,11 +203,13 @@ def user_areas(conn: Any, email: str, role: str) -> set[str]:
         return set(_ROLE_AREAS.get(role, set()))
     ensure_users_table(conn)
     with conn.cursor() as cur:
-        cur.execute("SELECT areas, role FROM users WHERE email=%s", (email,))
+        cur.execute("SELECT areas, role, is_admin FROM users WHERE email=%s", (email,))
         row = cur.fetchone()
     if not row:
         return set()
-    areas, r = row
+    areas, r, is_admin = row
+    if is_admin:  # admin enxerga a empresa inteira, como os do bootstrap
+        return set(AREAS)
     if areas:
         return {a for a in areas.split(",") if a in AREAS}
     return set(_ROLE_AREAS.get(r, set()))
@@ -210,6 +221,18 @@ def set_user_areas(conn: Any, user_id: str, areas: list[str]) -> bool:
     with conn.cursor() as cur:
         cur.execute("UPDATE users SET areas=%s WHERE id=%s", (",".join(clean) or None, user_id))
         return cur.rowcount > 0
+
+
+def set_user_admin(conn: Any, user_id: str, valor: bool) -> tuple[bool, str | None]:
+    """Promove/rebaixa a conta a administradora. Devolve (ok, e-mail afetado) —
+    o e-mail volta para o chamador invalidar o cache de sessão da pessoa, para a
+    mudança valer NA HORA como os outros interruptores do painel."""
+    ensure_users_table(conn)
+    with conn.cursor() as cur:
+        cur.execute("UPDATE users SET is_admin=%s WHERE id=%s RETURNING email",
+                    (bool(valor), user_id))
+        row = cur.fetchone()
+    return (bool(row), row[0] if row else None)
 
 
 def set_user_status(conn: Any, user_id: str, status: str, actor: str) -> bool:
