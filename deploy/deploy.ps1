@@ -25,18 +25,37 @@ if ($dirty) {
     if ($answer -ne 's') { Write-Host "Cancelado."; exit 1 }
 }
 
-Write-Host "== [1/3] empacotando codigo (git archive HEAD) ==" -ForegroundColor Cyan
+# INCIDENTE 22/07: o build do SPA rodava DENTRO do servidor (estagio bun no
+# Dockerfile) e derrubou a instancia por falta de RAM — o build do Docker NAO
+# respeita mem_limit. Desde entao o dist e buildado AQUI e viaja no pacote.
+Write-Host "== [1/4] buildando o frontend LOCALMENTE ==" -ForegroundColor Cyan
+$bun = "$env:USERPROFILE\.bun\bin\bun.exe"
+if (-not (Test-Path $bun)) { throw "bun nao encontrado em $bun (necessario p/ buildar o SPA antes do deploy)." }
+Push-Location (Join-Path $root "frontend")
+& $bun run build
+$okBuild = $LASTEXITCODE -eq 0
+Pop-Location
+if (-not $okBuild) { throw "build do frontend falhou - deploy abortado." }
+if (-not (Test-Path (Join-Path $root "frontend\dist\index.html"))) { throw "frontend/dist nao foi gerado." }
+
+Write-Host "== [2/4] empacotando codigo (git archive HEAD) + dist ==" -ForegroundColor Cyan
 $tarPath = Join-Path $env:TEMP "integracomm_update.tar.gz"
-if (Test-Path $tarPath) { Remove-Item $tarPath }
+$distPath = Join-Path $env:TEMP "integracomm_dist.tar.gz"
+foreach ($p in @($tarPath, $distPath)) { if (Test-Path $p) { Remove-Item $p } }
 git archive --format=tar.gz -o $tarPath HEAD
-Write-Host ("   {0:N1} MB" -f ((Get-Item $tarPath).Length / 1MB))
+# dist/ e gitignored (nao entra no archive) - vai num pacote proprio
+tar -czf $distPath -C $root "frontend/dist"
+Write-Host ("   codigo {0:N1} MB · dist {1:N1} MB" -f ((Get-Item $tarPath).Length / 1MB), ((Get-Item $distPath).Length / 1MB))
 
-Write-Host "== [2/3] enviando para o servidor ==" -ForegroundColor Cyan
+Write-Host "== [3/4] enviando para o servidor ==" -ForegroundColor Cyan
 scp -i $KeyPath $tarPath "ubuntu@${ServerIP}:/tmp/integracomm_update.tar.gz"
-if ($LASTEXITCODE -ne 0) { throw "scp falhou (codigo $LASTEXITCODE)." }
+if ($LASTEXITCODE -ne 0) { throw "scp do codigo falhou (codigo $LASTEXITCODE)." }
+scp -i $KeyPath $distPath "ubuntu@${ServerIP}:/tmp/integracomm_dist.tar.gz"
+if ($LASTEXITCODE -ne 0) { throw "scp do dist falhou (codigo $LASTEXITCODE)." }
 
-Write-Host "== [3/3] extraindo e reconstruindo no servidor ==" -ForegroundColor Cyan
-$remoteCmd = "set -e; cd $RemotePath && tar -xzf /tmp/integracomm_update.tar.gz && sudo docker compose -f deploy/docker-compose.yml up -d --build && sudo docker compose -f deploy/docker-compose.yml ps"
+Write-Host "== [4/4] extraindo e reconstruindo no servidor ==" -ForegroundColor Cyan
+# rm -rf do dist antigo antes de extrair: arquivos com hash no nome se acumulam
+$remoteCmd = "set -e; cd $RemotePath && tar -xzf /tmp/integracomm_update.tar.gz && rm -rf frontend/dist && tar -xzf /tmp/integracomm_dist.tar.gz && sudo docker compose -f deploy/docker-compose.yml up -d --build && sudo docker compose -f deploy/docker-compose.yml ps"
 ssh -i $KeyPath "ubuntu@$ServerIP" $remoteCmd
 if ($LASTEXITCODE -ne 0) { throw "atualizacao no servidor falhou (codigo $LASTEXITCODE)." }
 
