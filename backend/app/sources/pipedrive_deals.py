@@ -42,12 +42,45 @@ class DailyBudgetExceeded(RuntimeError):
 
 
 _REQS = {"n": 0}  # requisições feitas neste processo (visibilidade nos logs)
+# saldo do orçamento DIÁRIO de tokens, lido do header a cada resposta
+_RATE: dict[str, int | None] = {"remaining": None, "limit": None}
+
+
+def rate_remaining() -> tuple[int | None, int | None]:
+    """(tokens restantes, teto diário) medidos na última resposta — None antes
+    da primeira chamada do processo."""
+    return _RATE["remaining"], _RATE["limit"]
+
+
+def _piso_tokens() -> int:
+    """PISO de tokens que NUNCA gastamos (regra dura do Otávio, dita 3x: outras
+    aplicações leem o Pipedrive em tempo real e não podem parar). Qualquer
+    coleta nossa aborta limpo ao encostar nele — o incremental retoma amanhã."""
+    try:
+        return int(os.environ.get("PIPEDRIVE_MIN_TOKENS", "300000"))
+    except ValueError:
+        return 300_000
 
 
 def _get(path: str, params: dict) -> dict:
+    # guarda ANTES da chamada: se a última resposta já mostrou saldo no piso,
+    # não emite mais nenhuma requisição neste processo
+    rest = _RATE["remaining"]
+    if rest is not None and rest <= _piso_tokens():
+        raise DailyBudgetExceeded(
+            f"piso de reserva atingido: {rest} tokens restantes (piso {_piso_tokens()}) — "
+            "parando para preservar as outras aplicações")
     r = httpx.get(f"https://api.pipedrive.com/v1/{path}",
                   params=dict(params, api_token=_token()), timeout=90)
     _REQS["n"] += 1
+    for h, k in (("x-daily-ratelimit-token-remaining", "remaining"),
+                 ("x-daily-ratelimit-token-limit", "limit")):
+        v = r.headers.get(h)
+        if v is not None:
+            try:
+                _RATE[k] = int(v)
+            except ValueError:
+                pass
     if r.status_code == 429 and "daily request budget" in r.text:
         raise DailyBudgetExceeded(r.text[:120])
     r.raise_for_status()

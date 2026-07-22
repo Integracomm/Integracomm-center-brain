@@ -142,6 +142,24 @@ export function MelhorHorarioPage() {
     return { rows, cols: horas.map((h) => `${h}h`), cells };
   }, [d]);
 
+  // melhores janelas de APROVEITAMENTO da ligação: canal+hora onde o lead mais
+  // atende (só 5+ ligações — mesma régua de amostra dos demais rankings)
+  const topAtend = useMemo(() => {
+    if (!d || !d.atendimento.length) return [];
+    const porChave = new Map<string, { canal: string; hora: number; a: number; l: number }>();
+    for (const r of d.atendimento) {
+      const k = `${r.canal}|${r.hora}`;
+      const v = porChave.get(k) ?? { canal: r.canal, hora: r.hora, a: 0, l: 0 };
+      v.a += r.atendidas; v.l += r.ligacoes;
+      porChave.set(k, v);
+    }
+    return [...porChave.values()].filter((v) => v.l >= 5)
+      .map((v) => ({ ...v, tx: (v.a / v.l) * 100 }))
+      .sort((x, y) => y.tx - x.tx).slice(0, 5)
+      .map((v) => ({ rot: `${v.canal} · ${String(v.hora).padStart(2, "0")}h`,
+                     v: `${v.tx.toFixed(0)}% (${v.a}/${v.l} ligações)` }));
+  }, [d]);
+
   const horasComerciais = useMemo(() => Array.from({ length: 14 }, (_, i) => i + 7), []);
   const gOrigem = useMemo(() => (d ? grade(d.por_origem, horasComerciais) : null), [d, horasComerciais]);
 
@@ -194,33 +212,14 @@ export function MelhorHorarioPage() {
               subtitle="ligações que converteram ÷ ligações feitas" />
           </div>
 
-          <div className="grid gap-6 xl:grid-cols-2">
-            <SectionCard hint={<Hint area="prevendas/horarios" titulo="Mapa de calor" />}
-              headerClassName="min-h-[56px]"
-              title="Agendamentos — hora × dia"
-              subtitle="quanto mais escuro, mais agendamentos · mesmas linhas do mapa ao lado · detalhes no ⓘ">
-              <Heatmap rows={agend.rows} cols={agend.cols} cells={agend.cells}
-                color="var(--chart-1)" rowLabelWidth={54} legendLabel="agendamentos" />
-            </SectionCard>
-
-            <SectionCard hint={<Hint area="prevendas/horarios" titulo="Atendimento de ligações por origem" />}
-              headerClassName="min-h-[56px]"
-              title="Atendimento de ligações — origem × hora"
-              subtitle={`das ligações FEITAS na hora, % que o lead ATENDEU · hachura = <5 ligações · detalhes no ⓘ${
-                d.atendimento_ini ? ` · desfecho desde ${d.atendimento_ini.split("-").reverse().join("/")}` : ""}`}>
-              {atd && atd.cells.length ? (
-                <Heatmap rows={atd.rows} cols={atd.cols} cells={atd.cells}
-                  color="var(--success)" rowScale dense rowLabelWidth={110}
-                  valueLabel={(v) => `${v}%`} legendLabel="atendimento"
-                  tooltipLabel={(c) => `${c.row} ${c.col}: ${c.value}% atendidas (${c.n} ligação(ões))${c.amostra_pequena ? " · amostra pequena" : ""}`} />
-              ) : (
-                <p className="text-sm text-muted-foreground">
-                  Sem desfecho de ligação no período — o desfecho (atendida/não atendida) entrou na
-                  coleta em 22/07; a seção acende conforme a coleta diária acumula.
-                </p>
-              )}
-            </SectionCard>
-          </div>
+          {/* Agendamentos ocupa a linha inteira (Otávio 22/07); os dois mapas
+              por ORIGEM ficam lado a lado mais abaixo — mesmo assunto */}
+          <SectionCard hint={<Hint area="prevendas/horarios" titulo="Mapa de calor" />}
+            title="Agendamentos — hora × dia"
+            subtitle="quanto mais escuro, mais agendamentos naquele dia/hora · detalhes no ⓘ">
+            <Heatmap rows={agend.rows} cols={agend.cols} cells={agend.cells}
+              color="var(--chart-1)" rowLabelWidth={54} legendLabel="agendamentos" />
+          </SectionCard>
 
           <div className="grid gap-6 lg:grid-cols-2">
             <SectionCard hint={<Hint area="prevendas/horarios" titulo="Top 5 janelas" />}
@@ -258,43 +257,86 @@ export function MelhorHorarioPage() {
             </SectionCard>
           </div>
 
-          <SectionCard hint={<Hint area="prevendas/horarios" titulo="Melhor horário por origem do lead" />}
-            title="Padrão por origem do lead — origem × hora"
-            subtitle="escala POR LINHA (compara o padrão de cada origem, independente do volume) · célula contornada = pico da origem">
-            {gOrigem && gOrigem.cells.length ? (
-              <Heatmap rows={gOrigem.rows} cols={gOrigem.cols} cells={gOrigem.cells}
-                color="var(--chart-2)" rowScale dense rowLabelWidth={110} legendLabel="agendamentos" />
-            ) : (
-              <p className="text-sm text-muted-foreground">Sem dados por origem no período.</p>
-            )}
-            <div className="mt-3">
-              <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                Top janelas por origem (com o dia da semana)
+          {/* Bloco ORIGEM: quando o lead de cada canal ATENDE × quando ele
+              AGENDA — lado a lado porque respondem à mesma pergunta */}
+          <div className="grid gap-6 xl:grid-cols-2">
+            <SectionCard hint={<Hint area="prevendas/horarios" titulo="Atendimento de ligações por origem" />}
+              headerClassName="min-h-[72px]"
+              title="Atendimento de ligações — origem × hora"
+              subtitle={`das ligações FEITAS na hora, % que o lead ATENDEU · escala por linha · hachura = <5 ligações${
+                d.atendimento_ini ? ` · desfecho desde ${d.atendimento_ini.split("-").reverse().join("/")}` : ""}`}>
+              {atd && atd.cells.length ? (
+                <>
+                  <Heatmap rows={atd.rows} cols={atd.cols} cells={atd.cells}
+                    color="var(--success)" rowScale dense rowLabelWidth={110}
+                    valueLabel={(v) => `${v}%`} legendLabel="atendimento"
+                    tooltipLabel={(c) => `${c.row} ${c.col}: ${c.value}% atendidas (${c.n} ligação(ões))${c.amostra_pequena ? " · amostra pequena" : ""}`} />
+                  <div className="mt-3">
+                    <div className="mb-1 inline-flex items-center gap-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      Melhores janelas de aproveitamento
+                      <Hint area="prevendas/horarios" titulo="Melhores janelas de aproveitamento" />
+                    </div>
+                    {topAtend.length ? (
+                      <ul className="space-y-1.5">
+                        {topAtend.map((x, i) => (
+                          <li key={x.rot} className="flex justify-between border-t border-border pt-1.5 text-sm first:border-t-0 first:pt-0">
+                            <span><b>{i + 1}º</b> — {x.rot}</span>
+                            <span className="tabular-nums text-muted-foreground">{x.v}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="text-sm text-muted-foreground">Sem janelas com 5+ ligações no período.</p>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  Sem desfecho de ligação no período — o desfecho (atendida/não atendida) entrou na
+                  coleta em 22/07; a seção acende conforme a coleta diária acumula.
+                </p>
+              )}
+            </SectionCard>
+
+            <SectionCard hint={<Hint area="prevendas/horarios" titulo="Melhor horário por origem do lead" />}
+              headerClassName="min-h-[72px]"
+              title="Padrão por origem do lead — origem × hora"
+              subtitle="quando o lead de cada canal AGENDA · escala POR LINHA (compara o padrão independente do volume) · célula contornada = pico">
+              {gOrigem && gOrigem.cells.length ? (
+                <Heatmap rows={gOrigem.rows} cols={gOrigem.cols} cells={gOrigem.cells}
+                  color="var(--chart-2)" rowScale dense rowLabelWidth={110} legendLabel="agendamentos" />
+              ) : (
+                <p className="text-sm text-muted-foreground">Sem dados por origem no período.</p>
+              )}
+              <div className="mt-3">
+                <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Top janelas por origem (com o dia da semana)
+                </div>
+                <Table>
+                  <TableHeader>
+                    <TableRow className="bg-muted/40 hover:bg-muted/40">
+                      <TableHead className={thCls}>Origem</TableHead>
+                      <TableHead className={`${thCls} text-right`}>Agendamentos</TableHead>
+                      <TableHead className={thCls}>Melhores janelas</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {Object.entries(d.por_origem)
+                      .sort((a, b) => somaN(b[1]) - somaN(a[1]))
+                      .map(([org, cels]) => (
+                        <TableRow key={org}>
+                          <TableCell className="font-medium">
+                            {org}{somaN(cels) < 30 && <span className="ml-1 text-muted-foreground" title="amostra pequena (<30)">*</span>}
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums">{somaN(cels)}</TableCell>
+                          <TableCell className="text-sm text-muted-foreground">{topJanelas(cels)}</TableCell>
+                        </TableRow>
+                      ))}
+                  </TableBody>
+                </Table>
               </div>
-              <Table>
-                <TableHeader>
-                  <TableRow className="bg-muted/40 hover:bg-muted/40">
-                    <TableHead className={thCls}>Origem</TableHead>
-                    <TableHead className={`${thCls} text-right`}>Agendamentos</TableHead>
-                    <TableHead className={thCls}>Melhores janelas</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {Object.entries(d.por_origem)
-                    .sort((a, b) => somaN(b[1]) - somaN(a[1]))
-                    .map(([org, cels]) => (
-                      <TableRow key={org}>
-                        <TableCell className="font-medium">
-                          {org}{somaN(cels) < 30 && <span className="ml-1 text-muted-foreground" title="amostra pequena (<30)">*</span>}
-                        </TableCell>
-                        <TableCell className="text-right tabular-nums">{somaN(cels)}</TableCell>
-                        <TableCell className="text-sm text-muted-foreground">{topJanelas(cels)}</TableCell>
-                      </TableRow>
-                    ))}
-                </TableBody>
-              </Table>
-            </div>
-          </SectionCard>
+            </SectionCard>
+          </div>
 
           <SectionCard hint={<Hint area="prevendas/horarios" titulo="Melhores janelas por bundle" />}
             title="Padrão por bundle"

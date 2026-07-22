@@ -238,3 +238,27 @@ Base para reextrapolar os lotes 2–6 com dado real.
   p/ lá). **Cobertura: desfecho coletado a partir de 22/07** — histórico
   depende de re-backfill (só em janela aprovada; ~90 páginas, custo <0,1% do
   orçamento diário do Pipedrive).
+
+## Ajustes 22/07 (2ª rodada): layout do Melhor Horário + backfill do desfecho
+
+- **PISO DE RESERVA no cliente do Pipedrive (guarda-corpo permanente)**: o
+  `_get` agora lê `x-daily-ratelimit-token-remaining` a cada resposta e
+  ABORTA qualquer coleta nossa (DailyBudgetExceeded) ao encostar no piso
+  `PIPEDRIVE_MIN_TOKENS` (padrão 300k; backfill rodou com 400k). Vale para
+  TODAS as coletas, não só o backfill — a regra dura do Otávio deixou de
+  depender de disciplina de script e virou código.
+- **Backfill do desfecho** (janela aprovada 22/07): since=01/03, teto 260 pág,
+  pausa 1,2s, saldo medido antes/depois. Saldo antes: 1.068.620 de 1.170.000
+  (91,3%).
+- **Layout do Melhor Horário (feedback Otávio)**: "Agendamentos — hora × dia"
+  passa a ocupar a LINHA INTEIRA sozinho; "Atendimento de ligações — origem ×
+  hora" desce e fica LADO A LADO com "Padrão por origem do lead — origem ×
+  hora" (mesmo assunto: comportamento por canal — um mostra quando o lead
+  ATENDE, o outro quando ele AGENDA), headers equalizados em 72px.
+- **"Melhores janelas de aproveitamento"** (lista nova, sob o mapa de
+  atendimento, nas DUAS UIs): ranking canal+hora por % de atendimento, só
+  janelas com 5+ ligações, com help próprio. Distinção explicitada no texto:
+  aproveitamento da DISCAGEM ≠ conversão em reunião (essa fica em "Melhores
+  horários por taxa").
+- Paridade HTML×payload do ranking novo: OK (Google Ads 08h 83%, 09h 80%,
+  12h 80%; Orgânico 11h 54%). tsc limpo, 56 pytest ok.
