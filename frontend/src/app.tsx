@@ -145,7 +145,8 @@ function Shell({ children }: { children: React.ReactNode }) {
     ...(home.data?.visoes ?? []).map((v, i) => ({
       href: v.href, label: v.nome, spa: true, grupo: i === 0 ? "Visões da empresa" : undefined })),
     ...(home.data?.admin ?? []).map((a, i) => ({
-      href: a.href, label: a.nome, spa: a.slug === "central", grupo: i === 0 ? "Admin" : undefined })),
+      href: a.href, label: a.nome, spa: a.slug === "central" || a.slug === "semana",
+      grupo: i === 0 ? "Admin" : undefined })),
   ];
   // A CENTRAL (/central) é a visão cross-área do admin: em vez da nav de uma
   // área, lista as áreas + as visões transversais (o hub HTML fazia o mesmo).

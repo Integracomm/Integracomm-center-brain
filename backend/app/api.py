@@ -910,14 +910,16 @@ def api_central(request: Request):
 
 @app.get("/api/home")
 def api_home(request: Request):
-    """A HOME ÚNICA em dados (Otávio 22/07): o que ESTA pessoa acessa.
+    """A NAVEGAÇÃO desta pessoa (Otávio 22/07). Monta o sidebar da home única.
 
-    A navegação passa a ser derivada das áreas liberadas para a conta (a mesma
+    A navegação passa a ser derivada das áreas liberadas para a CONTA (a mesma
     régua do RBAC, `_areas_of`) em vez de fixa por papel — o gestor com várias
     áreas escolhe, em vez de cair na primeira em ordem alfabética.
 
-    Raio-X por Bundle é VISÍVEL PARA TODOS os gestores (decidido 22/07): o
-    handler já liberava por sessão; faltava entrar na navegação deles."""
+    NÃO devolve dado de negócio (Otávio 22/07, 2ª volta): a home é só a marca.
+    A 1ª versão trazia o foco da semana e atalhos descritivos, e dado na home é
+    dado fora do contexto da área — risco de mostrar a alguém o que ela não
+    deveria ver. Cada um vê os seus números NA PÁGINA DA ÁREA."""
     user, role = _require_api(request)
     minhas = _areas_of(user, role)
     # ordem CANÔNICA do painel (a mesma do sidebar), não alfabética: a ordem
@@ -925,39 +927,17 @@ def api_home(request: Request):
     ordem = ["growth", "marketing", "prevendas", "vendas", "operacoes", "financeiro"]
     areas = [{"slug": a, "nome": AREAS[a], "href": AREA_HOME[a]}
              for a in ordem if a in minhas and a in AREAS]
-    visoes = [{"slug": "semana", "nome": "Ações da Semana", "href": "/semana",
-               "descricao": "os objetivos confirmados da empresa e o que cada time faz por eles"},
-              {"slug": "raiox", "nome": "Raio-X por Bundle", "href": "/raiox",
-               "descricao": "a cadeia completa de cada plano: aquisição, funil, meta e churn"}]
-    admin = [{"slug": "central", "nome": "Central", "href": "/central",
-              "descricao": "o cockpit cross-área: prioridades da semana, saúde de cada área e o que mudou"},
-             {"slug": "admin", "nome": "Painel Administrativo", "href": "/admin",
-              "descricao": "contas, permissões por área e saúde das integrações"},
-             {"slug": "allhands", "nome": "All Hands", "href": "/allhands",
-              "descricao": "slides do mês fechado com os dados do painel"}] if role == "admin" else []
-    # foco da semana do time da pessoa — quem cuida de uma área só vê o dela;
-    # quem cuida de várias vê o de cada uma (a home é o lugar de comparar)
-    focos = []
-    try:
-        from .semana import _acoes, _acao_split, _seg, _TEAM_LBL
-        with _conn() as c:
-            acs = _acoes(c, _seg())
-        # SÓ os times das áreas da pessoa. O fallback "sem área de time -> mostra
-        # todos" que existia aqui vazava as ações das outras áreas (elas trazem
-        # nome de cliente e de negócio) para quem só cuida de Financeiro ou
-        # Operações — regressão pega pelo Otávio em 22/07.
-        times = [t for t in _TEAM_LBL if t in minhas]
-        for t in times:
-            do_time = [a for a in acs if a["team"] == t][:2]
-            if not do_time:
-                continue
-            focos.append({"team": t, "team_label": _TEAM_LBL[t],
-                          "acoes": [dict(zip(("manchete", "detalhe"), _acao_split(a["texto"])))
-                                    | {"objetivo": a.get("objetivo")} for a in do_time]})
-    except Exception:  # noqa: BLE001 — o foco nunca derruba a home
-        focos = []
+    # Visões da empresa = só o Raio-X por Bundle (decidido 22/07). "Ações da
+    # Semana" saiu da navegação do gestor: lista os objetivos e as ações de
+    # TODOS os times, com cliente e negócio nominais. O admin continua com ela
+    # pelo bloco Admin/Central.
+    visoes = [{"slug": "raiox", "nome": "Raio-X por Bundle", "href": "/raiox"}]
+    admin = [{"slug": "central", "nome": "Central", "href": "/central"},
+             {"slug": "semana", "nome": "Ações da Semana", "href": "/semana"},
+             {"slug": "admin", "nome": "Painel Administrativo", "href": "/admin"},
+             {"slug": "allhands", "nome": "All Hands", "href": "/allhands"}] if role == "admin" else []
     return {"usuario": user, "role": role, "areas": areas, "visoes": visoes,
-            "admin": admin, "focos": focos}
+            "admin": admin}
 
 
 @app.get("/api/rodape")
