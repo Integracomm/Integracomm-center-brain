@@ -49,6 +49,35 @@ independente e pode ser commitado sozinho.
      foi com `gestor_growth`, que tem uma área só) e decidir se a home ganha
      algum número além do foco da semana.
 
+## Redesenho da Central (22/07) — o que ficou aberto
+
+**1. `/api/inicio/extras` NÃO foi criado — desvio consciente, precisa do seu
+aval.** O pedido era um endpoint novo para alimentar o Raio-X compacto. Não
+criei: o `/api/central` já devolve TUDO o que os 8 componentes pedem (`kpis`,
+`saude`, `bundles` + `bundles_nota`, `areas`, `horizonte`, `mudancas` com `tom`,
+`defasagens`, `prioridades`), e tudo isso sai das funções puras compartilhadas
+com a tela HTML. Um segundo endpoint com os mesmos números seria uma segunda
+coisa para manter em sincronia — exatamente o que a regra do "endpoint embrulha,
+não reimplementa" evita. Se preferir o endpoint mesmo assim (ex.: para o
+protótipo consumir sem adaptação), é um alias fino sobre as mesmas funções.
+
+**2. As ações dos objetivos não trazem `lag` nem `links` no `/api/central`.**
+O card do protótipo mostra o selo de defasagem e os links de execução de cada
+ação; o nosso mostra manchete + detalhe, como a Central já fazia. Não é
+regressão (a Central anterior também não tinha), mas é conteúdo que existe no
+`/api/semana/foco` e poderia enriquecer o card.
+
+**3. `kpis-gerais.tsx` não foi portado.** No protótipo ele duplica o
+`kpis-mes.tsx` lendo de outra fonte (`/api/reports/summary`), com rótulo antigo
+"MRR em risco". Portar os dois criaria duas réguas na mesma tela — mantive só o
+`Números-chave do mês`, que sai do `_hub_kpis`.
+
+**4. Divergência dos bundles: RESOLVIDA e explicada na tela.** A causa não era
+a suposta (janela diferente): as duas pontas usam o mês corrente. São deals cujo
+`produto` não traz B1–B5 — em 22/07, "Assessoria Smart Semestral" e "Upsell",
+que entram no total de Vendas (23) e em nenhum bundle (21). O `bundles_nota`
+recalcula isso sozinho e a nota aparece sob os cards.
+
 ## Lote 0
 
 1. **Bundle JS de 755 KB (225 KB gzip)** — Recharts é o peso. Funciona normal;
