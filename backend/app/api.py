@@ -919,9 +919,9 @@ def api_central(request: Request):
         defasagens = [{"titulo": a, "texto": b} for a, b in _hub_defasagem_linhas(lags)]
         try:
             from .raiox import mini_cards_dados
-            bundles = mini_cards_dados(c, coorte or [])
+            bundles, bundles_nota = mini_cards_dados(c, coorte or [])
         except Exception:  # noqa: BLE001 — planilha/coorte fora não derruba a central
-            bundles = []
+            bundles, bundles_nota = [], ""
         try:
             vermelhas = [r["fonte"] for r in _integracoes_status(c) if r["status"] == "vermelho"]
         except Exception:  # noqa: BLE001
@@ -945,7 +945,8 @@ def api_central(request: Request):
                                       "team_label": _TEAM_LBL.get(a["team"], a["team"]),
                                       "manchete": manchete, "detalhe": detalhe})
                 prioridades.append({"titulo": o["title"], "racional": o["rationale"],
-                                    "metric": o["metric"], "impacto": imp, "acoes": acoes_obj})
+                                    "metric": o["metric"], "target": o.get("target"),
+                                    "impacto": imp, "acoes": acoes_obj})
             # CRITÉRIO DE PRIORIZAÇÃO (Otávio 22/07: "precisamos ter um critério
             # de ordem"): maior impacto ESTIMADO primeiro, pelo piso da faixa
             # (cenário conservador — ordenar pelo otimista premiaria estimativa
@@ -960,7 +961,8 @@ def api_central(request: Request):
     return {"stats": stats, "marketing": mkt, "vendas": sales, "operacoes": ops,
             "impactos": impactos, "lags": lags, "mudancas": mudancas,
             "fontes_paradas": vermelhas, "prioridades": prioridades,
-            "kpis": kpis, "saude": saude, "bundles": bundles, "areas": areas,
+            "kpis": kpis, "saude": saude, "bundles": bundles,
+            "bundles_nota": bundles_nota, "areas": areas,
             "horizonte": horizonte, "defasagens": defasagens}
 
 

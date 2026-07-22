@@ -1083,6 +1083,37 @@ def api_propor(request: Request):
     return JSONResponse({"propostos": n})
 
 
+def objetivos_com_impacto(conn, week: dt.date) -> list[dict]:
+    """Objetivos da semana + o campo `impacto` {min, max, premissa} | None.
+
+    Pendente desde a fusão "Foco da Semana + Iniciativas" (a lógica de dinheiro
+    passou a ORDENAR o foco, mas o número não vinha na API). Não é cálculo novo:
+    embrulha `_impacto_objetivo`, que já usa as mesmas premissas das antigas
+    "Iniciativas sugeridas". Objetivo sem estimativa devolve None — a tela diz
+    "impacto não estimado" em vez de inventar valor."""
+    A = _deps()
+    objs = _objetivos(conn, week)
+    try:
+        mkt, sales = A._hub_mkt_stats(conn), A._hub_sales_stats(conn)
+        try:
+            from .marketing.ui import _ciclo_coorte
+            coorte = _ciclo_coorte(conn)[0]
+        except Exception:  # noqa: BLE001
+            coorte = None
+        impactos = A._hub_impactos(conn, mkt, sales, coorte=coorte)
+    except Exception:  # noqa: BLE001 — sem os impactos, todo objetivo fica sem estimativa
+        impactos = {}
+    for o in objs:
+        e = None
+        try:
+            e = _impacto_objetivo(conn, o, impactos)
+        except Exception:  # noqa: BLE001 — um objetivo problemático não derruba os outros
+            e = None
+        o["impacto"] = ({"min": float(e["faixa"][0]), "max": float(e["faixa"][1]),
+                         "premissa": e["premissa"]} if e and e.get("faixa") else None)
+    return objs
+
+
 @router.get("/api/semana/objetivos")
 def api_objetivos(request: Request, week: str = Query("")):
     s = _api_guard(request)
@@ -1091,7 +1122,7 @@ def api_objetivos(request: Request, week: str = Query("")):
     A = _deps()
     w = dt.date.fromisoformat(week) if week else _seg()
     with A._conn() as c:
-        return JSONResponse({"week": w.isoformat(), "objetivos": _objetivos(c, w)})
+        return JSONResponse({"week": w.isoformat(), "objetivos": objetivos_com_impacto(c, w)})
 
 
 @router.post("/api/semana/objetivos/confirmar")

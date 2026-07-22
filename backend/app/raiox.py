@@ -732,13 +732,20 @@ def _render(d: dict, leitura: str, via_llm: bool, alt_leitura: str = "") -> str:
         "Onde a amostra do bundle é pequena, a tabela avisa — não conclua por meia dúzia de casos.</p>")
 
 
-def mini_cards_dados(conn, coorte: list[dict]) -> list[dict]:
+def mini_cards_dados(conn, coorte: list[dict]) -> tuple[list[dict], str]:
     """Raio-X COMPACTO p/ a Visão Central (Cockpit, 17/07) em DADOS: um item por
     bundle com bookings×meta do mês e churn precoce da coorte — MESMAS fontes e
     janelas das seções 3 e 4 do Raio-X completo (nada recalculado com outra
     régua). O bundle mais fora do ritmo vem com `pior=True`.
 
-    Separado do HTML em 22/07 para a Central do SPA, que não tinha este bloco."""
+    Separado do HTML em 22/07 para a Central do SPA, que não tinha este bloco.
+
+    Devolve (cards, nota). A NOTA existe porque a soma dos bundles não fecha com
+    o total de bookings de Vendas e isso confunde quem soma de cabeça: os deals
+    são agrupados pelo token B1–B5 dentro do campo `produto`, e o que não tem
+    esse token (ex.: "Assessoria Smart Semestral", "Upsell") entra no total e
+    fica FORA dos bundles. A janela é a mesma nos dois lados (mês corrente) —
+    conferido em 22/07, quando a diferença era 23 × 21."""
     import calendar
     from .sources import planejamento_financeiro as PF
     hoje = dt.date.today()
@@ -751,7 +758,17 @@ def mini_cards_dados(conn, coorte: list[dict]) -> list[dict]:
         cur.execute("""SELECT substring(upper(COALESCE(produto, '')) FROM 'B[1-5]'), count(*)
                          FROM mkt_deals_attribution
                         WHERE status='won' AND won_time >= %s GROUP BY 1""", (f"{mes} 00:00-03",))
-        reais = {b_: int(n) for b_, n in cur.fetchall() if b_}
+        linhas = cur.fetchall()
+        reais = {b_: int(n) for b_, n in linhas if b_}
+        sem_bundle = sum(int(n) for b_, n in linhas if not b_)
+        exemplos = []
+        if sem_bundle:
+            cur.execute("""SELECT DISTINCT COALESCE(NULLIF(produto, ''), '(sem produto)')
+                             FROM mkt_deals_attribution
+                            WHERE status='won' AND won_time >= %s
+                              AND substring(upper(COALESCE(produto, '')) FROM 'B[1-5]') IS NULL
+                            LIMIT 3""", (f"{mes} 00:00-03",))
+            exemplos = [r[0] for r in cur.fetchall()]
     cards, ratios = [], {}
     for b_ in ("B1", "B2", "B3", "B4", "B5"):
         meta_q = PF.linha(pf, f"{b_} - Meta: Booking [Qtde]")[i_pf] if i_pf is not None else None
@@ -770,14 +787,29 @@ def mini_cards_dados(conn, coorte: list[dict]) -> list[dict]:
     pior = min(ratios, key=ratios.get) if ratios else None
     for c in cards:
         c["pior"] = (c["bundle"] == pior)
-    return cards
+        if c["churn_precoce"] is None:
+            # a ressalva da coorte pequena vai ESCRITA, não só como ausência de
+            # número (é o caso do B5, que quase nunca tem 8 na coorte)
+            c["aviso"] = "coorte pequena (menos de 8 clientes) — churn suprimido"
+        else:
+            c["aviso"] = None
+    soma = sum(c["bookings"] for c in cards)
+    nota = ""
+    if sem_bundle:
+        ex = ", ".join(f"“{e}”" for e in exemplos)
+        nota = (f"Os bundles somam {soma} bookings e Vendas mostra {soma + sem_bundle} no mesmo "
+                f"período: {sem_bundle} deal(s) do mês não trazem B1–B5 no produto "
+                f"({ex}) e por isso entram no total, mas não em nenhum bundle. "
+                "A janela é a MESMA nos dois lados (mês corrente).")
+    return cards, nota
 
 
 def mini_cards_html(conn, coorte: list[dict]) -> str:
     """A seção do Raio-X compacto na Central HTML — formata `mini_cards_dados`."""
     from .help_texts import _hint
     out = ""
-    for c in mini_cards_dados(conn, coorte):
+    cards, _nota = mini_cards_dados(conn, coorte)
+    for c in cards:
         b_, meta_q, real, prec = c["bundle"], c["meta"], c["bookings"], c["churn_precoce"]
         cor = f"--status-{c['nivel']}"
         borda = ("border:1px solid var(--status-critico);box-shadow:inset 3px 0 0 var(--status-critico)"
