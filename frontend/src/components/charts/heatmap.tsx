@@ -167,7 +167,9 @@ export function Heatmap({
                             <>
                               <span className="text-foreground">{valueLabel(v)}</span>
                               {sub && (
-                                <span className="text-[9px] font-normal text-foreground/55">{sub}</span>
+                                // legível de relance: a 2ª linha é dado, não
+                                // enfeite (Otávio 22/07 — estava apagada demais)
+                                <span className="text-[10px] font-medium text-foreground/80">{sub}</span>
                               )}
                             </>
                           )}
