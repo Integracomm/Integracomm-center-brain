@@ -9,7 +9,10 @@
 param(
     [string]$ServerIP = "56.125.8.49",
     [string]$KeyPath = "$env:USERPROFILE\Downloads\lightsail.pem",
-    [string]$RemotePath = "/opt/integracomm"
+    [string]$RemotePath = "/opt/integracomm",
+    # pula a confirmacao da worktree suja (uso NAO interativo). O prompt segue
+    # sendo o padrao p/ uso humano - so nao trava execucao automatizada.
+    [switch]$SemConfirmacao
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
@@ -21,8 +24,12 @@ $dirty = git status --porcelain
 if ($dirty) {
     Write-Host "AVISO: ha mudancas NAO commitadas - elas nao vao subir (o deploy usa o ultimo commit):" -ForegroundColor Yellow
     git status --short
-    $answer = Read-Host "Continuar mesmo assim? (s/N)"
-    if ($answer -ne 's') { Write-Host "Cancelado."; exit 1 }
+    if ($SemConfirmacao) {
+        Write-Host "(-SemConfirmacao: seguindo com o ultimo commit)" -ForegroundColor Yellow
+    } else {
+        $answer = Read-Host "Continuar mesmo assim? (s/N)"
+        if ($answer -ne 's') { Write-Host "Cancelado."; exit 1 }
+    }
 }
 
 # INCIDENTE 22/07: o build do SPA rodava DENTRO do servidor (estagio bun no
