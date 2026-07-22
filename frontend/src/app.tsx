@@ -70,23 +70,6 @@ const NAV: Array<{ href: string; label: string; spa: boolean; grupo?: string }> 
   { href: "/app", label: "Biblioteca (vitrine)", spa: true, grupo: "Redesenho" },
 ];
 
-// Nav da CENTRAL (/central) — ORDEM do hub antigo (Otávio 22/07: a ordem antiga
-// agradava mais), em 3 blocos: Admin · Áreas · Visões da empresa.
-const NAV_CENTRAL: Array<{ href: string; label: string; spa: boolean; grupo?: string }> = [
-  // a Central é a visão do ADMIN; o "início" de todo mundo é a home única (/)
-  { href: "/central", label: "Central", spa: true, grupo: "Admin" },
-  { href: "/admin", label: "Painel Administrativo", spa: false },
-  { href: "/allhands", label: "All Hands", spa: false },
-  { href: "/growth?view=contas", label: "Growth / Assessoria", spa: true, grupo: "Áreas" },
-  { href: "/marketing?view=visao", label: "Marketing", spa: true },
-  { href: "/prevendas?view=funil", label: "Pré-vendas", spa: true },
-  { href: "/vendas?view=funil", label: "Vendas", spa: true },
-  { href: "/operacoes", label: "Operações", spa: false },
-  { href: "/financeiro?view=visao", label: "Financeiro", spa: true },
-  { href: "/semana", label: "Ações da Semana", spa: true, grupo: "Visões da empresa" },
-  { href: "/raiox", label: "Raio-X por Bundle", spa: true },
-];
-
 function PrevendasRouter() {
   const [params] = useSearchParams();
   const view = params.get("view") ?? "funil";
@@ -134,10 +117,14 @@ function Shell({ children }: { children: React.ReactNode }) {
   // apareciam também os itens de PV/Vendas — o painel sempre foi 1 nav por
   // área). A vitrine só aparece quando se está nela.
   const area = window.location.pathname;
-  // HOME ÚNICA (/): a nav mostra SÓ o que ESTA pessoa acessa — as áreas dela +
-  // as visões da empresa (+ Admin, se for admin). Vem de /api/home, que deriva
-  // das áreas liberadas para a conta; nada é fixo por papel (Otávio 22/07).
-  const home = useApi<HomePayload>(area === "/" ? "/api/home" : "");
+  // HOME ÚNICA (/) e CENTRAL (/central): a nav mostra SÓ o que ESTA pessoa
+  // acessa — as áreas dela + as visões da empresa (+ Admin, se for admin). Vem
+  // de /api/home, que deriva das áreas liberadas para a conta; nada é fixo por
+  // papel (Otávio 22/07). A Central usa a MESMA nav: com a lista fixa antiga
+  // (NAV_CENTRAL) ela "voltava no tempo" ao ser aberta — sem o item Início e
+  // com Ações da Semana nas Visões da empresa, de onde já tinha saído.
+  const comNavGeral = area === "/" || area === "/central";
+  const home = useApi<HomePayload>(comNavGeral ? "/api/home" : "");
   const navHome: Array<{ href: string; label: string; spa: boolean; grupo?: string }> = [
     { href: "/", label: "Início", spa: true },
     ...(home.data?.areas ?? []).map((a, i) => ({
@@ -148,10 +135,7 @@ function Shell({ children }: { children: React.ReactNode }) {
       href: a.href, label: a.nome, spa: a.slug === "central" || a.slug === "semana",
       grupo: i === 0 ? "Admin" : undefined })),
   ];
-  // A CENTRAL (/central) é a visão cross-área do admin: em vez da nav de uma
-  // área, lista as áreas + as visões transversais (o hub HTML fazia o mesmo).
-  const itens = area === "/" ? navHome
-    : area === "/central" ? NAV_CENTRAL
+  const itens = comNavGeral ? navHome
     : NAV.filter((n) => (area === "/app" ? n.href === "/app" : n.href.startsWith(`${area}?`)));
   const viewPadrao = area === "/prevendas" || area === "/vendas" ? "funil"
     : area === "/marketing" || area === "/financeiro" ? "visao" : "contas";
@@ -168,10 +152,13 @@ function Shell({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex min-h-screen bg-background text-foreground">
       <aside className="flex w-60 shrink-0 flex-col border-r border-border bg-sidebar p-4">
-        <div className="mb-6 flex items-center gap-2">
-          <span className="inline-block h-6 w-6 rounded-full bg-primary" />
+        {/* a MARCA da Integracomm no lugar do circulo azul generico (Otávio
+            22/07) — mesmo arquivo do favicon; o miolo entre os dois circulos é
+            vazado, então serve em tema claro e escuro */}
+        <a href="/" className="mb-6 flex items-center gap-2">
+          <img src="/spa/favicon.png" alt="" className="h-6 w-6 shrink-0" />
           <span className="font-display text-sm font-bold">Integracomm IA</span>
-        </div>
+        </a>
         {/* itens COLADOS dentro do grupo e respiro MAIOR entre grupos (Otávio
             22/07, 2ª volta). O `first:mt-0` de antes NUNCA funcionava: cada par
             cabeçalho+item mora num <span class=contents>, então TODO cabeçalho
@@ -207,7 +194,7 @@ function Shell({ children }: { children: React.ReactNode }) {
               </span>
             );
           })}
-          {area !== "/" && (
+          {!comNavGeral && (
             <a href="/" className="mt-9 rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground">
               ← Início
             </a>

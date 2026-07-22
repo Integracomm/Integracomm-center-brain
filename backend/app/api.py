@@ -321,6 +321,24 @@ async def do_login(request: Request):
     return resp
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+@app.get("/favicon.png", include_in_schema=False)
+def favicon():
+    """A MARCA da Integracomm como ícone das abas (Otávio 22/07).
+
+    Serve na RAIZ de propósito: o navegador pede `/favicon.ico` sozinho em
+    qualquer página do domínio, então as ~16 telas ainda em HTML server-side
+    ganham o ícone sem precisar de <link> uma a uma. O arquivo viaja no
+    frontend/dist (que o Dockerfile já copia)."""
+    from pathlib import Path as _P
+    ico = _P(__file__).resolve().parents[2] / "frontend" / "dist" / "favicon.png"
+    if not ico.exists():
+        return JSONResponse({"error": "sem build do frontend"}, status_code=404)
+    from fastapi.responses import FileResponse as _F
+    return _F(ico, media_type="image/png",
+              headers={"Cache-Control": "public, max-age=86400"})
+
+
 @app.get("/logout")
 def logout():
     resp = RedirectResponse("/login", status_code=303)
@@ -2542,7 +2560,7 @@ a.init:hover .ig{color:var(--brand)}
 </style></head><body>
 <div class=app>
  <aside class=rail>
-   <div class=brand><div class=logo></div><div><div class=bt>Integracomm IA</div><div class=bs>Central</div></div></div>
+   <a class=brand href="/"><img src="/favicon.png" alt="" width=22 height=22><div><div class=bt>Integracomm IA</div><div class=bs>Central</div></div></a>
    <nav>
      <a class="nav-item" href="/">← Início</a>
      <a class="nav-item__HOME_ON__" href="/central">Central</a>
