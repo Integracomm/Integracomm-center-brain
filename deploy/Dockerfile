@@ -23,7 +23,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY backend/ backend/
 # dist pré-buildado (enviado pelo deploy.ps1) — ver bloco no topo do arquivo
 COPY frontend/dist frontend/dist
+# design-tokens.css é a FONTE ÚNICA do visual de TODAS as telas HTML
+# (api._tokens_css injeta inline). 22/07: ao trocar `COPY frontend/` por
+# `COPY frontend/dist`, este arquivo ficou de fora e o painel inteiro foi ao ar
+# SEM ESTILO — o app nem quebra, só devolve "" e as páginas ficam cruas.
+COPY frontend/design-tokens.css frontend/design-tokens.css
 COPY deploy/daily_run.sh deploy/daily_run.sh
+# guarda: build falha ALTO se o arquivo de tokens vier vazio/ausente
+RUN test -s frontend/design-tokens.css && test -s frontend/dist/index.html
 
 EXPOSE 8000
 # --proxy-headers: o Caddy termina o TLS; o app enxerga https via X-Forwarded-Proto
