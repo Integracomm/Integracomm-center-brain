@@ -259,8 +259,24 @@ export function GrowthContasPage() {
                           </span>
                         )}
                       </TableCell>
-                      <TableCell><ExecBadge score={s.exec_score} inativo={s.clickup_inativo} /></TableCell>
-                      <TableCell><AtrasosBadge n={s.atrasadas} execScore={s.exec_score} inativo={s.clickup_inativo} /></TableCell>
+                      {/* Execução e Atrasos clicáveis -> card do cliente no ClickUp
+                          (paridade com a tela HTML; Otávio 22/07: o link sumiu no SPA) */}
+                      <TableCell>
+                        {s.clickup_url ? (
+                          <a href={s.clickup_url} target="_blank" rel="noopener"
+                            title="abrir o card no ClickUp">
+                            <ExecBadge score={s.exec_score} inativo={s.clickup_inativo} />
+                          </a>
+                        ) : <ExecBadge score={s.exec_score} inativo={s.clickup_inativo} />}
+                      </TableCell>
+                      <TableCell>
+                        {s.clickup_url ? (
+                          <a href={s.clickup_url} target="_blank" rel="noopener"
+                            title="abrir o card no ClickUp para ver as tarefas em atraso">
+                            <AtrasosBadge n={s.atrasadas} execScore={s.exec_score} inativo={s.clickup_inativo} />
+                          </a>
+                        ) : <AtrasosBadge n={s.atrasadas} execScore={s.exec_score} inativo={s.clickup_inativo} />}
+                      </TableCell>
                       <TableCell><span className="text-xs text-muted-foreground">{s.squad ?? "—"}</span></TableCell>
                     </TableRow>
                   ))}

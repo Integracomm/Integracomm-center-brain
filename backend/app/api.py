@@ -433,6 +433,7 @@ def api_scores(request: Request):
     # ClickUp; cliente pausado/concluído não conta e vem sinalizado)
     try:
         from .sources.clickup_activities import (_overdue_from_clickup as _atr,
+                                                 card_url as _card_url,
                                                  client_inactive_status as _inat)
         _agora = dt.datetime.now(dt.timezone.utc)
     except Exception:  # noqa: BLE001
@@ -443,10 +444,15 @@ def api_scores(request: Request):
         s["responsavel"] = (gc or "").strip() or None  # lacuna conhecida: GC vazio no espelho
         s["clickup_inativo"] = None
         s["atrasadas"] = None
+        s["clickup_url"] = None
         if _atr is not None:
             try:
                 s["clickup_inativo"] = _inat(s["name"])
                 s["atrasadas"] = 0 if s["clickup_inativo"] else len(_atr(s["name"], _agora) or [])
+                # mesma régua da tela HTML: Execução/Atrasos clicáveis -> card
+                # do cliente no ClickUp (Otávio 16/07 e de novo 22/07: 'quero
+                # ver QUAIS são as atividades em atraso ao clicar ali')
+                s["clickup_url"] = _card_url(s["name"])
             except Exception:  # noqa: BLE001 — conta sem match não derruba o payload
                 pass
     # base do 'MRR em risco' = contas COM ALERTA ABERTO (mesma régua do

@@ -217,3 +217,24 @@ Base para reextrapolar os lotes 2–6 com dado real.
   Pré-vendas 4 · Vendas 4. Restam (Lotes 4-6): Marketing pesado (visao, metas,
   funil, midia, lag, planejador, criativos, ciclo), PV sdrs, Vendas horarios/
   closers/forecast, Central/Raio-X/Financeiro/Semana, cauda (Admin fica HTML).
+
+## Ajustes 22/07 (feedback do Otávio): link ClickUp em Atrasos + Atendimento por origem
+
+- **Link do ClickUp em Contas (SPA):** na tela HTML, Execução e Atrasos eram
+  células-LINK para o card do cliente no ClickUp (card_url) — os badges do SPA
+  perderam isso na migração. Fix: /api/scores ganhou `clickup_url` por conta e
+  os dois badges viraram âncoras (target _blank), paridade com o HTML.
+- **Atendimento de ligações por origem × hora (seção NOVA no Melhor Horário):**
+  o mapa "Taxa de conversão da ligação" saiu do SPA (Otávio: muitos
+  agendamentos não nascem de ligação — insight fraco) e no lugar entrou a
+  pergunta certa: das ligações FEITAS para leads de cada canal naquela hora,
+  % que o lead ATENDEU. Viabilizado por um achado: a telefonia escreve o
+  desfecho no subject da atividade ('atendida às …' / 'não foi atendida:
+  Caixa postal…'). Coluna nova `sales_activities.atendida` (BOOLEAN; NULL =
+  ligação manual sem desfecho, fica FORA da taxa), derivação no sync,
+  bloco no `_horarios_calc` compartilhado, seção nas DUAS UIs (HTML ganhou a
+  seção; SPA trocou o card), help novo padrão 16/07. A lista "Melhores
+  horários por taxa" continua (a ressalva dos agendamentos sem ligação migrou
+  p/ lá). **Cobertura: desfecho coletado a partir de 22/07** — histórico
+  depende de re-backfill (só em janela aprovada; ~90 páginas, custo <0,1% do
+  orçamento diário do Pipedrive).

@@ -39,6 +39,7 @@ export interface Score {
   responsavel: string | null;
   atrasadas: number | null;
   clickup_inativo: string | null;
+  clickup_url: string | null;
 }
 
 export interface ScoresKpis {
@@ -179,6 +180,8 @@ export interface HorariosPayload {
   celulas: Array<{ dow: number; hora: number; n: number }>;
   celulas_taxa: Array<{ dow: number; hora: number; n: number }>;
   agend_sem_ligacao: number;
+  atendimento: Array<{ canal: string; hora: number; atendidas: number; ligacoes: number }>;
+  atendimento_ini: string | null;
   ligacoes: Array<{ dow: number; hora: number; n: number }>;
   taxa_ini: string | null;
   por_bundle: Record<string, Array<{ dow: number; hora: number; n: number }>>;

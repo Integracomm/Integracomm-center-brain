@@ -512,7 +512,24 @@ CREATE TABLE IF NOT EXISTS sales_activities (
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_sales_act_tipo_done ON sales_activities(tipo, done_at);
+ALTER TABLE sales_activities ADD COLUMN IF NOT EXISTS atendida BOOLEAN;
 """
+
+
+def _call_atendida(a: dict) -> bool | None:
+    """Desfecho da LIGAÇÃO a partir do subject da telefonia (Otávio 22/07 —
+    'que horas os leads de meta atendem mais ligações'): a integração escreve
+    'Ligação para X atendida às ...' ou 'não foi atendida pelo seguinte
+    motivo: ...'. None = ligação registrada à mão, sem desfecho conhecido
+    (fica FORA da taxa de atendimento — não vira 0 nem 1)."""
+    if a.get("type") != "call":
+        return None
+    subj = (a.get("subject") or "").lower()
+    if "não foi atendida" in subj or "nao foi atendida" in subj:
+        return False
+    if " atendida" in subj or a.get("duration"):
+        return True
+    return None
 
 
 def sync_activities(conn: Any, since: dt.date | None = None,
@@ -545,14 +562,15 @@ def sync_activities(conn: Any, since: dt.date | None = None,
                 if not a.get("id"):
                     continue
                 cur.execute(
-                    """INSERT INTO sales_activities (activity_id, deal_id, tipo, add_at, done_at, quem, updated_at)
-                       VALUES (%s,%s,%s,%s,%s,%s,now())
+                    """INSERT INTO sales_activities (activity_id, deal_id, tipo, add_at, done_at, quem, atendida, updated_at)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,now())
                        ON CONFLICT (activity_id) DO UPDATE SET
                             deal_id=EXCLUDED.deal_id, tipo=EXCLUDED.tipo,
                             add_at=EXCLUDED.add_at, done_at=EXCLUDED.done_at,
-                            quem=EXCLUDED.quem, updated_at=now()""",
+                            quem=EXCLUDED.quem, atendida=EXCLUDED.atendida, updated_at=now()""",
                     (a["id"], a.get("deal_id"), a.get("type"), add,
-                     a.get("marked_as_done_time") or None, (a.get("owner_name") or "")))
+                     a.get("marked_as_done_time") or None, (a.get("owner_name") or ""),
+                     _call_atendida(a)))
                 n += 1
             p = (j.get("additional_data") or {}).get("pagination") or {}
             if page_old and data:

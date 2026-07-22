@@ -115,6 +115,33 @@ export function MelhorHorarioPage() {
                      v: `${c.tx.toFixed(0)}% (${c.lig} ligações)` }));
   }, [d]);
 
+  // ATENDIMENTO por origem × hora (Otávio 22/07: 'que horas os leads de meta
+  // atendem mais ligações?'): das ligações feitas para leads de cada canal
+  // naquela hora, % que o lead ATENDEU. Desfecho vem da telefonia (subject);
+  // ligação registrada à mão sem desfecho fica FORA — não vira 0.
+  const atd = useMemo(() => {
+    if (!d || !d.atendimento.length) return null;
+    const porCanal = new Map<string, Map<number, { a: number; l: number }>>();
+    for (const r of d.atendimento) {
+      const m = porCanal.get(r.canal) ?? new Map<number, { a: number; l: number }>();
+      const v = m.get(r.hora) ?? { a: 0, l: 0 };
+      v.a += r.atendidas; v.l += r.ligacoes;
+      m.set(r.hora, v); porCanal.set(r.canal, m);
+    }
+    const totLig = (m: Map<number, { a: number; l: number }>) =>
+      [...m.values()].reduce((s, v) => s + v.l, 0);
+    const rows = [...porCanal.keys()].sort((x, y) => totLig(porCanal.get(y)!) - totLig(porCanal.get(x)!));
+    const horas = [...new Set(d.atendimento.map((r) => r.hora))].sort((x, y) => x - y);
+    const cells: HeatmapCell[] = [];
+    for (const cn of rows)
+      for (const h of horas) {
+        const v = porCanal.get(cn)!.get(h);
+        if (v?.l) cells.push({ row: cn, col: `${h}h`, value: Math.round((v.a / v.l) * 100),
+                               n: v.l, amostra_pequena: v.l < 5 });
+      }
+    return { rows, cols: horas.map((h) => `${h}h`), cells };
+  }, [d]);
+
   const horasComerciais = useMemo(() => Array.from({ length: 14 }, (_, i) => i + 7), []);
   const gOrigem = useMemo(() => (d ? grade(d.por_origem, horasComerciais) : null), [d, horasComerciais]);
 
@@ -176,26 +203,20 @@ export function MelhorHorarioPage() {
                 color="var(--chart-1)" rowLabelWidth={54} legendLabel="agendamentos" />
             </SectionCard>
 
-            <SectionCard hint={<Hint area="prevendas/horarios" titulo="Taxa de agendamento por horário" />}
+            <SectionCard hint={<Hint area="prevendas/horarios" titulo="Atendimento de ligações por origem" />}
               headerClassName="min-h-[56px]"
-              title="Taxa de conversão da ligação — hora × dia"
-              subtitle="das ligações FEITAS no horário, % que converteu em agendamento · hachura = <5 ligações · detalhes no ⓘ">
-              {taxa && taxa.cells.length ? (
-                <>
-                  <Heatmap rows={taxa.rows} cols={taxa.cols} cells={taxa.cells}
-                    color="var(--success)" rowLabelWidth={54}
-                    valueLabel={(v) => `${v}%`} legendLabel="taxa"
-                    tooltipLabel={(c) => `${c.row} ${c.col}: ${c.value}% (${c.n} ligação(ões))${c.amostra_pequena ? " · amostra pequena" : ""}`} />
-                  {d.agend_sem_ligacao > 0 && (
-                    <p className="mt-2 text-xs text-muted-foreground">
-                      {d.agend_sem_ligacao} agendamento(s) de deals <b>sem ligação registrada</b> (indicação,
-                      inbound direto) ficam fora da taxa — ela mede o rendimento da LIGAÇÃO.
-                    </p>
-                  )}
-                </>
+              title="Atendimento de ligações — origem × hora"
+              subtitle={`das ligações FEITAS na hora, % que o lead ATENDEU · hachura = <5 ligações · detalhes no ⓘ${
+                d.atendimento_ini ? ` · desfecho desde ${d.atendimento_ini.split("-").reverse().join("/")}` : ""}`}>
+              {atd && atd.cells.length ? (
+                <Heatmap rows={atd.rows} cols={atd.cols} cells={atd.cells}
+                  color="var(--success)" rowScale dense rowLabelWidth={110}
+                  valueLabel={(v) => `${v}%`} legendLabel="atendimento"
+                  tooltipLabel={(c) => `${c.row} ${c.col}: ${c.value}% atendidas (${c.n} ligação(ões))${c.amostra_pequena ? " · amostra pequena" : ""}`} />
               ) : (
                 <p className="text-sm text-muted-foreground">
-                  Sem ligações registradas no período — a seção acende quando a coleta diária preencher.
+                  Sem desfecho de ligação no período — o desfecho (atendida/não atendida) entrou na
+                  coleta em 22/07; a seção acende conforme a coleta diária acumula.
                 </p>
               )}
             </SectionCard>
@@ -216,13 +237,21 @@ export function MelhorHorarioPage() {
             <SectionCard hint={<Hint area="prevendas/horarios" titulo="Melhores horários por taxa" />} title="Melhores horários por taxa"
               subtitle="onde a ligação mais converte — só janelas com 5+ ligações (amostra confiável)">
               {topTaxa.length ? (
-                <ul className="space-y-1.5">
-                  {topTaxa.map((x, i) => (
-                    <li key={x.rot} className="flex justify-between border-t border-border pt-1.5 text-sm first:border-t-0 first:pt-0">
-                      <span><b>{i + 1}º</b> — {x.rot}</span><span className="tabular-nums text-muted-foreground">{x.v}</span>
-                    </li>
-                  ))}
-                </ul>
+                <>
+                  <ul className="space-y-1.5">
+                    {topTaxa.map((x, i) => (
+                      <li key={x.rot} className="flex justify-between border-t border-border pt-1.5 text-sm first:border-t-0 first:pt-0">
+                        <span><b>{i + 1}º</b> — {x.rot}</span><span className="tabular-nums text-muted-foreground">{x.v}</span>
+                      </li>
+                    ))}
+                  </ul>
+                  {d.agend_sem_ligacao > 0 && (
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      {d.agend_sem_ligacao} agendamento(s) de deals <b>sem ligação registrada</b> (indicação,
+                      inbound direto) ficam fora desta taxa — ela mede o rendimento da LIGAÇÃO.
+                    </p>
+                  )}
+                </>
               ) : (
                 <p className="text-sm text-muted-foreground">Sem janelas com 5+ ligações no período.</p>
               )}

@@ -745,6 +745,36 @@ def _horarios_calc(conn, ini: dt.date, fim: dt.date, bundle: str) -> dict:
             ligacoes = {(dow, h): n for dow, h, n in cur.fetchall()}
         except Exception:  # noqa: BLE001 — tabela nova; sem sync ainda = sem taxa
             conn.rollback()
+        # ATENDIMENTO por origem × hora (Otávio 22/07: 'que horas os leads de
+        # meta atendem mais ligações?') — desfecho vem do subject da telefonia
+        # (sync novo grava sales_activities.atendida; ligação manual sem
+        # desfecho fica FORA, não vira 0). Independe do filtro de bundle,
+        # mesma regra do bloco por origem.
+        atendimento: list[dict] = []
+        atendimento_ini = None
+        try:
+            cur.execute("""
+                SELECT COALESCE(d.origem, '(vazio)') AS origem,
+                       extract(hour FROM s.done_at AT TIME ZONE 'America/Sao_Paulo')::int AS h,
+                       count(*) FILTER (WHERE s.atendida) AS atend, count(*) AS total
+                  FROM sales_activities s
+                  LEFT JOIN mkt_deals_attribution d ON d.deal_id = s.deal_id
+                 WHERE s.tipo = 'call' AND s.atendida IS NOT NULL
+                   AND s.done_at >= %s AND s.done_at < %s
+                 GROUP BY 1, 2""", (a, b))
+            _at: dict[tuple[str, int], list[int]] = {}
+            for org, h, at_n, tot_n in cur.fetchall():
+                k = (canal_de(org), h)
+                t = _at.setdefault(k, [0, 0])
+                t[0] += at_n; t[1] += tot_n
+            atendimento = [{"canal": cn, "hora": h, "atendidas": v[0], "ligacoes": v[1]}
+                           for (cn, h), v in _at.items()]
+            if atendimento:
+                cur.execute("""SELECT min(done_at) FROM sales_activities
+                                WHERE tipo='call' AND atendida IS NOT NULL""")
+                atendimento_ini = (cur.fetchone() or [None])[0]
+        except Exception:  # noqa: BLE001 — coluna nova; sem sync ainda = sem seção
+            conn.rollback()
         # COBERTURA do denominador (Otávio 20/07: com filtro de ano inteiro a
         # taxa dava 4600% — agendamentos do ano todo divididos pelas ligações
         # de um trecho só). A TAXA fica restrita ao trecho em que as ligações
@@ -810,6 +840,7 @@ def _horarios_calc(conn, ini: dt.date, fim: dt.date, bundle: str) -> dict:
             "por_origem": por_origem, "ligacoes": ligacoes,
             "agend_sem_ligacao": agend_sem_ligacao,
             "celulas_taxa": celulas_taxa, "taxa_ini": taxa_ini,
+            "atendimento": atendimento, "atendimento_ini": atendimento_ini,
             "total": sum(celulas.values())}
 
 
@@ -1023,6 +1054,56 @@ def _pv_horarios(conn, request: Request) -> str:
                   f"<td style='{_TD}'>{escape(' · '.join(melhores) or '—')}</td>"
                   f"<td style='{_TD};text-align:right'>{'<span class=note>amostra pequena</span>' if tot_o < 30 else ''}</td></tr>")
 
+    # --- ATENDIMENTO de ligações por origem × hora (Otávio 22/07: 'que horas
+    # os leads de meta atendem mais ligações?') — desfecho vem da telefonia
+    # (sales_activities.atendida); ligação manual sem desfecho fica fora.
+    atd = dados.get("atendimento") or []
+    atd_ini = dados.get("atendimento_ini")
+    atd_sec = ""
+    if atd:
+        por_canal: dict[str, dict[int, list[int]]] = {}
+        for r in atd:
+            t = por_canal.setdefault(r["canal"], {}).setdefault(r["hora"], [0, 0])
+            t[0] += r["atendidas"]; t[1] += r["ligacoes"]
+        atd_rows = ""
+        for cn in sorted(por_canal, key=lambda x: -sum(v[1] for v in por_canal[x].values())):
+            cel_a = por_canal[cn]
+            tot_l = sum(v[1] for v in cel_a.values())
+            tot_at = sum(v[0] for v in cel_a.values())
+            ok = {h: v for h, v in cel_a.items() if v[1] >= 5}
+            pico_a = max(ok, key=lambda h: ok[h][0] / ok[h][1]) if ok else None
+            tds = ""
+            for h in horas_o:
+                v = cel_a.get(h)
+                if not v or not v[1]:
+                    tds += f"<td style='{_tdo};color:var(--text-faint)'>—</td>"
+                    continue
+                tx = v[0] / v[1]
+                peq = v[1] < 5
+                alpha = int(8 + 62 * tx)
+                pico = "box-shadow:inset 0 0 0 1.5px var(--brand);border-radius:3px;" if h == pico_a else ""
+                tds += (f"<td title='{escape(cn)} {h:02d}h — {v[0]} de {v[1]} ligação(ões) atendida(s) = "
+                        f"{tx * 100:.0f}%{' · amostra pequena — interpretar com cautela' if peq else ''}' "
+                        f"style='{_tdo};background:color-mix(in srgb,var(--brand) {alpha}%,transparent);"
+                        f"{pico}{'opacity:.55;' if peq else ''}'>{tx * 100:.0f}%{'*' if peq else ''}</td>")
+            atd_rows += (f"<tr><td title='{escape(cn)}' style='{_tdo};text-align:left;white-space:nowrap'>"
+                         f"<b>{escape(cn)}</b></td>"
+                         f"<td style='{_tdo};text-align:right' title='{tot_at} atendida(s) em {tot_l} ligação(ões)'>"
+                         f"{tot_at / tot_l * 100:.0f}%</td>{tds}</tr>")
+        ths_a = (_tho.format(al="left", h="Canal") + _tho.format(al="right", h="Geral")
+                 + "".join(_tho.format(al="center", h=str(h)) for h in horas_o))
+        _atd_cob = (f" · desfecho registrado a partir de "
+                    f"{atd_ini.astimezone(dt.timezone(dt.timedelta(hours=-3))).strftime('%d-%m-%Y')} "
+                    "(a cobertura cresce com a coleta diária)" if atd_ini else "")
+        atd_sec = ("<section><h2>Atendimento de ligações por origem × hora</h2>"
+                   "<p class=secsub>das ligações FEITAS para leads de cada canal naquela hora, % que o lead ATENDEU "
+                   "(desfecho da telefonia no Pipedrive) · célula contornada = melhor hora do canal (5+ ligações) · "
+                   f"* = menos de 5 ligações · ligação registrada à mão sem desfecho fica fora{_atd_cob}</p>"
+                   + _card(f"<table style='width:100%;border-collapse:collapse;table-layout:fixed'>"
+                           f"<colgroup><col style='width:120px'><col style='width:44px'>"
+                           f"<col span={len(horas_o)}></colgroup><tr>{ths_a}</tr>{atd_rows}</table>")
+                   + "</section>")
+
     opts_b = "".join(f"<option value='{v}' {'selected' if bundle == v else ''}>{lbl}</option>"
                      for v, lbl in [("todos", "todos os bundles"), ("B1", "B1"), ("B2", "B2"),
                                     ("B3", "B3"), ("B4", "B4"), ("B5", "B5")])
@@ -1053,6 +1134,7 @@ def _pv_horarios(conn, request: Request) -> str:
             "no Pipedrive (horário da conclusão); conversão creditada à última ligação antes do agendamento · "
             f"* = menos de 5 ligações na célula (amostra pequena){sub_taxa}</p>"
             + _card(heat_taxa) + "</section>"
+            + atd_sec +
             "<section><h2>Agendamentos por colaborador × hora</h2>"
             "<p class=secsub>atribuição pelo campo SDR do deal · cada linha sombreada na PRÓPRIA escala — o horário forte de cada pessoa, independente do volume · célula contornada = pico da pessoa · * = amostra pequena (&lt;30)</p>"
             + _card(heat_colab) + "</section>"
@@ -2223,6 +2305,9 @@ def api_pv_horarios(request: Request):
             "celulas": cel(dados["celulas"]),
             "celulas_taxa": cel(dados["celulas_taxa"]),
             "agend_sem_ligacao": dados.get("agend_sem_ligacao", 0),
+            "atendimento": dados.get("atendimento") or [],
+            "atendimento_ini": (dados["atendimento_ini"].astimezone(dt.timezone(dt.timedelta(hours=-3))).date().isoformat()
+                                 if dados.get("atendimento_ini") else None),
             "ligacoes": cel(dados["ligacoes"]),
             "taxa_ini": (dados["taxa_ini"].astimezone(dt.timezone(dt.timedelta(hours=-3))).date().isoformat()
                           if dados["taxa_ini"] else None),
