@@ -37,19 +37,17 @@ independente e pode ser commitado sozinho.
    - Antes: cada linha leva ao recorte exato (`?ids=` honrado na tela de
      Contas, com chip "recorte do link: N conta(s) · ver todas").
 
-**4. HOME ÚNICA (decidido pelo Otávio 22/07, via AskUserQuestion) — EM ABERTO:**
-   - Nova tela inicial para TODOS (admin e gestores). Sidebar mostra só o que a
-     pessoa acessa: as áreas dela + "Visões da empresa".
-   - Resolve dois problemas REAIS e anteriores à migração: (a) o gestor com
-     várias áreas cai hoje na 1ª área em ordem ALFABÉTICA (`sorted(áreas)[0]`
-     em `api.py` login) — arbitrário; (b) ele NÃO tem como trocar de área pela
-     interface (o "← Início" só existia para admin).
-   - A Central vira item do bloco **Admin** (já renomeada de "Início" para
-     "Central" no menu).
-   - Conteúdo da home: atalhos do que a pessoa acessa + o foco da semana do
-     time dela (`/api/semana/foco` já existe).
-   - **Raio-X por Bundle: VISÍVEL para todos os gestores** (decidido) — hoje o
-     handler já libera por sessão; falta só entrar na navegação deles.
+**4. HOME ÚNICA — FEITO (22/07, `2d52aae`).**
+   - `/` = tela inicial de TODOS; a Central do admin foi para `/central`.
+   - A sidebar da home e os atalhos vêm de `/api/home`, que deriva das áreas
+     liberadas para a conta (`_areas_of`, mesma régua do RBAC) na ORDEM
+     CANÔNICA do painel — não mais alfabética.
+   - `ROLE_HOME` de todos os papéis = `/`; o login sempre cai na home, e o
+     "← Início" dos shells de área deixou de ser exclusivo do admin.
+   - Raio-X por Bundle entrou em "Visões da empresa" para todos os gestores.
+   - **Falta o teste com uma conta real de gestor multi-área** (o teste local
+     foi com `gestor_growth`, que tem uma área só) e decidir se a home ganha
+     algum número além do foco da semana.
 
 ## Lote 0
 
