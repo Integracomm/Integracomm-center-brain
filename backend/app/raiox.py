@@ -732,13 +732,14 @@ def _render(d: dict, leitura: str, via_llm: bool, alt_leitura: str = "") -> str:
         "Onde a amostra do bundle é pequena, a tabela avisa — não conclua por meia dúzia de casos.</p>")
 
 
-def mini_cards_html(conn, coorte: list[dict]) -> str:
-    """Raio-X COMPACTO p/ a Visão Central (Cockpit, 17/07): um mini-card por
+def mini_cards_dados(conn, coorte: list[dict]) -> list[dict]:
+    """Raio-X COMPACTO p/ a Visão Central (Cockpit, 17/07) em DADOS: um item por
     bundle com bookings×meta do mês e churn precoce da coorte — MESMAS fontes e
     janelas das seções 3 e 4 do Raio-X completo (nada recalculado com outra
-    régua). O bundle mais fora do ritmo aparece destacado."""
+    régua). O bundle mais fora do ritmo vem com `pior=True`.
+
+    Separado do HTML em 22/07 para a Central do SPA, que não tinha este bloco."""
     import calendar
-    from .help_texts import _hint
     from .sources import planejamento_financeiro as PF
     hoje = dt.date.today()
     mes = hoje.replace(day=1)
@@ -756,21 +757,33 @@ def mini_cards_html(conn, coorte: list[dict]) -> str:
         meta_q = PF.linha(pf, f"{b_} - Meta: Booking [Qtde]")[i_pf] if i_pf is not None else None
         real = reais.get(b_, 0)
         cb = [r for r in coorte if r["bundle"] == b_]
+        # coorte pequena (<8) NÃO vira número: churn de 3 clientes é ruído
         prec = (sum(1 for r in cb if r["desfecho"] == "precoce") / len(cb)) if len(cb) >= 8 else None
         ratio = (real / meta_q / frac) if (meta_q and frac) else None
         if ratio is not None:
             ratios[b_] = ratio
-        cards.append((b_, meta_q, real, prec, ratio))
+        cards.append({"bundle": b_, "meta": (float(meta_q) if meta_q else None),
+                      "bookings": real, "churn_precoce": prec, "ratio": ratio,
+                      "nivel": ("semdados" if ratio is None else
+                                "baixo" if ratio >= 0.85 else
+                                "medio" if ratio >= 0.6 else "critico")})
     pior = min(ratios, key=ratios.get) if ratios else None
+    for c in cards:
+        c["pior"] = (c["bundle"] == pior)
+    return cards
+
+
+def mini_cards_html(conn, coorte: list[dict]) -> str:
+    """A seção do Raio-X compacto na Central HTML — formata `mini_cards_dados`."""
+    from .help_texts import _hint
     out = ""
-    for b_, meta_q, real, prec, ratio in cards:
-        cor = ("--status-semdados" if ratio is None else
-               "--status-baixo" if ratio >= 0.85 else
-               "--status-medio" if ratio >= 0.6 else "--status-critico")
-        borda = (f"border:1px solid var(--status-critico);box-shadow:inset 3px 0 0 var(--status-critico)"
-                 if b_ == pior else "border:1px solid var(--border-mid)")
+    for c in mini_cards_dados(conn, coorte):
+        b_, meta_q, real, prec = c["bundle"], c["meta"], c["bookings"], c["churn_precoce"]
+        cor = f"--status-{c['nivel']}"
+        borda = ("border:1px solid var(--status-critico);box-shadow:inset 3px 0 0 var(--status-critico)"
+                 if c["pior"] else "border:1px solid var(--border-mid)")
         selo_pior = ("<span class=chip style='--c:var(--status-critico)'>mais fora da meta</span>"
-                     if b_ == pior else "")
+                     if c["pior"] else "")
         bk_txt = f"{real}/{meta_q:.0f}" if meta_q else f"{real}"
         prec_txt = (f"{prec * 100:.0f}% churn precoce" if prec is not None
                     else "coorte pequena p/ churn")
@@ -780,7 +793,7 @@ def mini_cards_html(conn, coorte: list[dict]) -> str:
             f"<div style='display:flex;justify-content:space-between;align-items:baseline'>"
             f"<b style='font-family:var(--font-display);font-size:15px'>{b_}</b>{selo_pior}</div>"
             f"<div style='font-family:var(--font-display);font-weight:700;font-size:21px;margin-top:6px;"
-            f"color:var(--{cor[2:]})'>{bk_txt}</div>"
+            f"color:var({cor})'>{bk_txt}</div>"
             f"<div style='font-size:var(--fs-2xs);color:var(--text-muted);text-transform:uppercase;"
             f"letter-spacing:var(--tracking-label)'>bookings × meta</div>"
             f"<div style='font-size:var(--fs-xs);color:var(--text-muted);margin-top:5px'>{prec_txt}</div></a>")

@@ -1,53 +1,113 @@
-import { AlertTriangle, ArrowRight, Target, TrendingUp, Users, Wallet } from "lucide-react";
+import { AlertTriangle, ArrowRight, ArrowUpRight, ChevronRight } from "lucide-react";
 import { useApi } from "@/hooks/use-api";
 import { Hint } from "@/components/hint";
 import { LoadingSkeleton, ErrorState } from "@/components/states";
-import { KpiCard } from "@/components/kpi-card";
 import { SectionCard } from "@/components/blocks/section-card";
-import { MetaBar } from "@/components/blocks/meta-bar";
 import { Badge } from "@/components/ui/badge";
-import { formatBRL, formatNumber, formatPct } from "@/lib/format";
+import { cn } from "@/lib/utils";
+import { formatBRL, formatNumber } from "@/lib/format";
 
 // Central (hub do admin) — /api/central COMPÕE as mesmas funções da tela HTML
-// (_hub_stats/_hub_*_stats, _hub_impactos, _hub_lags, _hub_mudancas_itens) e
-// os objetivos da semana com o impacto em R$ de cada um. Nenhuma régua nova.
+// (_hub_saude, _hub_kpis, _hub_area_cards, _hub_horizonte, mini_cards_dados,
+// _hub_mudancas_itens, _hub_lags) e os objetivos da semana com o impacto em R$.
+// Nenhuma régua nova, nenhum número recalculado aqui.
+//
+// ORDEM CANÔNICA (reconstrução 22/07 — é a rotina de leitura diária do Otávio):
+// prioridades → o que mudou → números-chave → saúde por área → raio-x compacto
+// → cards de área → iniciativas de maior horizonte → defasagens (recolhida).
 
 interface Impacto { faixa: [number, number] | null; janela: string | null; premissa: string }
+interface Metrica {
+  rotulo: string; valor: number | null; formato: string;
+  meta: number | null; tom: string | null; texto: string | null;
+}
 interface Payload {
   stats: { monitored: number; evaluable: number; sev: Record<string, number>;
     mrr_risk: number; mrr_crit: number; non_eval: number };
-  marketing: { mes: string; leads: number; leads_meta: number | null; gasto: number;
-    cpl: number | null; cpl_alvo: number | null; oport: number; oport_meta: number | null;
-    book: number; book_meta: number | null; cac: number | null; verba: number | null; frac: number } | null;
-  vendas: { book: number; book_meta: number | null; receita: number; receita_meta: number | null;
-    reunioes: number; taxa: number | null; taxa_ant: number | null; pipeline: number;
-    leads: number; speed_med: number | null; sem_toque: number; tem_touch: boolean } | null;
-  operacoes: { quarter: string; year: number; total: number; ok: number; prog: number;
-    atras: number; progresso: number } | null;
-  impactos: Record<string, { faixa?: [number, number] | null; premissa?: string } | null>;
-  lags: { lead_book: number | null; oport_book: number | null; book_churn: number | null;
-    n_lead: number; n_oport: number; n_churn: number };
-  mudancas: Array<{ texto: string; url: string }>;
+  kpis: Metrica[];
+  saude: Array<{ area: string; nome: string; href: string; nivel: string;
+    nivel_label: string; motivo: string; pior: boolean }>;
+  bundles: Array<{ bundle: string; meta: number | null; bookings: number;
+    churn_precoce: number | null; ratio: number | null; nivel: string; pior: boolean }>;
+  areas: Array<{ area: string; nome: string; href: string; nivel: string;
+    nivel_label: string; metricas: Metrica[]; detalhe: string }>;
+  horizonte: Array<{ titulo: string; descricao: string; nivel: string; href: string;
+    faixa: [number, number] | null; premissa: string | null; defasagem: string | null }>;
+  defasagens: Array<{ titulo: string; texto: string }>;
+  mudancas: Array<{ texto: string; url: string; tom: string }>;
   fontes_paradas: string[];
   prioridades: Array<{ titulo: string; racional: string | null; metric: string | null;
     impacto: Impacto | null;
     acoes: Array<{ team: string; team_label: string; manchete: string; detalhe: string }> }>;
 }
 
-const brl = (v: number | null | undefined) => (v == null ? "—" : formatBRL(v));
+// ---- formatação (o QUE mostrar vem do endpoint; aqui só o COMO) -------------
+const fmtValor = (v: number | null, formato: string) => {
+  if (v == null) return "—";
+  if (formato === "brl") return formatBRL(v);
+  if (formato === "pct1") return `${(v * 100).toFixed(1).replace(".", ",")}%`;
+  if (formato === "pct0") return `${(v * 100).toFixed(0)}%`;
+  if (formato === "pctp") return `${v.toFixed(0)}%`;
+  return formatNumber(Math.round(v)); // contagens e índices: inteiros, como no HTML
+};
+const mval = (m: Metrica) => (m.texto != null ? m.texto : fmtValor(m.valor, m.formato));
+
+// tom da métrica (verde = no ritmo) e nível de saúde compartilham a paleta
+const TOM_TXT: Record<string, string> = {
+  ok: "text-success", medio: "text-warning",
+  alto: "text-warning", critico: "text-destructive",
+};
+const NIVEL_TXT: Record<string, string> = {
+  verde: "text-success", baixo: "text-success", medio: "text-warning",
+  alto: "text-warning", critico: "text-destructive", semdados: "text-muted-foreground",
+};
+const NIVEL_BG: Record<string, string> = {
+  verde: "bg-success/15 text-success", baixo: "bg-success/15 text-success",
+  medio: "bg-warning/15 text-warning", alto: "bg-warning/15 text-warning",
+  critico: "bg-destructive/15 text-destructive",
+  semdados: "bg-muted text-muted-foreground",
+};
+const NIVEL_DOT: Record<string, string> = {
+  verde: "bg-success", baixo: "bg-success", medio: "bg-warning",
+  alto: "bg-warning", critico: "bg-destructive", semdados: "bg-muted-foreground",
+};
+
 const faixaBRL = (f: [number, number] | null | undefined) =>
   f ? `${formatBRL(f[0])} – ${formatBRL(f[1])}` : null;
+
+// Métrica de card compacto: valor grande, "/meta" apagado ao lado, rótulo miúdo
+function Metric({ m }: { m: Metrica }) {
+  return (
+    <div className="min-w-0">
+      <div className={cn("font-display text-xl font-bold tabular-nums leading-none",
+        m.tom ? TOM_TXT[m.tom] : "text-foreground")}>
+        {mval(m)}
+        {m.meta != null && m.valor != null && (
+          <span className="text-sm font-semibold text-muted-foreground/70">/{fmtValor(m.meta, m.formato)}</span>
+        )}
+      </div>
+      <div className="mt-1 text-[10px] uppercase leading-tight tracking-wide text-muted-foreground">
+        {m.rotulo}
+      </div>
+    </div>
+  );
+}
 
 export function CentralPage() {
   const q = useApi<Payload>("/api/central");
   const d = q.data;
+  // "exige ação" separado do informativo (Otávio 22/07): conta que ENTROU em
+  // crítico é a 1ª ligação do dia — não pode ter o peso de uma oportunidade nova
+  const acao = d?.mudancas.filter((m) => m.tom === "acao") ?? [];
+  const resto = d?.mudancas.filter((m) => m.tom !== "acao") ?? [];
+
   return (
     <div className="space-y-6">
       <header>
         <h1 className="font-display text-2xl font-bold tracking-tight">Central</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          O estado da empresa numa tela: as prioridades da semana com o impacto estimado, o placar de
-          cada área e o que mudou desde ontem.
+          O cockpit da empresa: as prioridades da semana e o que mudou primeiro; abaixo, os números do
+          mês, a saúde de cada área e de cada bundle, e as iniciativas de horizonte maior.
         </p>
       </header>
 
@@ -66,40 +126,62 @@ export function CentralPage() {
             </div>
           )}
 
+          {/* 1. PRIORIDADES DA SEMANA — o impacto em R$ é a âncora visual */}
           {d.prioridades.length > 0 && (
             <SectionCard title="Prioridades da semana"
-              subtitle="objetivos confirmados da empresa, o impacto estimado em R$ de cada um e o que cada área faz por ele · estimativas indicativas, não promessas">
-              <div className="space-y-4">
+              subtitle="objetivos confirmados, em ordem de impacto estimado em R$ (pelo cenário conservador) · estimativas indicativas, não promessas">
+              <div className="space-y-3">
                 {d.prioridades.map((p, i) => (
-                  <div key={p.titulo} className="rounded-xl border border-border p-4">
-                    <div className="flex flex-wrap items-baseline justify-between gap-2">
-                      <b className="text-sm">{i + 1}. {p.titulo}</b>
-                      {p.impacto?.faixa ? (
-                        <Badge variant="outline" className="border-primary/50 text-primary">
-                          impacto {faixaBRL(p.impacto.faixa)}
-                        </Badge>
-                      ) : (
-                        // Otávio 22/07: o card sem estimativa PERDEU essa
-                        // informação — ausência de número não é ausência de item
-                        <Badge variant="outline" className="text-muted-foreground">
-                          impacto não estimado
-                        </Badge>
-                      )}
+                  <div key={p.titulo} className="overflow-hidden rounded-xl border border-border">
+                    <div className="flex flex-wrap items-start gap-4 bg-muted/30 p-4">
+                      <span className="font-display text-2xl font-bold leading-none text-muted-foreground/50">
+                        {i + 1}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="font-display text-base font-semibold leading-tight">{p.titulo}</div>
+                        {p.racional && (
+                          <p className="mt-1 text-sm text-muted-foreground">{p.racional}</p>
+                        )}
+                      </div>
+                      {/* âncora de valor: número grande à direita, não um chip solto */}
+                      <div className="shrink-0 text-right">
+                        {p.impacto?.faixa ? (
+                          <>
+                            <div className="font-display text-lg font-bold tabular-nums leading-none text-primary">
+                              {faixaBRL(p.impacto.faixa)}
+                            </div>
+                            <div className="mt-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+                              em jogo por mês
+                            </div>
+                          </>
+                        ) : (
+                          // ausência de número não é ausência de item (Otávio 22/07)
+                          <Badge variant="outline" className="text-muted-foreground">
+                            impacto não estimado
+                          </Badge>
+                        )}
+                      </div>
                     </div>
-                    {p.racional && <p className="mt-1 text-sm text-muted-foreground">{p.racional}</p>}
                     {p.impacto?.premissa && (
-                      <details className="mt-1">
+                      <details className="border-t border-border px-4 py-2">
                         <summary className="cursor-pointer text-xs text-primary">como estimamos o valor</summary>
                         <p className="mt-1 text-xs text-muted-foreground">{p.impacto.premissa}</p>
                       </details>
                     )}
                     {p.acoes.length > 0 && (
-                      <div className="mt-2 space-y-1.5">
+                      // ações por área legíveis de relance: rótulo da área à
+                      // esquerda, manchete em negrito, detalhe abaixo
+                      <div className="divide-y divide-border border-t border-border">
                         {p.acoes.map((a, j) => (
-                          <div key={`${p.titulo}-${j}`} className="border-t border-border pt-1.5 text-sm">
-                            <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{a.team_label}</span>
-                            <div className="font-medium">{a.manchete}</div>
-                            {a.detalhe && <div className="text-xs text-muted-foreground">{a.detalhe}</div>}
+                          <div key={`${p.titulo}-${j}`}
+                            className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-4 py-2.5 text-sm">
+                            <span className="w-24 shrink-0 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                              {a.team_label}
+                            </span>
+                            <div className="min-w-0 flex-1">
+                              <div className="font-medium leading-snug">{a.manchete}</div>
+                              {a.detalhe && <div className="text-xs text-muted-foreground">{a.detalhe}</div>}
+                            </div>
                           </div>
                         ))}
                       </div>
@@ -107,129 +189,209 @@ export function CentralPage() {
                   </div>
                 ))}
               </div>
-              <p className="mt-3 text-xs text-muted-foreground">
+              <p className="mt-3 text-xs">
                 <a href="/semana" className="text-primary hover:underline">ver Ações da Semana →</a>
               </p>
             </SectionCard>
           )}
 
-          <SectionCard title="Growth / Assessoria"
-            subtitle="carteira monitorada, risco e MRR exposto — a régua do MRR é a de contas COM ALERTA ABERTO">
-            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-              <KpiCard icon={Users} tone="muted" title="Contas monitoradas"
-                value={formatNumber(d.stats.monitored)}
-                subtitle={`${d.stats.evaluable} avaliáveis${d.stats.non_eval ? ` · ${d.stats.non_eval} sem cobertura` : ""}`} />
-              <KpiCard icon={AlertTriangle} tone="destructive" title="Alertas críticos"
-                value={formatNumber(d.stats.sev?.critico ?? 0)}
-                subtitle={`${d.stats.sev?.alto ?? 0} alto · ${d.stats.sev?.atencao ?? 0} atenção`} />
-              <KpiCard icon={Wallet} tone="warning" title="MRR com alerta aberto"
-                value={brl(d.stats.mrr_risk)} />
-              <KpiCard icon={Wallet} tone="destructive" title="MRR em risco crítico"
-                value={brl(d.stats.mrr_crit)} />
-            </div>
-            <p className="mt-3 text-xs">
-              <a href="/growth?view=alertas" className="text-primary hover:underline">fila de retenção →</a>
-            </p>
-          </SectionCard>
-
-          {d.marketing && (
-            <SectionCard title={`Marketing — ${d.marketing.mes}`}
-              subtitle={`ritmo do mês: ${(d.marketing.frac * 100).toFixed(0)}% decorrido`}>
-              <div className="grid gap-4 md:grid-cols-2">
-                <MetaBar value={d.marketing.leads} target={d.marketing.leads_meta ?? 0}
-                  valueLabel={`Leads: ${formatNumber(d.marketing.leads)}`}
-                  targetLabel={`meta ${formatNumber(d.marketing.leads_meta ?? 0)}`}
-                  pacePct={d.marketing.frac * 100} />
-                <MetaBar value={d.marketing.oport} target={d.marketing.oport_meta ?? 0}
-                  valueLabel={`Oportunidades: ${formatNumber(d.marketing.oport)}`}
-                  targetLabel={`meta ${formatNumber(d.marketing.oport_meta ?? 0)}`}
-                  pacePct={d.marketing.frac * 100} />
-              </div>
-              <div className="mt-3 grid gap-4 md:grid-cols-3">
-                <KpiCard icon={Wallet} tone="muted" title="Gasto de mídia" value={brl(d.marketing.gasto)}
-                  subtitle={d.marketing.verba ? `verba ${brl(d.marketing.verba)}` : undefined} />
-                <KpiCard icon={Target} tone={d.marketing.cpl_alvo && d.marketing.cpl && d.marketing.cpl <= d.marketing.cpl_alvo ? "success" : "warning"}
-                  title="CPL" value={brl(d.marketing.cpl)}
-                  subtitle={d.marketing.cpl_alvo ? `alvo ${brl(d.marketing.cpl_alvo)}` : undefined} />
-                <KpiCard icon={Wallet} tone="muted" title="CAC" value={brl(d.marketing.cac)} />
-              </div>
-              <p className="mt-3 text-xs">
-                <a href="/marketing?view=visao" className="text-primary hover:underline">abrir Marketing →</a>
-              </p>
-            </SectionCard>
-          )}
-
-          {d.vendas && (
-            <SectionCard title="Pré-vendas e Vendas"
-              subtitle="do lead à reunião e da reunião ao contrato — régua oficial do funil">
-              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                <KpiCard icon={Users} tone="muted" title="Reuniões" value={formatNumber(d.vendas.reunioes)}
-                  subtitle={d.vendas.tem_touch && d.vendas.speed_med != null
-                    ? `1º contato mediano ${d.vendas.speed_med.toFixed(0)} min` : undefined}
-                  caveat={d.vendas.sem_toque ? `${d.vendas.sem_toque} lead(s) sem 1º contato registrado` : undefined} />
-                <KpiCard icon={TrendingUp}
-                  tone={d.vendas.taxa != null && d.vendas.taxa_ant != null && d.vendas.taxa >= d.vendas.taxa_ant ? "success" : "warning"}
-                  title="Oportunidade → Booking"
-                  value={d.vendas.taxa != null ? formatPct(d.vendas.taxa * 100, 1) : "—"}
-                  subtitle={d.vendas.taxa_ant != null ? `mês anterior ${formatPct(d.vendas.taxa_ant * 100, 1)}` : undefined} />
-                <KpiCard icon={Target} tone="primary" title="Bookings"
-                  value={formatNumber(d.vendas.book)}
-                  subtitle={d.vendas.book_meta ? `meta ${formatNumber(d.vendas.book_meta)}` : undefined} />
-                <KpiCard icon={Wallet} tone="accent" title="Receita"
-                  value={brl(d.vendas.receita)}
-                  subtitle={d.vendas.receita_meta ? `meta ${brl(d.vendas.receita_meta)}` : undefined} />
-              </div>
-              <p className="mt-3 text-xs">
-                <a href="/vendas?view=funil" className="text-primary hover:underline">Funil de Fechamento →</a>
-                {" · "}
-                <a href="/vendas?view=ponte" className="text-primary hover:underline">Ponte PV → Vendas →</a>
-              </p>
-            </SectionCard>
-          )}
-
-          {d.operacoes && (
-            <SectionCard title={`Operações — ${d.operacoes.quarter} ${d.operacoes.year}`}
-              subtitle="iniciativas do trimestre sincronizadas do Notion">
-              <MetaBar value={d.operacoes.ok} target={d.operacoes.total}
-                valueLabel={`${d.operacoes.ok} concluída(s) de ${d.operacoes.total}`}
-                targetLabel={`${d.operacoes.prog} em andamento · ${d.operacoes.atras} atrasada(s)`} />
-              <p className="mt-3 text-xs">
-                <a href="/operacoes" className="text-primary hover:underline">abrir Operações →</a>
-              </p>
-            </SectionCard>
-          )}
-
+          {/* 2. O QUE MUDOU — exige ação primeiro, informativo depois */}
           {d.mudancas.length > 0 && (
             <SectionCard hint={<Hint area="growth/contas" titulo="Contas por risco" />}
               title="O que mudou desde ontem"
-              subtitle="deltas das últimas 24h / última rodada — clique para abrir a área">
-              <div className="space-y-1">
-                {d.mudancas.map((m) => (
-                  <a key={m.texto} href={m.url}
-                    className="flex items-start gap-2 border-t border-border py-2 text-sm first:border-t-0 hover:bg-muted/40">
-                    <ArrowRight className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-                    <span>{m.texto}</span>
-                  </a>
-                ))}
-              </div>
+              subtitle="deltas das últimas 24h / última rodada — clique para abrir o recorte exato">
+              {acao.length > 0 && (
+                <div className="mb-3 space-y-1.5">
+                  <div className="text-[10px] font-semibold uppercase tracking-wide text-destructive">
+                    exige ação
+                  </div>
+                  {acao.map((m) => (
+                    <a key={m.texto} href={m.url}
+                      className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/[0.06] p-3 text-sm hover:bg-destructive/10">
+                      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+                      <span className="min-w-0 flex-1 font-medium">{m.texto}</span>
+                      <ArrowUpRight className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                    </a>
+                  ))}
+                </div>
+              )}
+              {resto.length > 0 && (
+                <div className="space-y-0">
+                  {acao.length > 0 && (
+                    <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                      informativo
+                    </div>
+                  )}
+                  {resto.map((m) => (
+                    <a key={m.texto} href={m.url}
+                      className="flex items-start gap-2 border-t border-border py-2 text-sm text-muted-foreground first:border-t-0 hover:bg-muted/40">
+                      <ArrowRight className="mt-0.5 h-4 w-4 shrink-0" />
+                      <span>{m.texto}</span>
+                    </a>
+                  ))}
+                </div>
+              )}
             </SectionCard>
           )}
 
-          <SectionCard title="Defasagens medidas"
-            subtitle="quanto tempo uma correção numa área leva para aparecer na outra — medianas do histórico; sem base suficiente, a tela diz">
-            <div className="grid gap-4 md:grid-cols-3 text-sm">
-              {([["Lead → booking", d.lags.lead_book, d.lags.n_lead],
-                 ["Oportunidade → booking", d.lags.oport_book, d.lags.n_oport],
-                 ["Booking → churn", d.lags.book_churn, d.lags.n_churn]] as const).map(([rot, v, n]) => (
-                <div key={rot} className="rounded-lg border border-border p-3">
-                  <div className="font-display text-xl font-bold tabular-nums">
-                    {v != null ? `${v.toFixed(0)} d` : "sem base"}
-                  </div>
-                  <div className="text-xs text-muted-foreground">{rot}{n ? ` · ${n} casos` : ""}</div>
+          {/* 3. NÚMEROS-CHAVE DO MÊS */}
+          <SectionCard title="Números-chave do mês"
+            subtitle="retenção (Growth) e aquisição (Marketing/Vendas) — o termômetro rápido antes do detalhe por área">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+              {d.kpis.map((k) => (
+                <div key={k.rotulo} className="rounded-xl border border-border bg-muted/20 p-4">
+                  <Metric m={k} />
                 </div>
               ))}
             </div>
           </SectionCard>
+
+          {/* 4. SAÚDE POR ÁREA — pior primeiro (onde olhar agora) */}
+          <SectionCard title="Saúde por área"
+            subtitle="diagnóstico automático do mês corrente, da área que mais demanda atenção para a mais saudável — clique para abrir">
+            <div className="grid gap-3 md:grid-cols-2">
+              {d.saude.map((s) => (
+                <a key={s.area} href={s.href}
+                  className={cn("flex items-start gap-3 rounded-xl border p-3.5 hover:bg-muted/40",
+                    s.pior ? "border-destructive/60 bg-destructive/[0.04]" : "border-border")}>
+                  <span className={cn("mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full", NIVEL_DOT[s.nivel])} />
+                  <div className="min-w-0">
+                    <div className="font-display text-sm font-semibold">
+                      {s.nome} · <span className={NIVEL_TXT[s.nivel]}>{s.nivel_label}</span>
+                      {s.pior && (
+                        <span className="ml-2 rounded-full border border-destructive px-2 py-0.5 text-[9px] uppercase tracking-wide text-destructive">
+                          maior atenção agora
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-0.5 text-xs leading-snug text-muted-foreground">{s.motivo}</div>
+                  </div>
+                </a>
+              ))}
+            </div>
+          </SectionCard>
+
+          {/* 5. RAIO-X COMPACTO POR BUNDLE */}
+          {d.bundles.length > 0 && (
+            <SectionCard title="Raio-X compacto por bundle"
+              subtitle="bookings × meta do mês (cor pelo ritmo) e churn precoce da coorte — os mesmos números do Raio-X completo">
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+                {d.bundles.map((b) => (
+                  <a key={b.bundle} href={`/raiox?b=${b.bundle}`}
+                    className={cn("rounded-xl border p-3.5 hover:bg-muted/40",
+                      b.pior ? "border-destructive/60 bg-destructive/[0.04]" : "border-border")}>
+                    <div className="flex items-baseline justify-between gap-1">
+                      <b className="font-display text-sm">{b.bundle}</b>
+                      {b.pior && (
+                        <span className="text-[9px] uppercase tracking-wide text-destructive">
+                          mais fora da meta
+                        </span>
+                      )}
+                    </div>
+                    <div className={cn("mt-1.5 font-display text-xl font-bold tabular-nums leading-none",
+                      NIVEL_TXT[b.nivel])}>
+                      {b.bookings}
+                      {b.meta != null && (
+                        <span className="text-sm font-semibold text-muted-foreground/70">
+                          /{b.meta.toFixed(0)}
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+                      bookings × meta
+                    </div>
+                    <div className="mt-1.5 text-xs text-muted-foreground">
+                      {b.churn_precoce != null
+                        ? `${(b.churn_precoce * 100).toFixed(0)}% churn precoce`
+                        : "coorte pequena p/ churn"}
+                    </div>
+                  </a>
+                ))}
+              </div>
+              <p className="mt-3 text-xs">
+                <a href="/raiox" className="text-primary hover:underline">visão da empresa toda →</a>
+              </p>
+            </SectionCard>
+          )}
+
+          {/* 6. ÁREAS — cards COMPACTOS lado a lado (não seções grandes) */}
+          <SectionCard title="Áreas"
+            subtitle="resumo do andamento de cada área — clique para abrir o painel completo; verde = no ritmo da meta, vermelho = atenção">
+            <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
+              {d.areas.map((a) => (
+                <a key={a.area} href={a.href}
+                  className="flex flex-col rounded-xl border border-border p-4 hover:bg-muted/40">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="font-display text-sm font-semibold">{a.nome}</div>
+                    <Badge className={cn("border-0 text-[10px] font-medium", NIVEL_BG[a.nivel])}>
+                      {a.nivel_label}
+                    </Badge>
+                  </div>
+                  {a.metricas.length > 0 && (
+                    <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-3">
+                      {a.metricas.map((m) => <Metric key={m.rotulo} m={m} />)}
+                    </div>
+                  )}
+                  <div className="mt-3 text-xs leading-snug text-muted-foreground">{a.detalhe}</div>
+                </a>
+              ))}
+            </div>
+          </SectionCard>
+
+          {/* 7. INICIATIVAS DE MAIOR HORIZONTE */}
+          <SectionCard title="Iniciativas de maior horizonte"
+            subtitle="gargalos medidos que NÃO viraram objetivo desta semana — ordenados pelo impacto estimado em R$/mês, com premissa e defasagem">
+            {d.horizonte.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                Nenhuma iniciativa além das prioridades da semana — os gargalos atuais já viraram
+                objetivos confirmados.
+              </p>
+            ) : (
+              <div className="divide-y divide-border">
+                {d.horizonte.map((h) => (
+                  <a key={h.titulo} href={h.href}
+                    className="flex items-start gap-3 py-3 first:pt-0 hover:bg-muted/40">
+                    <span className={cn("mt-1.5 h-2 w-2 shrink-0 rounded-full", NIVEL_DOT[h.nivel])} />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-semibold">{h.titulo}</div>
+                      <div className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{h.descricao}</div>
+                      {h.faixa && (
+                        <div className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                          <b className="text-primary">≈ {faixaBRL(h.faixa)}/mês em jogo</b> · potencial
+                          estimado, não promessa · premissa: {h.premissa} · {h.defasagem}
+                        </div>
+                      )}
+                      {!h.faixa && h.defasagem && (
+                        <div className="mt-1 text-xs text-muted-foreground">{h.defasagem}</div>
+                      )}
+                    </div>
+                    <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                  </a>
+                ))}
+              </div>
+            )}
+          </SectionCard>
+
+          {/* 8. DEFASAGENS — referência de consulta, recolhida por padrão */}
+          <details className="rounded-xl border border-border bg-card p-4 shadow-sm">
+            <summary className="cursor-pointer font-display text-sm font-semibold">
+              Defasagem esperada das correções{" "}
+              <span className="text-xs font-normal text-muted-foreground">
+                (referência — quando cobrar resultado)
+              </span>
+            </summary>
+            <p className="mt-2 text-xs text-muted-foreground">
+              medida no NOSSO histórico (medianas) — onde não há base, está dito
+            </p>
+            <div className="mt-2 divide-y divide-border">
+              {d.defasagens.map((l) => (
+                <div key={l.titulo} className="py-2">
+                  <div className="text-sm font-medium">{l.titulo}</div>
+                  <div className="text-xs text-muted-foreground">{l.texto}</div>
+                </div>
+              ))}
+            </div>
+          </details>
         </>
       )}
     </div>

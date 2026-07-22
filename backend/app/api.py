@@ -827,14 +827,32 @@ def api_central(request: Request):
             coorte = None
         impactos = _hub_impactos(c, mkt, sales, coorte=coorte)
         lags = _hub_lags(c, coorte=coorte)
-        mudancas = [{"texto": sem_tags(t), "url": h} for t, h in _hub_mudancas_itens(c)]
+        mudancas = [{"texto": sem_tags(t), "url": h, "tom": tom}
+                    for t, h, tom in _hub_mudancas_itens(c)]
+        # blocos que faltavam no Lote 5 (Otávio 22/07) — MESMAS funções da tela
+        # HTML, agora compartilhadas: nada é recalculado no front
+        saude_areas = _hub_saude(stats, mkt, sales)
+        pior_area = max(saude_areas, key=lambda k: _NIVEL[saude_areas[k][0]][2])
+        tem_pior = _NIVEL[saude_areas[pior_area][0]][2] >= 1
+        saude = [{"area": a, "nome": _AREA_LBL[a][0], "href": _AREA_LBL[a][1],
+                  "nivel": saude_areas[a][0], "nivel_label": _NIVEL[saude_areas[a][0]][1],
+                  "motivo": saude_areas[a][1], "pior": a == pior_area and tem_pior}
+                 for a in sorted(saude_areas, key=lambda k: -_NIVEL[saude_areas[k][0]][2])]
+        kpis = _hub_kpis(stats, mkt, sales)
+        areas = _hub_area_cards(stats, mkt, sales, ops, saude_areas)
+        defasagens = [{"titulo": a, "texto": b} for a, b in _hub_defasagem_linhas(lags)]
+        try:
+            from .raiox import mini_cards_dados
+            bundles = mini_cards_dados(c, coorte or [])
+        except Exception:  # noqa: BLE001 — planilha/coorte fora não derruba a central
+            bundles = []
         try:
             vermelhas = [r["fonte"] for r in _integracoes_status(c) if r["status"] == "vermelho"]
         except Exception:  # noqa: BLE001
             vermelhas = []
         # Prioridades da Semana: os objetivos CONFIRMADOS + o impacto em R$ de
         # cada um (mesma função da tela) + as ações por time
-        prioridades = []
+        prioridades, foco_kw = [], []
         try:
             from .semana import _acoes, _impacto_objetivo, _objetivos, _seg, _TEAM_LBL, _acao_split
             week = _seg()
@@ -857,11 +875,17 @@ def api_central(request: Request):
             # (cenário conservador — ordenar pelo otimista premiaria estimativa
             # incerta). Sem impacto estimável fica por último, e a tela DIZ isso.
             prioridades.sort(key=lambda p: -((p["impacto"] or {}).get("faixa") or [0])[0])
+            # mesma chave de absorção da tela HTML: gargalo que já virou
+            # objetivo confirmado NÃO se repete no horizonte
+            foco_kw = [o["title"].lower() for o in objs]
         except Exception:  # noqa: BLE001 — bloco nunca derruba a central
             prioridades = []
+        horizonte = _hub_horizonte(stats, mkt, sales, impactos, lags, foco_kw)
     return {"stats": stats, "marketing": mkt, "vendas": sales, "operacoes": ops,
             "impactos": impactos, "lags": lags, "mudancas": mudancas,
-            "fontes_paradas": vermelhas, "prioridades": prioridades}
+            "fontes_paradas": vermelhas, "prioridades": prioridades,
+            "kpis": kpis, "saude": saude, "bundles": bundles, "areas": areas,
+            "horizonte": horizonte, "defasagens": defasagens}
 
 
 @app.get("/api/rodape")
@@ -1623,12 +1647,16 @@ def _receita_recorrente_html() -> str:
         f"<p class=note style='margin:10px 0 0'>{cross_txt}</p></div></section>")
 
 
-def _hub_mudancas_itens(conn: Any) -> list[tuple[str, str]]:
+def _hub_mudancas_itens(conn: Any) -> list[tuple[str, str, str]]:
     """'O que mudou desde ontem' (14/07): deltas das últimas 24h/última rodada,
     derivados dos dados existentes — a rotina diária de 30 segundos do gestor.
-    Devolve os ITENS (texto, link); a versão HTML e o SPA renderizam os mesmos
-    (separação feita no redesenho 22/07 — antes o HTML era a única saída)."""
-    itens: list[tuple[str, str]] = []
+    Devolve os ITENS (texto, link, tom); a versão HTML e o SPA renderizam os
+    mesmos (separação feita no redesenho 22/07 — antes o HTML era a única saída).
+
+    `tom` (22/07) separa o que EXIGE AÇÃO do que é informativo/bom — pedido do
+    Otávio: 'conta que ENTROU em crítico é a primeira ligação do dia' não pode
+    ter o mesmo peso visual de uma oportunidade nova. acao | bom | info."""
+    itens: list[tuple[str, str, str]] = []
     try:
         with conn.cursor() as cur:
             # GROWTH: bandas vs run anterior (duas últimas rodadas de score)
@@ -1661,21 +1689,21 @@ def _hub_mudancas_itens(conn: Any) -> list[tuple[str, str]]:
                     elif rn is not None and ro is not None and rn < ro:
                         melhor_l.append((aid, nome))
 
-                def _mud_item(lista, texto, cor):
+                def _mud_item(lista, texto, cor, tom):
                     nomes = ", ".join(escape((n or "?")[:26]) for _, n in lista[:3])
                     if len(lista) > 3:
                         nomes += f" +{len(lista) - 3}"
                     return (f"<b style='color:var({cor})'>{len(lista)}</b> conta(s) {texto}: "
                             f"<span style='color:var(--text-muted)'>{nomes}</span>",
-                            f"/growth?view=contas&ids={','.join(a for a, _ in lista)}")
+                            f"/growth?view=contas&ids={','.join(a for a, _ in lista)}", tom)
                 if ent_l:
-                    itens.append(_mud_item(ent_l, "ENTRARAM em crítico na última rodada", "--status-critico"))
+                    itens.append(_mud_item(ent_l, "ENTRARAM em crítico na última rodada", "--status-critico", "acao"))
                 if sai_l:
-                    itens.append(_mud_item(sai_l, "saíram de crítico", "--status-baixo"))
+                    itens.append(_mud_item(sai_l, "saíram de crítico", "--status-baixo", "bom"))
                 if pior_l:
-                    itens.append(_mud_item(pior_l, "PIORARAM de faixa de risco", "--status-alto"))
+                    itens.append(_mud_item(pior_l, "PIORARAM de faixa de risco", "--status-alto", "acao"))
                 if melhor_l:
-                    itens.append(_mud_item(melhor_l, "melhoraram de faixa de risco", "--status-baixo"))
+                    itens.append(_mud_item(melhor_l, "melhoraram de faixa de risco", "--status-baixo", "bom"))
             # VENDAS: bookings e oportunidades nas últimas 24h
             cur.execute("""SELECT count(*), COALESCE(sum(COALESCE(valor_custom, valor)), 0)
                              FROM mkt_deals_attribution
@@ -1690,7 +1718,7 @@ def _hub_mudancas_itens(conn: Any) -> list[tuple[str, str]]:
                     bk_nm += f" +{bk - 3}"
                 itens.append((f"<b style='color:var(--status-baixo)'>{bk}</b> booking(s) nas últimas 24h — "
                               f"R$ {float(rec):,.0f}".replace(",", ".")
-                              + f": <span style='color:var(--text-muted)'>{bk_nm}</span>", "/vendas"))
+                              + f": <span style='color:var(--text-muted)'>{bk_nm}</span>", "/vendas", "bom"))
             cur.execute("""SELECT count(*) FROM mkt_deals_attribution
                             WHERE oport_time >= now() - interval '24 hours'""")
             op = cur.fetchone()[0]
@@ -1702,7 +1730,7 @@ def _hub_mudancas_itens(conn: Any) -> list[tuple[str, str]]:
                 if op > 3:
                     op_nm += f" +{op - 3}"
                 itens.append((f"<b>{op}</b> nova(s) oportunidade(s) nas últimas 24h: "
-                              f"<span style='color:var(--text-muted)'>{op_nm}</span>", "/vendas?view=funil"))
+                              f"<span style='color:var(--text-muted)'>{op_nm}</span>", "/vendas?view=funil", "info"))
             # MARKETING: CPL de ontem vs média 7d anterior, por canal pago
             cur.execute("""
                 WITH d1 AS (SELECT canal, sum(spend) g, sum(leads) l FROM mkt_insights_daily
@@ -1716,13 +1744,13 @@ def _hub_mudancas_itens(conn: Any) -> list[tuple[str, str]]:
                     dirc = "subiu" if cpl1 > cpl7 else "caiu"
                     cor = "--status-critico" if cpl1 > cpl7 else "--status-baixo"
                     nome = "Meta Ads" if cn == "meta" else "Google Ads"
-                    itens.append((f"CPL do {nome} <b style='color:var({cor})'>{dirc}</b> p/ R$ {float(cpl1):,.0f} ontem (média 7d: R$ {float(cpl7):,.0f})".replace(",", "."), "/marketing?view=midia"))
+                    itens.append((f"CPL do {nome} <b style='color:var({cor})'>{dirc}</b> p/ R$ {float(cpl1):,.0f} ontem (média 7d: R$ {float(cpl7):,.0f})".replace(",", "."), "/marketing?view=midia", "acao" if cpl1 > cpl7 else "bom"))
             # OPERAÇÕES: iniciativas que viraram atrasadas desde ontem
             cur.execute("""SELECT count(*) FROM notion_initiatives_cache
                             WHERE prazo = CURRENT_DATE - 1 AND status <> 'concluida'""")
             atr = cur.fetchone()[0]
             if atr:
-                itens.append((f"<b style='color:var(--status-critico)'>{atr}</b> iniciativa(s) viraram ATRASADAS desde ontem", "/operacoes"))
+                itens.append((f"<b style='color:var(--status-critico)'>{atr}</b> iniciativa(s) viraram ATRASADAS desde ontem", "/operacoes", "acao"))
     except Exception:  # noqa: BLE001 — resumo nunca derruba o hub
         pass
     return itens
@@ -1735,7 +1763,7 @@ def _hub_mudancas(conn: Any) -> str:
         return ""
     lis = "".join(f"<a href='{href}' style='display:flex;gap:9px;align-items:center;padding:7px 0;"
                   f"border-top:1px solid var(--border);color:var(--text-2);font-size:var(--fs-sm);"
-                  f"text-decoration:none'><span>→</span><span>{txt}</span></a>" for txt, href in itens)
+                  f"text-decoration:none'><span>→</span><span>{txt}</span></a>" for txt, href, _tom in itens)
     return ("<section><h2>O que mudou desde ontem</h2>"
             "<p class=secsub>deltas das últimas 24h / última rodada — clique para abrir a área</p>"
             + _hint("O que mudou desde ontem",
@@ -1885,18 +1913,18 @@ def _hub_impactos(conn: Any, mkt: dict | None, sales: dict | None,
     return imp
 
 
-def _render_hub(role: str, st: dict, users: list[dict] | None = None,
-                mkt: dict | None = None, page: str = "home",
-                llm: dict | None = None, sales: dict | None = None,
-                teams_html: str = "", ops: dict | None = None,
-                mudancas: str = "", body_override: str | None = None,
-                active_page: str = "", impactos: dict | None = None,
-                lags: dict | None = None, foco_html: str = "",
-                raiox_mini: str = "", foco_kw: list[str] | None = None) -> str:
-    n_alerts = sum(st["sev"].values())
-    crit = st["sev"].get("critico", 0)
+_AREA_LBL = {"growth": ("Growth / Assessoria", "/growth"), "marketing": ("Marketing", "/marketing"),
+             "prevendas": ("Pré-vendas", "/prevendas"), "vendas": ("Vendas", "/vendas")}
 
-    # ---- saúde por área (determinística; pior área = prioridade de atenção)
+
+def _hub_saude(st: dict, mkt: dict | None, sales: dict | None) -> dict[str, tuple[str, str]]:
+    """Saúde por área (determinística) — area -> (nivel, motivo).
+
+    Extraída do corpo do `_render_hub` (22/07) para que a tela HTML e o
+    `/api/central` leiam do MESMO cálculo: a Central do SPA precisava do bloco
+    'Saúde por área' e reimplementar a régua no front seria divergência
+    garantida. Nada aqui é novo — é o mesmo código, agora com um nome."""
+    crit = st["sev"].get("critico", 0)
     saude: dict[str, tuple[str, str]] = {}  # area -> (nivel, motivo)
     if crit:
         saude["growth"] = ("critico", f"{crit} conta(s) em risco crítico — {_fmt_brl(st['mrr_crit'])} de MRR em jogo")
@@ -1934,10 +1962,15 @@ def _render_hub(role: str, st: dict, users: list[dict] | None = None,
     else:
         saude["prevendas"] = ("medio", "dados do mês indisponíveis")
         saude["vendas"] = ("medio", "dados do mês indisponíveis")
-    _AREA_LBL = {"growth": ("Growth / Assessoria", "/growth"), "marketing": ("Marketing", "/marketing"),
-                 "prevendas": ("Pré-vendas", "/prevendas"), "vendas": ("Vendas", "/vendas")}
-    pior = max(saude, key=lambda k: _NIVEL[saude[k][0]][2])
-    pior_nv = saude[pior][0]
+    return saude
+
+
+def _hub_iniciativas(st: dict, mkt: dict | None, sales: dict | None,
+                     impactos: dict | None) -> list[tuple]:
+    """Gargalos medidos que a inteligência central sugere como iniciativa —
+    (título, descrição, cor, link, tipo). Também extraída do `_render_hub`
+    (22/07): as 'Iniciativas de maior horizonte' faltavam na Central do SPA."""
+    crit = st["sev"].get("critico", 0)
     # Iniciativas sugeridas pela inteligência central — derivadas dos dados
     # reais das áreas ativas (Growth + Marketing) = priorização cross-área.
     # cada iniciativa é um LINK para os dados que a sustentam (pedido Otávio
@@ -1994,7 +2027,28 @@ def _render_hub(role: str, st: dict, users: list[dict] | None = None,
                             "suficiente no WhatsApp — o agente não as enxerga; revisar e reativar os grupos "
                             "(contas novas em rampa não entram aqui).",
                             "--status-semdados", "/growth?view=contas&faixa=sem_dados", None))
+    return initiatives
 
+
+# selo 'foco desta semana' (Cockpit, 17/07): amarra a priorização por R$ ao
+# combinado da semana — casamento HEURÍSTICO por palavras-chave do tipo do
+# gargalo e por menção ao mesmo bundle nos objetivos CONFIRMADOS
+_FOCO_KW = {"leads": ("lead",), "bookings": ("booking", "fechar", "vender", "meta"),
+            "ciclo": ("churn", "cancel", "reten"), "ponte": ("sla", "qualifica", "contato"),
+            "exec": ("execu", "atraso", "entrega"), "retencao": ("churn", "reten", "risco", "cancel"),
+            "conversao": ("convers", "reuni", "agend")}
+
+
+def _hub_horizonte(st: dict, mkt: dict | None, sales: dict | None,
+                   impactos: dict | None, lags: dict | None,
+                   foco_kw: list[str] | None) -> list[dict]:
+    """'Iniciativas de maior horizonte' em DADOS: as iniciativas decoradas com
+    impacto em R$ e defasagem, ordenadas por impacto e já SEM as que viraram
+    objetivo confirmado da semana (essas são absorvidas pelas Prioridades).
+
+    Mesma sequência do `_render_hub`; a tela HTML e o `/api/central` consomem
+    esta lista — o front só formata."""
+    initiatives = _hub_iniciativas(st, mkt, sales, impactos)
     # ---- impacto em R$ + defasagem por iniciativa (Integração Causal #2/#4):
     # a moeda comum ordena a fila — o gestor sequencia por retorno estimado
     imp = impactos or {}
@@ -2030,14 +2084,6 @@ def _render_hub(role: str, st: dict, users: list[dict] | None = None,
     # ordena por impacto estimado (máx. da faixa); sem estimativa vai ao final
     decoradas.sort(key=lambda x: -(x[4]["faixa"][1] if x[4] else -1))
 
-    # selo 'foco desta semana' (Cockpit, 17/07): amarra a priorização por R$ ao
-    # combinado da semana — casamento HEURÍSTICO por palavras-chave do tipo do
-    # gargalo e por menção ao mesmo bundle nos objetivos CONFIRMADOS
-    _FOCO_KW = {"leads": ("lead",), "bookings": ("booking", "fechar", "vender", "meta"),
-                "ciclo": ("churn", "cancel", "reten"), "ponte": ("sla", "qualifica", "contato"),
-                "exec": ("execu", "atraso", "entrega"), "retencao": ("churn", "reten", "risco", "cancel"),
-                "conversao": ("convers", "reuni", "agend")}
-
     def _eh_foco(tipo, titulo, descr):
         if not foco_kw:
             return False
@@ -2050,30 +2096,22 @@ def _render_hub(role: str, st: dict, users: list[dict] | None = None,
                 return True
         return False
 
-    def _init_html(t, d, var, href, e, chave_j, tipo):
-        extra = ""
-        if e:
-            lo, hi = e["faixa"]
-            extra = (f"<div class='id_' style='margin-top:4px'><b style='color:var(--brand)'>"
-                     f"≈ {_fmt_brl(lo)}–{_fmt_brl(hi)}/mês em jogo</b> · potencial estimado, não promessa · "
-                     f"premissa: {escape(e['premissa'])} · {escape(_janela_txt(chave_j))}</div>")
-        elif chave_j:
-            extra = f"<div class='id_' style='margin-top:4px'>{escape(_janela_txt(chave_j))}</div>"
-        return (f"<a class='init' href='{href}' title='abrir os dados desta iniciativa'>"
-                f"<span class='sdot' style='--c:var({var})'></span>"
-                f"<div><div class='it'>{escape(t)}</div><div class='id_'>{escape(d)}</div>{extra}</div>"
-                f"<span class='ig'>→</span></a>")
-
     # fusão (17/07 noite): iniciativa que casa com um objetivo CONFIRMADO da
     # semana foi ABSORVIDA pelos cards de 'Prioridades da Semana' — o que sobra
     # é o horizonte maior que a semana (estrutural), num bloco menor
-    restantes = [x for x in decoradas if not _eh_foco(x[6], x[0], x[1])]
-    init_html = "".join(_init_html(*x) for x in restantes) \
-        or ("<div class='init'><div class='id_'>nenhuma iniciativa além das prioridades da semana — "
-            "os gargalos atuais já viraram objetivos confirmados</div></div>")
+    return [{"titulo": t, "descricao": d, "nivel": var[len("--status-"):], "href": href,
+             "faixa": list(e["faixa"]) if e else None,
+             "premissa": e["premissa"] if e else None,
+             "defasagem": _janela_txt(chave_j) if (e or chave_j) else None,
+             "tipo": tipo}
+            for t, d, var, href, e, chave_j, tipo in decoradas
+            if not _eh_foco(tipo, t, d)]
 
-    # ---- defasagem esperada (Integração Causal #4): protege decisão certa de
-    # ser revertida cedo demais — quando cobrar resultado de cada correção
+
+def _hub_defasagem_linhas(lags: dict | None) -> list[tuple[str, str]]:
+    """Defasagem esperada das correções (Integração Causal #4) — protege
+    decisão certa de ser revertida cedo demais. Extraída do `_render_hub`."""
+    lg = lags or {}
     lag_rows = []
     if lg.get("lead_book") is not None:
         lag_rows.append(("Mudança na geração/qualificação de leads → bookings",
@@ -2088,146 +2126,123 @@ def _render_hub(role: str, st: dict, users: list[dict] | None = None,
                          "precoces; datas de saída em granularidade de mês — leia como ordem de grandeza)"))
     lag_rows.append(("Execução atrasada → piora de faixa de risco",
                      "sem base histórica ainda — a série diária de risco começou em 14/07/26"))
-    defasagem_html = ("".join(
-        f"<div class='init'><span class='sdot' style='--c:var(--status-semdados)'></span>"
-        f"<div><div class='it' style='font-size:var(--fs-sm)'>{escape(a)}</div>"
-        f"<div class='id_'>{escape(b)}</div></div></div>" for a, b in lag_rows))
+    return lag_rows
 
-    # ---- cards-resumo por área (mini-painel com os números que importam)
-    def _num(v):
-        return f"{v:,.0f}".replace(",", ".")
 
-    def am(valor, rotulo, cor=None):
-        c = f" style='color:{cor}'" if cor else ""
-        return f"<div class=am><div class=av{c}>{valor}</div><div class=al>{rotulo}</div></div>"
+def _m(rotulo: str, valor, formato: str = "num", meta=None, tom=None, texto=None) -> dict:
+    """Uma métrica de card de área — VALOR CRU + como formatar e colorir.
+    O HTML e o SPA renderizam a partir daqui (nenhum dos dois decide o que
+    entra em qual card)."""
+    return {"rotulo": rotulo, "valor": valor, "formato": formato,
+            "meta": meta, "tom": tom, "texto": texto}
 
-    def vs_meta(real, meta_v, frac, pior_menor=True):
-        """valor real/meta colorido pelo ritmo do mês (verde = no ritmo)."""
-        if not meta_v:
-            return _num(real), None
-        pct = real / meta_v
-        ok = (pct >= frac) if pior_menor else (pct <= 1.0)
-        cor = "var(--status-baixo)" if ok else "var(--status-critico)"
-        return (f"{_num(real)}<span style='color:var(--text-faint);font-size:14px'>"
-                f"/{_num(meta_v)}</span>"), cor
 
-    def chip_area(area):
-        var, lbl, _ = _NIVEL[saude[area][0]]
-        return _chip(lbl, var, dot=True)
+def _tom_ritmo(real, meta_v, frac) -> str | None:
+    """verde quando o realizado acompanha o ritmo do mês; vermelho quando não."""
+    if not meta_v:
+        return None
+    return "ok" if (real / meta_v) >= (frac or 0) else "critico"
 
-    g_det = (f"{crit} críticos · {st['sev'].get('alto', 0)} altos · "
-             f"{st['sev'].get('atencao', 0)} atenção · {st['non_eval']} sem cobertura")
-    growth_card = (
-        "<a class='area big' href='/growth'><div class=ahead>"
-        f"<div class=an>Growth / Assessoria</div>{chip_area('growth')}</div>"
-        "<div class=agrid>"
-        + am(_num(st["monitored"]), "contas monitoradas")
-        + am(_num(n_alerts), "alertas abertos", "var(--status-critico)" if n_alerts else None)
-        + am(_fmt_brl(st["mrr_risk"]), "MRR em risco", "var(--status-alto)" if st["mrr_risk"] else None)
-        + am(_num(st["exec_late"]), "execução crítica", "var(--status-medio)" if st["exec_late"] else None)
-        + f"</div><div class=ad>{escape(g_det)}</div></a>")
 
-    # cards COMPLEMENTARES entre áreas (Otávio 16/07: sem número repetido) —
-    # bookings/receita ficam SÓ em Vendas; Marketing = aquisição + eficiência
-    # (CAC no lugar de bookings); PV = qualificação + fila; Financeiro = caixa
+def _hub_area_cards(st: dict, mkt: dict | None, sales: dict | None,
+                    ops: dict | None, saude: dict) -> list[dict]:
+    """Cards COMPACTOS por área (bloco 6 da Central) em dados.
+
+    Extraído do `_render_hub` (22/07) porque a Central do SPA transformou os
+    cards em seções grandes e perdeu a leitura de relance. A composição dos
+    cards é COMPLEMENTAR (Otávio 16/07: sem número repetido entre áreas) —
+    bookings/receita só em Vendas, Marketing = aquisição + eficiência, PV =
+    qualificação + fila, Financeiro = caixa/estrutura."""
+    n_alerts = sum(st["sev"].values())
+    crit = st["sev"].get("critico", 0)
+    frac = mkt["frac"] if mkt else 1.0
+
+    def card(area, nome, href, metricas, detalhe, nivel=None, rotulo=None):
+        nv = nivel or (saude[area][0] if area in saude else "verde")
+        return {"area": area, "nome": nome, "href": href, "nivel": nv,
+                "nivel_label": rotulo or _NIVEL[nv][1],
+                "metricas": metricas, "detalhe": detalhe}
+
+    cards = [card("growth", "Growth / Assessoria", "/growth", [
+        _m("contas monitoradas", st["monitored"]),
+        _m("alertas abertos", n_alerts, tom="critico" if n_alerts else None),
+        _m("MRR com alerta aberto", st["mrr_risk"], "brl",
+           tom="alto" if st["mrr_risk"] else None),
+        _m("execução crítica", st["exec_late"], tom="medio" if st["exec_late"] else None),
+    ], f"{crit} críticos · {st['sev'].get('alto', 0)} altos · "
+       f"{st['sev'].get('atencao', 0)} atenção · {st['non_eval']} sem cobertura")]
+
     if mkt:
-        v_leads, c_leads = vs_meta(mkt["leads"], mkt.get("leads_meta"), mkt["frac"])
-        v_oport, c_oport = vs_meta(mkt["oport"], mkt.get("oport_meta"), mkt["frac"])
-        gasto_txt = _fmt_brl(mkt["gasto"])
-        c_gasto = None
-        if mkt.get("verba"):
-            c_gasto = "var(--status-baixo)" if mkt["gasto"] <= mkt["verba"] else "var(--status-critico)"
-            gasto_txt += (f"<span style='color:var(--text-faint);font-size:14px'>"
-                          f"/{_fmt_brl(mkt['verba'])}</span>")
         cpl_txt = ""
         if mkt.get("cpl") is not None:
             cpl_txt = f" · CPL {_fmt_brl(mkt['cpl'])}"
             if mkt.get("cpl_alvo"):
                 cpl_txt += f" (alvo {_fmt_brl(mkt['cpl_alvo'])})"
-        m_det = (f"mês {mkt['mes'].strftime('%m-%Y')} · ritmo esperado {mkt['frac'] * 100:.0f}%"
-                 + cpl_txt + " · bookings e receita no card de Vendas")
-        cac_txt = _fmt_brl(mkt["cac"]) if mkt.get("cac") is not None else "—"
-        mkt_card = (
-            "<a class='area big' href='/marketing'><div class=ahead>"
-            f"<div class=an>Marketing</div>{chip_area('marketing')}</div>"
-            "<div class=agrid>"
-            + am(v_leads, "leads no mês", c_leads)
-            + am(v_oport, "oportunidades", c_oport)
-            + am(gasto_txt, "gasto mídia/verba", c_gasto)
-            + am(cac_txt, "CAC do mês (gasto ÷ contratos)")
-            + f"</div><div class=ad>{escape(m_det)}</div></a>")
+        cards.append(card("marketing", "Marketing", "/marketing", [
+            _m("leads no mês", mkt["leads"], meta=mkt.get("leads_meta"),
+               tom=_tom_ritmo(mkt["leads"], mkt.get("leads_meta"), frac)),
+            _m("oportunidades", mkt["oport"], meta=mkt.get("oport_meta"),
+               tom=_tom_ritmo(mkt["oport"], mkt.get("oport_meta"), frac)),
+            _m("gasto mídia/verba", mkt["gasto"], "brl", meta=mkt.get("verba"),
+               tom=None if not mkt.get("verba")
+               else ("ok" if mkt["gasto"] <= mkt["verba"] else "critico")),
+            _m("CAC do mês (gasto ÷ contratos)", mkt.get("cac"), "brl"),
+        ], f"mês {mkt['mes'].strftime('%m-%Y')} · ritmo esperado {frac * 100:.0f}%"
+           + cpl_txt + " · bookings e receita no card de Vendas"))
     else:
-        mkt_card = ("<a class='area big' href='/marketing'><div class=ahead>"
-                    f"<div class=an>Marketing</div>{chip_area('marketing')}</div>"
-                    "<div class=ad>tráfego pago, leads, funil e planejador — sem cache do mês "
-                    "(rode o sync de marketing)</div></a>")
+        cards.append(card("marketing", "Marketing", "/marketing", [],
+                          "tráfego pago, leads, funil e planejador — sem cache do mês "
+                          "(rode o sync de marketing)"))
 
     if sales:
-        taxa_txt = f"{sales['taxa'] * 100:.1f}%" if sales["taxa"] is not None else "—"
-        c_taxa = None
-        if sales["taxa"] is not None and sales["taxa_ant"]:
-            c_taxa = ("var(--status-baixo)" if sales["taxa"] >= sales["taxa_ant"] * 0.95
-                      else "var(--status-critico)")
         speed_txt = "—"
         if sales["speed_med"] is not None:
-            m = sales["speed_med"]
-            speed_txt = f"{m:.0f} min" if m < 120 else f"{m / 60:.1f} h"
-        fila_txt = _num(sales["sem_toque"]) if sales["tem_touch"] else "—"
-        c_fila = ("var(--status-critico)" if sales["tem_touch"] and sales["leads"]
-                  and sales["sem_toque"] / sales["leads"] > 0.3 else None)
-        pv_card = (
-            "<a class='area big' href='/prevendas'><div class=ahead>"
-            f"<div class=an>Pré-vendas</div>{chip_area('prevendas')}</div>"
-            "<div class=agrid>"
-            + am(_num(sales["reunioes"]), "SQLs (agendaram)")
-            + am(taxa_txt, "lead→SQL", c_taxa)
-            + am(speed_txt, "1º contato (mediana)",
-                 "var(--status-critico)" if (sales["speed_med"] or 0) > 60 else None)
-            + am(fila_txt, "leads sem 1º contato", c_fila)
-            + f"</div><div class=ad>{escape(saude['prevendas'][1])} · leads do mês no card de Marketing</div></a>")
-        v_bk, c_bk = vs_meta(sales["book"], sales.get("book_meta"), mkt["frac"] if mkt else 1.0)
-        rec_txt = _fmt_brl(sales["receita"])
-        if sales.get("receita_meta"):
-            rec_txt += (f"<span style='color:var(--text-faint);font-size:14px'>"
-                        f"/{_fmt_brl(sales['receita_meta'])}</span>")
-        ticket_txt = _fmt_brl(sales["receita"] / sales["book"]) if sales["book"] else "—"
-        vd_card = (
-            "<a class='area big' href='/vendas'><div class=ahead>"
-            f"<div class=an>Vendas</div>{chip_area('vendas')}</div>"
-            "<div class=agrid>"
-            + am(v_bk, "bookings no mês", c_bk)
-            + am(rec_txt, "receita/meta")
-            + am(ticket_txt, "ticket médio do mês")
-            + am(_num(sales["pipeline"]), "deals abertos no pipe")
-            + f"</div><div class=ad>{escape(saude['vendas'][1])}</div></a>")
+            _s = sales["speed_med"]
+            speed_txt = f"{_s:.0f} min" if _s < 120 else f"{_s / 60:.1f} h"
+        fila_alta = (sales["tem_touch"] and sales["leads"]
+                     and sales["sem_toque"] / sales["leads"] > 0.3)
+        cards.append(card("prevendas", "Pré-vendas", "/prevendas", [
+            _m("SQLs (agendaram)", sales["reunioes"]),
+            _m("lead→SQL", sales["taxa"], "pct1",
+               tom=None if not (sales["taxa"] is not None and sales["taxa_ant"])
+               else ("ok" if sales["taxa"] >= sales["taxa_ant"] * 0.95 else "critico")),
+            _m("1º contato (mediana)", sales["speed_med"], texto=speed_txt,
+               tom="critico" if (sales["speed_med"] or 0) > 60 else None),
+            _m("leads sem 1º contato", sales["sem_toque"] if sales["tem_touch"] else None,
+               tom="critico" if fila_alta else None),
+        ], f"{saude['prevendas'][1]} · leads do mês no card de Marketing"))
+        cards.append(card("vendas", "Vendas", "/vendas", [
+            _m("bookings no mês", sales["book"], meta=sales.get("book_meta"),
+               tom=_tom_ritmo(sales["book"], sales.get("book_meta"), frac)),
+            _m("receita/meta", sales["receita"], "brl", meta=sales.get("receita_meta")),
+            _m("ticket médio do mês", (sales["receita"] / sales["book"]) if sales["book"] else None, "brl"),
+            _m("deals abertos no pipe", sales["pipeline"]),
+        ], saude["vendas"][1]))
     else:
-        pv_card = ("<a class='area' href='/prevendas'><div class=ahead>"
-                   f"<div class=an>Pré-vendas</div>{chip_area('prevendas')}</div>"
-                   "<div class=ad>funil de qualificação, speed-to-lead e planos por SDR — do lead à reunião agendada</div></a>")
-        vd_card = ("<a class='area' href='/vendas'><div class=ahead>"
-                   f"<div class=an>Vendas</div>{chip_area('vendas')}</div>"
-                   "<div class=ad>Oportunidade→Booking, win/loss, ciclo, forecast e planos por closer</div></a>")
+        cards.append(card("prevendas", "Pré-vendas", "/prevendas", [],
+                          "funil de qualificação, speed-to-lead e planos por SDR — "
+                          "do lead à reunião agendada"))
+        cards.append(card("vendas", "Vendas", "/vendas", [],
+                          "Oportunidade→Booking, win/loss, ciclo, forecast e planos por closer"))
+
     if ops:
-        c_atras = "var(--status-critico)" if ops["atras"] else None
-        op_card = (
-            "<a class='area big' href='/operacoes'><div class=ahead>"
-            f"<div class=an>Operações</div>{_chip('ativa', '--status-baixo')}</div>"
-            "<div class=agrid>"
-            + am(_num(ops["total"]), f"iniciativas no Q{ops['quarter']}")
-            + am(_num(ops["atras"]), "atrasadas", c_atras)
-            + am(_num(ops["ok"]), "concluídas")
-            + am(f"{ops['progresso']:.0f}%", "progresso")
-            + "</div><div class=ad>iniciativas por área da empresa (Notion) — semáforo de prazo e KPIs vs meta trimestral</div></a>")
+        cards.append(card("operacoes", "Operações", "/operacoes", [
+            _m(f"iniciativas no Q{ops['quarter']}", ops["total"]),
+            _m("atrasadas", ops["atras"], tom="critico" if ops["atras"] else None),
+            _m("concluídas", ops["ok"]),
+            _m("progresso", ops["progresso"], "pctp"),
+        ], "iniciativas por área da empresa (Notion) — semáforo de prazo e KPIs vs meta trimestral",
+            nivel="verde", rotulo="ativa"))
     else:
-        op_card = ("<a class='area' href='/operacoes'><div class=ahead>"
-                   f"<div class=an>Operações</div>{_chip('ativa', '--status-baixo')}</div>"
-                   "<div class=ad>iniciativas por área da empresa (Notion) — semáforo de prazo e dependências por trimestre</div></a>")
+        cards.append(card("operacoes", "Operações", "/operacoes", [],
+                          "iniciativas por área da empresa (Notion) — semáforo de prazo e "
+                          "dependências por trimestre", nivel="verde", rotulo="ativa"))
+
     # ---- card Financeiro no MESMO molde das outras áreas (15/07): realizado
     # ao vivo × meta da planilha, colorido pelo ritmo do mês
-    fin_card = ("<a class='area big' href='/financeiro'><div class=ahead>"
-                f"<div class=an>Financeiro</div>{_chip('ativa', '--status-baixo')}</div>"
-                "<div class=ad>planejamento × realizado — recebimento, bookings vs meta, "
-                "funil projetado e receita recorrente</div></a>")
+    fin = card("financeiro", "Financeiro", "/financeiro", [],
+               "planejamento × realizado — recebimento, bookings vs meta, "
+               "funil projetado e receita recorrente", nivel="verde", rotulo="ativa")
     try:
         from .sources import planejamento_financeiro as _PF
         _fin = _PF.carrega()
@@ -2246,48 +2261,146 @@ def _render_hub(role: str, st: dict, users: list[dict] | None = None,
             # chip pelo ritmo da receita × meta (o NÚMERO em si fica no card de
             # Vendas — aqui é caixa/estrutura, sem repetir bookings; 16/07)
             _no_ritmo = (_rec_live / _mb >= _frac) if (_rec_live is not None and _mb) else None
-            _chip_fin = (_chip("no ritmo", "--status-baixo") if _no_ritmo
-                         else _chip("atrás da meta", "--status-alto") if _no_ritmo is not None
-                         else _chip("ativa", "--status-baixo"))
-            fin_card = ("<a class='area big' href='/financeiro'><div class=ahead>"
-                        f"<div class=an>Financeiro</div>{_chip_fin}</div>"
-                        "<div class=agrid>"
-                        + am(_fmt_brl(_mr) if _mr else "—", "recebimento projetado do mês")
-                        + am(f"{_rec_pct * 100:.0f}%" if _rec_pct is not None else "—", "% recorrente projetado")
-                        + am(f"{_inad * 100:.1f}%" if _inad is not None else "—", "inadimplência alvo",
-                             None if _inad is None else ("var(--status-baixo)" if _inad <= 0.04 else
-                                                         "var(--status-medio)" if _inad <= 0.08 else "var(--status-critico)"))
-                        + am(f"{_isr:,.0f}".replace(",", ".") if _isr is not None else "—", "ISR B2-B5 (≥100 = crescendo)",
-                             None if _isr is None else ("var(--status-baixo)" if _isr >= 100 else "var(--status-critico)"))
-                        + f"</div><div class=ad>ritmo esperado {_frac * 100:.0f}% do mês · chip = receita × meta (número no card de Vendas) · "
-                          "receita recorrente na aba própria</div></a>")
+            fin = card("financeiro", "Financeiro", "/financeiro", [
+                _m("recebimento projetado do mês", _mr or None, "brl"),
+                _m("% recorrente projetado", _rec_pct, "pct0"),
+                _m("inadimplência alvo", _inad, "pct1",
+                   tom=None if _inad is None else
+                   ("ok" if _inad <= 0.04 else "medio" if _inad <= 0.08 else "critico")),
+                _m("ISR B2-B5 (≥100 = crescendo)", _isr,
+                   tom=None if _isr is None else ("ok" if _isr >= 100 else "critico")),
+            ], f"ritmo esperado {_frac * 100:.0f}% do mês · chip = receita × meta "
+               "(número no card de Vendas) · receita recorrente na aba própria",
+                nivel="verde" if _no_ritmo else ("alto" if _no_ritmo is not None else "verde"))
+            if _no_ritmo is not None:
+                fin["nivel_label"] = "no ritmo" if _no_ritmo else "atrás da meta"
+            else:
+                fin["nivel_label"] = "ativa"
     except Exception:  # noqa: BLE001 — planilha fora não derruba a central
         pass
-    area_cards = growth_card + mkt_card + pv_card + vd_card + op_card + fin_card
+    cards.append(fin)
+    return cards
+
+
+def _hub_kpis(st: dict, mkt: dict | None, sales: dict | None) -> list[dict]:
+    """Números-chave do mês (bloco 3): retenção (Growth) + aquisição
+    (Marketing/Vendas). Extraído do `_render_hub` — faltava no SPA."""
+    n_alerts = sum(st["sev"].values())
+    kpis = [
+        _m("Contas monitoradas", st["monitored"]),
+        _m("Alertas abertos", n_alerts, tom="critico" if n_alerts else None),
+        # rótulo decidido em 21/07 (Lote 1): a régua É contas com alerta aberto
+        # — a definição vai no RÓTULO, não numa nota de rodapé
+        _m("MRR com alerta aberto", st["mrr_risk"], "brl",
+           tom="alto" if st["mrr_risk"] else None),
+    ]
+    frac = mkt["frac"] if mkt else 1.0
+    if mkt and mkt.get("leads_meta"):
+        kpis.append(_m("Leads no mês", mkt["leads"], meta=mkt["leads_meta"],
+                       tom=_tom_ritmo(mkt["leads"], mkt["leads_meta"], frac)))
+    if mkt and mkt.get("book_meta"):
+        kpis.append(_m("Bookings no mês", mkt["book"], meta=mkt["book_meta"],
+                       tom=_tom_ritmo(mkt["book"], mkt["book_meta"], frac)))
+    if sales:
+        kpis.append(_m("Receita no mês", sales["receita"], "brl",
+                       tom=None if not sales.get("receita_meta") else
+                       ("ok" if mkt and sales["receita"] / sales["receita_meta"] >= frac
+                        else "critico")))
+    if len(kpis) == 3:
+        kpis.append(_m("Áreas ativas", 6, meta=6))
+    return kpis
+
+
+def _render_hub(role: str, st: dict, users: list[dict] | None = None,
+                mkt: dict | None = None, page: str = "home",
+                llm: dict | None = None, sales: dict | None = None,
+                teams_html: str = "", ops: dict | None = None,
+                mudancas: str = "", body_override: str | None = None,
+                active_page: str = "", impactos: dict | None = None,
+                lags: dict | None = None, foco_html: str = "",
+                raiox_mini: str = "", foco_kw: list[str] | None = None) -> str:
+    n_alerts = sum(st["sev"].values())
+    crit = st["sev"].get("critico", 0)
+    saude = _hub_saude(st, mkt, sales)
+    pior = max(saude, key=lambda k: _NIVEL[saude[k][0]][2])
+    pior_nv = saude[pior][0]
+
+    def _init_html(it):
+        extra = ""
+        if it["faixa"]:
+            lo, hi = it["faixa"]
+            extra = (f"<div class='id_' style='margin-top:4px'><b style='color:var(--brand)'>"
+                     f"≈ {_fmt_brl(lo)}–{_fmt_brl(hi)}/mês em jogo</b> · potencial estimado, não promessa · "
+                     f"premissa: {escape(it['premissa'])} · {escape(it['defasagem'] or '')}</div>")
+        elif it["defasagem"]:
+            extra = f"<div class='id_' style='margin-top:4px'>{escape(it['defasagem'])}</div>"
+        return (f"<a class='init' href='{it['href']}' title='abrir os dados desta iniciativa'>"
+                f"<span class='sdot' style='--c:var(--status-{it['nivel']})'></span>"
+                f"<div><div class='it'>{escape(it['titulo'])}</div>"
+                f"<div class='id_'>{escape(it['descricao'])}</div>{extra}</div>"
+                f"<span class='ig'>→</span></a>")
+
+    init_html = "".join(_init_html(x) for x in
+                        _hub_horizonte(st, mkt, sales, impactos, lags, foco_kw)) \
+        or ("<div class='init'><div class='id_'>nenhuma iniciativa além das prioridades da semana — "
+            "os gargalos atuais já viraram objetivos confirmados</div></div>")
+    defasagem_html = ("".join(
+        f"<div class='init'><span class='sdot' style='--c:var(--status-semdados)'></span>"
+        f"<div><div class='it' style='font-size:var(--fs-sm)'>{escape(a)}</div>"
+        f"<div class='id_'>{escape(b)}</div></div></div>"
+        for a, b in _hub_defasagem_linhas(lags)))
+
+    # ---- cards-resumo por área: HTML renderizado a partir de _hub_area_cards
+    # (a COMPOSIÇÃO dos cards vive lá; aqui é só formatação)
+    def _num(v):
+        return f"{v:,.0f}".replace(",", ".")
+
+    _TOM = {"ok": "var(--status-baixo)", "medio": "var(--status-medio)",
+            "alto": "var(--status-alto)", "critico": "var(--status-critico)"}
+
+    def _mval(m):
+        def one(v):
+            if v is None:
+                return "—"
+            f = m["formato"]
+            if f == "brl":
+                return _fmt_brl(v)
+            if f == "pct1":
+                return f"{v * 100:.1f}%"
+            if f == "pct0":
+                return f"{v * 100:.0f}%"
+            if f == "pctp":
+                return f"{v:.0f}%"
+            return _num(v)
+        if m["texto"] is not None:
+            return escape(m["texto"])
+        s = one(m["valor"])
+        if m["meta"] is not None and m["valor"] is not None:
+            s += (f"<span style='color:var(--text-faint);font-size:14px'>"
+                  f"/{one(m['meta'])}</span>")
+        return s
+
+    def am(m):
+        c = _TOM.get(m["tom"])
+        return (f"<div class=am><div class=av{f' style="color:{c}"' if c else ''}>{_mval(m)}</div>"
+                f"<div class=al>{escape(m['rotulo'])}</div></div>")
+
+    area_cards = ""
+    for cd in _hub_area_cards(st, mkt, sales, ops, saude):
+        grid = ("<div class=agrid>" + "".join(am(m) for m in cd["metricas"]) + "</div>"
+                if cd["metricas"] else "")
+        area_cards += (
+            f"<a class='area{' big' if cd['metricas'] else ''}' href='{cd['href']}'>"
+            f"<div class=ahead><div class=an>{escape(cd['nome'])}</div>"
+            f"{_chip(cd['nivel_label'], _NIVEL[cd['nivel']][0], dot=True)}</div>"
+            f"{grid}<div class=ad>{escape(cd['detalhe'])}</div></a>")
 
     # ---- KPIs do topo: retenção (Growth) + aquisição (Marketing)
-    kpis = [
-        (_num(st["monitored"]), "Contas monitoradas", None),
-        (_num(n_alerts), "Alertas abertos", "var(--status-critico)" if n_alerts else None),
-        (_fmt_brl(st["mrr_risk"]), "MRR em risco", "var(--status-alto)" if st["mrr_risk"] else None),
-    ]
-    if mkt and mkt.get("leads_meta"):
-        v, c = vs_meta(mkt["leads"], mkt["leads_meta"], mkt["frac"])
-        kpis.append((v, "Leads no mês", c))
-    if mkt and mkt.get("book_meta"):
-        v, c = vs_meta(mkt["book"], mkt["book_meta"], mkt["frac"])
-        kpis.append((v, "Bookings no mês", c))
-    if sales:
-        kpis.append((_fmt_brl(sales["receita"]), "Receita no mês",
-                     None if not sales.get("receita_meta") else
-                     ("var(--status-baixo)" if mkt and sales["receita"] / sales["receita_meta"] >= mkt["frac"]
-                      else "var(--status-critico)")))
-    if len(kpis) == 3:
-        kpis.append(("6<span style='color:var(--text-faint);font-size:18px'>/6</span>",
-                     "Áreas ativas", None))
     kpi_html = "".join(
-        f"<div class=kpi><div class=n{f' style=\"color:{c}\"' if c else ''}>{v}</div>"
-        f"<div class=l>{lbl}</div></div>" for v, lbl, c in kpis)
+        f"<div class=kpi><div class=n{f' style="color:{_TOM[k['tom']]}"' if k['tom'] else ''}>"
+        f"{_mval(k)}</div>"
+        f"<div class=l>{escape(k['rotulo'])}</div></div>"
+        for k in _hub_kpis(st, mkt, sales))
 
     # ---- faixa de saúde por área (pior primeiro = onde olhar agora)
     hbar = ""
