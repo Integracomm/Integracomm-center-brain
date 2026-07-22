@@ -2013,8 +2013,8 @@ def _vd_ponte(conn, request: Request, area: str = "vendas") -> str:
             "<section><h2>Por tempo de qualificação</h2><p class=secsub>dias entre o lead entrar e virar oportunidade</p>"
             + tabela(tempo, "Lead → oportunidade", ["qualificou em ≤2 dias", "3-7 dias", "mais de 7 dias"]) + "</section>"
             "<section><h2>Por origem do lead</h2>" + tabela(origem, "Origem") + "</section>"
-            "<section><h2>Por SDR que qualificou</h2><p class=secsub>separa 'quem qualifica mal'…</p>" + tabela(sdr, "SDR") + "</section>"
-            "<section><h2>Por closer</h2><p class=secsub>…de 'quem fecha mal'</p>" + tabela(closer, "Closer") + "</section>")
+            "<section><h2>Por SDR que qualificou</h2><p class=secsub>a taxa de fechamento das oportunidades entregues por cada SDR — mede a qualidade da entrega, não o volume</p>" + tabela(sdr, "SDR") + "</section>"
+            "<section><h2>Por closer</h2><p class=secsub>a mesma qualificação nas mãos de cada closer — o outro lado da ponte</p>" + tabela(closer, "Closer") + "</section>")
 
 
 def _vd_horarios(conn, request: Request) -> str:

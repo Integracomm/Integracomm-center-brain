@@ -128,12 +128,12 @@ export function VendasPontePage() {
           <div className="grid gap-6 xl:grid-cols-2">
             <SectionCard hint={<Hint area="vendas/ponte" titulo="Por SDR que qualificou" />}
               headerClassName="min-h-[56px]" title="Por SDR que qualificou"
-              subtitle="separa 'quem qualifica mal'…">
+              subtitle="a taxa de fechamento das oportunidades entregues por cada SDR — qualidade da entrega, não volume">
               <SegTable rotulo="SDR" itens={d.por_sdr} />
             </SectionCard>
             <SectionCard hint={<Hint area="vendas/ponte" titulo="Por closer" />}
               headerClassName="min-h-[56px]" title="Por closer"
-              subtitle="…de 'quem fecha mal'">
+              subtitle="a mesma qualificação nas mãos de cada closer — o outro lado da ponte">
               <SegTable rotulo="Closer" itens={d.por_closer} />
             </SectionCard>
           </div>
