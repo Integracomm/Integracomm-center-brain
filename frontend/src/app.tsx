@@ -137,7 +137,16 @@ function Shell({ children }: { children: React.ReactNode }) {
     : NAV.filter((n) => (area === "/app" ? n.href === "/app" : n.href.startsWith(`${area}?`)));
   const viewPadrao = area === "/prevendas" || area === "/vendas" ? "funil"
     : area === "/marketing" || area === "/financeiro" ? "visao" : "contas";
-  const atual = `${area}?view=${params.get("view") ?? viewPadrao}`;
+  const viewAtual = params.get("view") ?? viewPadrao;
+  // Marcador de "onde estou" (Otávio 22/07): compara ROTA + view, e vale
+  // também para as páginas ainda em HTML — antes só item do SPA acendia, e a
+  // Central (/) nunca acendia porque comparava contra "/?view=…".
+  const ehAtiva = (href: string) => {
+    const [rota, qs] = href.split("?");
+    if (rota !== area) return false;
+    const v = new URLSearchParams(qs ?? "").get("view");
+    return v ? v === viewAtual : true;
+  };
   return (
     <div className="flex min-h-screen bg-background text-foreground">
       <aside className="flex w-60 shrink-0 flex-col border-r border-border bg-sidebar p-4">
@@ -145,12 +154,13 @@ function Shell({ children }: { children: React.ReactNode }) {
           <span className="inline-block h-6 w-6 rounded-full bg-primary" />
           <span className="font-display text-sm font-bold">Integracomm IA</span>
         </div>
-        <nav className="flex flex-1 flex-col gap-1">
+        {/* itens COLADOS dentro do grupo e respiro MAIOR entre grupos — antes
+            a distância entre irmãos passava da distância entre blocos */}
+        <nav className="flex flex-1 flex-col">
           {itens.map((n) => {
-            const ativa = n.spa && (n.href === atual || (n.href === "/app" && window.location.pathname === "/app"));
-            // espaçamento enxugado (Otávio 22/07: "mal espaçado")
+            const ativa = ehAtiva(n.href);
             const cab = n.grupo ? (
-              <div key={`g-${n.grupo}`} className="mb-0.5 mt-3 px-3 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/60 first:mt-0">
+              <div key={`g-${n.grupo}`} className="mb-1 mt-6 px-3 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/60 first:mt-0">
                 {n.grupo}
               </div>
             ) : null;
@@ -160,9 +170,11 @@ function Shell({ children }: { children: React.ReactNode }) {
             return (
               <span key={n.href} className="contents">
               {cab}
-              <a href={n.href}
-                className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
-                  ativa ? "bg-primary/10 text-primary"
+              <a href={n.href} aria-current={ativa ? "page" : undefined}
+                className={`rounded-lg py-1.5 pl-3 pr-3 text-sm font-medium transition-colors ${
+                  ativa
+                    // acento dourado à esquerda, como no painel HTML
+                    ? "border-l-2 border-primary bg-primary/10 pl-[10px] text-primary"
                     : "text-muted-foreground hover:bg-muted hover:text-foreground"
                 }`}>
                 {n.label}{!n.spa && <span className="ml-1 text-[10px] text-muted-foreground/60">(HTML)</span>}
