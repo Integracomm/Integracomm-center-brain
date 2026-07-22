@@ -21,6 +21,13 @@ export interface HeatmapProps {
   color?: string;               // default: var(--destructive)
   // Formatação do valor dentro da célula. Vazio ("") esconde o rótulo.
   valueLabel?: (v: number) => string;
+  // 2ª linha DENTRO da célula, menor e apagada — para quando o valor principal
+  // é relativo e sozinho engana (ex.: % de atendimento sobre 3 ligações).
+  // Devolver null/"" omite a linha naquela célula.
+  subLabel?: (cell: HeatmapCell) => string | null;
+  // Célula mais alta. Precisa ser LIGADA NOS DOIS mapas quando eles ficam lado
+  // a lado: um mapa com `subLabel` e o outro sem desalinharia as linhas.
+  tall?: boolean;
   // Tooltip: texto completo (row × col + contexto).
   tooltipLabel?: (cell: HeatmapCell) => string;
   // Rótulo curto acima da legenda (ex.: "% de perdas", "leads").
@@ -48,6 +55,8 @@ export function Heatmap({
   scale,
   color = "var(--destructive)",
   valueLabel = (v) => v.toLocaleString("pt-BR"),
+  subLabel,
+  tall = false,
   tooltipLabel,
   legendLabel,
   rowLabelWidth = 160,
@@ -131,6 +140,7 @@ export function Heatmap({
                     v == null
                       ? "var(--muted)"
                       : `color-mix(in oklab, ${color} ${Math.round(alpha * 100)}%, transparent)`;
+                  const sub = cell && v != null && subLabel ? subLabel(cell) : null;
                   const tooltipText =
                     tooltipLabel && cell
                       ? tooltipLabel(cell)
@@ -141,7 +151,7 @@ export function Heatmap({
                     <Tooltip key={`${row}-${col}`}>
                       <TooltipTrigger asChild>
                         <div
-                          className={`relative ${dense ? "h-8 text-[10px]" : "h-10 text-xs"} rounded-md flex items-center justify-center font-medium tabular-nums cursor-default border border-border/40`}
+                          className={`relative ${dense ? (tall ? "h-11" : "h-8") + " text-[10px]" : (tall ? "h-12" : "h-10") + " text-xs"} rounded-md flex flex-col items-center justify-center leading-tight font-medium tabular-nums cursor-default border border-border/40`}
                           style={{
                             background: bg,
                             boxShadow: pico ? `inset 0 0 0 1.5px ${color}` : undefined,
@@ -154,7 +164,12 @@ export function Heatmap({
                           {v == null ? (
                             <span className="text-muted-foreground/60">—</span>
                           ) : (
-                            <span className="text-foreground">{valueLabel(v)}</span>
+                            <>
+                              <span className="text-foreground">{valueLabel(v)}</span>
+                              {sub && (
+                                <span className="text-[9px] font-normal text-foreground/55">{sub}</span>
+                              )}
+                            </>
                           )}
                         </div>
                       </TooltipTrigger>

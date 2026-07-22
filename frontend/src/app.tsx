@@ -170,8 +170,8 @@ function Shell({ children }: { children: React.ReactNode }) {
             const ativa = ehAtiva(n.href);
             const cab = n.grupo ? (
               <div key={`g-${n.grupo}`}
-                className={`mb-1 px-3 text-[10px] font-semibold uppercase tracking-widest text-primary/75 ${
-                  i === 0 ? "" : "mt-7"
+                className={`mb-1.5 px-3 text-[10px] font-semibold uppercase tracking-widest text-primary/75 ${
+                  i === 0 ? "" : "mt-8"
                 }`}>
                 {n.grupo}
               </div>
@@ -183,7 +183,7 @@ function Shell({ children }: { children: React.ReactNode }) {
               <span key={n.href} className="contents">
               {cab}
               <a href={n.href} aria-current={ativa ? "page" : undefined}
-                className={`rounded-lg py-1 pl-3 pr-3 text-sm font-medium transition-colors ${
+                className={`rounded-lg py-1.5 pl-3 pr-3 text-sm font-medium transition-colors ${
                   ativa
                     // acento dourado à esquerda, como no painel HTML
                     ? "border-l-2 border-primary bg-primary/10 pl-[10px] text-primary"

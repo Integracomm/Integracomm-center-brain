@@ -35,10 +35,15 @@ if ($dirty) {
 # INCIDENTE 22/07: o build do SPA rodava DENTRO do servidor (estagio bun no
 # Dockerfile) e derrubou a instancia por falta de RAM — o build do Docker NAO
 # respeita mem_limit. Desde entao o dist e buildado AQUI e viaja no pacote.
-Write-Host "== [1/4] buildando o frontend LOCALMENTE ==" -ForegroundColor Cyan
+Write-Host "== [1/4] checando tipos e buildando o frontend LOCALMENTE ==" -ForegroundColor Cyan
 $bun = "$env:USERPROFILE\.bun\bin\bun.exe"
 if (-not (Test-Path $bun)) { throw "bun nao encontrado em $bun (necessario p/ buildar o SPA antes do deploy)." }
 Push-Location (Join-Path $root "frontend")
+# `vite build` NAO checa tipos: em 22/07 uma variavel removida passou pelo build
+# e deixou a tela de Melhor Horario EM BRANCO (ReferenceError so em runtime). O
+# typecheck e o unico passo que pega isso — roda antes e aborta o deploy.
+& $bun run typecheck
+if ($LASTEXITCODE -ne 0) { Pop-Location; throw "typecheck do frontend falhou - deploy abortado." }
 & $bun run build
 $okBuild = $LASTEXITCODE -eq 0
 Pop-Location

@@ -107,6 +107,17 @@ export function MelhorHorarioPage() {
       .map((c) => ({ rot: `${DOW[c.dow]} ${String(c.hora).padStart(2, "0")}h`, v: `${c.n} agendamento(s)` }));
   }, [d]);
 
+  // EIXO DE HORAS ÚNICO para os dois mapas por origem (Otávio 22/07: um ia até
+  // 19h e o outro até 20h, o que quebrava a leitura lado a lado). É a união das
+  // horas com dado real nos dois — não uma faixa fixa, para não criar coluna
+  // vazia dos dois lados.
+  const horasOrigem = useMemo(() => {
+    if (!d) return [] as number[];
+    const hs = new Set<number>(d.atendimento.map((r) => r.hora));
+    for (const cels of Object.values(d.por_origem)) for (const c of cels) hs.add(c.hora);
+    return [...hs].sort((a, b) => a - b);
+  }, [d]);
+
   // ATENDIMENTO por origem × hora (Otávio 22/07: 'que horas os leads de meta
   // atendem mais ligações?'): das ligações feitas para leads de cada canal
   // naquela hora, % que o lead ATENDEU. Desfecho vem da telefonia (subject);
@@ -123,16 +134,15 @@ export function MelhorHorarioPage() {
     const totLig = (m: Map<number, { a: number; l: number }>) =>
       [...m.values()].reduce((s, v) => s + v.l, 0);
     const rows = [...porCanal.keys()].sort((x, y) => totLig(porCanal.get(y)!) - totLig(porCanal.get(x)!));
-    const horas = [...new Set(d.atendimento.map((r) => r.hora))].sort((x, y) => x - y);
     const cells: HeatmapCell[] = [];
     for (const cn of rows)
-      for (const h of horas) {
+      for (const h of horasOrigem) {
         const v = porCanal.get(cn)!.get(h);
         if (v?.l) cells.push({ row: cn, col: `${h}h`, value: Math.round((v.a / v.l) * 100),
                                n: v.l, amostra_pequena: v.l < 5 });
       }
-    return { rows, cols: horas.map((h) => `${h}h`), cells };
-  }, [d]);
+    return { rows, cols: horasOrigem.map((h) => `${h}h`), cells };
+  }, [d, horasOrigem]);
 
   // melhor janela de aproveitamento DE CADA CANAL (Otávio 22/07: ranking geral
   // repetia o mesmo canal; a decisão é 'a que horas eu ligo para ESTE canal').
@@ -161,8 +171,10 @@ export function MelhorHorarioPage() {
       .sort((x, y) => y.totL - x.totL);
   }, [d]);
 
+  const gOrigem = useMemo(() => (d ? grade(d.por_origem, horasOrigem) : null), [d, horasOrigem]);
+  // a grade por COLABORADOR segue na faixa comercial fixa (7h–20h): ela não fica
+  // lado a lado com nenhum outro mapa, então não precisa do eixo compartilhado
   const horasComerciais = useMemo(() => Array.from({ length: 14 }, (_, i) => i + 7), []);
-  const gOrigem = useMemo(() => (d ? grade(d.por_origem, horasComerciais) : null), [d, horasComerciais]);
 
   const topJanelas = (cels: Cel[]) =>
     [...cels].sort((a, b) => b.n - a.n).slice(0, 3)
@@ -246,18 +258,23 @@ export function MelhorHorarioPage() {
           </SectionCard>
 
           {/* Bloco ORIGEM: quando o lead de cada canal ATENDE × quando ele
-              AGENDA — lado a lado porque respondem à mesma pergunta */}
-          <div className="grid gap-6 xl:grid-cols-2">
+              AGENDA — lado a lado porque respondem à mesma pergunta.
+              Lado a lado só a partir de 2xl (Otávio 22/07): com o eixo de horas
+              unificado são 15 colunas, e em 1280px as duas metades obrigavam a
+              ROLAR para ver as últimas horas — nunca rolar para ver dado. */}
+          <div className="grid gap-6 2xl:grid-cols-2">
             <SectionCard hint={<Hint area="prevendas/horarios" titulo="Atendimento de ligações por origem" />}
               headerClassName="min-h-[72px]"
               title="Atendimento de ligações — origem × hora"
-              subtitle={`das ligações FEITAS na hora, % que o lead ATENDEU · escala por linha · hachura = <5 ligações${
+              subtitle={`das ligações FEITAS na hora, % que o lead ATENDEU (embaixo, o nº de ligações — a % sozinha engana em amostra pequena) · escala por linha · hachura = <5 ligações${
                 d.atendimento_ini ? ` · desfecho desde ${d.atendimento_ini.split("-").reverse().join("/")}` : ""}`}>
               {atd && atd.cells.length ? (
                 <>
                   <Heatmap rows={atd.rows} cols={atd.cols} cells={atd.cells}
-                    color="var(--success)" rowScale dense rowLabelWidth={110}
-                    valueLabel={(v) => `${v}%`} legendLabel="atendimento"
+                    color="var(--success)" rowScale dense tall rowLabelWidth={110}
+                    valueLabel={(v) => `${v}%`}
+                    subLabel={(c) => (c.n != null ? String(c.n) : null)}
+                    legendLabel="atendimento"
                     tooltipLabel={(c) => `${c.row} ${c.col}: ${c.value}% atendidas (${c.n} ligação(ões))${c.amostra_pequena ? " · amostra pequena" : ""}`} />
                   <div className="mt-3">
                     <div className="mb-1 inline-flex items-center gap-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -294,7 +311,8 @@ export function MelhorHorarioPage() {
               subtitle="quando o lead de cada canal AGENDA · escala POR LINHA (compara o padrão independente do volume) · célula contornada = pico">
               {gOrigem && gOrigem.cells.length ? (
                 <Heatmap rows={gOrigem.rows} cols={gOrigem.cols} cells={gOrigem.cells}
-                  color="var(--chart-2)" rowScale dense rowLabelWidth={110} legendLabel="agendamentos" />
+                  color="var(--chart-2)" rowScale dense tall rowLabelWidth={110}
+                  legendLabel="agendamentos" />
               ) : (
                 <p className="text-sm text-muted-foreground">Sem dados por origem no período.</p>
               )}
