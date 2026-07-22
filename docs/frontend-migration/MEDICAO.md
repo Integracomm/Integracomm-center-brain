@@ -281,3 +281,48 @@ Base para reextrapolar os lotes 2–6 com dado real.
   aparece assim mesmo, com a geral — nada some. Mudança feita nas DUAS UIs +
   help reescrito.
 - Paridade: 6/6 canais batendo HTML×payload, zero canais repetidos.
+
+## INCIDENTE 22/07 — deploy dos Lotes 2-3 derrubou a produção
+
+- **O que houve:** o `deploy` subiu e o servidor parou de responder — SSH
+  travando no *banner exchange* (porta 22 aceita TCP, mas a máquina não tem
+  fôlego p/ abrir sessão), Caddy e app sem resposta, site fora do ar.
+- **Causa REAL (não foi o código do lote):** o `Dockerfile` do Lote 0 tinha um
+  estágio `oven/bun` que buildava o SPA **DENTRO da instância** durante o
+  deploy. O `mem_limit: 1700m` do compose **não vale para o build** — só para
+  o container em execução. O bun+vite rodou sem teto, consumiu a RAM do
+  Lightsail (a mesma instância que já teve OOM em 20/07) e sufocou o host.
+  Os deploys anteriores passaram porque o bundle era menor; com Lote 2+3
+  (755→905 KB) cruzou o limite.
+- **Por que não se resolveu sozinho:** cancelar o cliente SSH (que aborta o
+  BuildKit) não liberou; a máquina ficou presa em swap. Sem AWS CLI local, o
+  reboot depende do console do Lightsail (ação do Otávio).
+- **Correção de fundo (commit `82570e6`):** o `dist` passa a ser buildado na
+  máquina local — como já era p/ a validação — e VIAJA no pacote de deploy.
+  `deploy.ps1` ganhou o passo [1/4] (build local, aborta se falhar) e envia um
+  2º tarball com `frontend/dist` (dist/ é gitignored, não entra no git
+  archive); o servidor só extrai e o Dockerfile faz `COPY`. Sem `dist`, o
+  build falha ALTO no COPY — melhor que OOM silencioso.
+- **Lição para a fundação:** qualquer passo pesado (build, compilação) tem que
+  rodar ONDE há recurso. A instância de produção serve; não compila.
+
+## Lote 4 — Marketing pesado: as 8 views restantes (22/07)
+
+- **Execução efetiva: ~55 min** (8 dados-fns + 8 endpoints + 8 telas + router
+  + nav + .env), ciclos de correção: 0 — tsc, build e 56 pytest de primeira.
+  **Marketing agora está 100% no SPA (10/10 views).**
+- **Entregue:** `marketing/dados.py` +8 funções EMBRULHANDO o compute
+  existente (`_funil_oficial`, `_plan_funil`, `_ciclo_coorte`,
+  `ranking_canais`, `lag_por_campanha` — nada recalculado por fora);
+  endpoints `/api/marketing/{visao,metas,funil,midia,lag,planejador,criativos,
+  ciclo-vida}`; 8 páginas React.
+- **Detalhes preservados da tela antiga:** metas de taxa do funil seguem
+  EDITÁVEIS (o form do SPA posta no MESMO endpoint `/marketing/funil-metas`
+  e refaz o fetch); curva de acúmulo do Lag virou TimeSeries da biblioteca
+  (era SVG manual); vereditos de criativo (escalar/revisar/pausar/manter) e
+  chips vêm do BACKEND pela mediana do conjunto — o front só pinta.
+- **Paridade 8/8** com dados reais (funil 1.235 leads/23 bookings; ciclo de
+  vida 779 clientes / 59,4% ativos; metas H2 23/306; planejador 2.862 leads).
+- **Estado do redesenho:** Growth 3 · **Marketing 10** · Pré-vendas 4 ·
+  Vendas 4. Restam: PV sdrs, Vendas horarios/closers/forecast,
+  Central/Raio-X/Financeiro/Semana, cauda (Admin fica HTML).

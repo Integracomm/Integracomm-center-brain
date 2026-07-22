@@ -12,6 +12,14 @@ import { VendasPontePage } from "@/pages/vendas/ponte";
 import { VendasCicloPage } from "@/pages/vendas/ciclo";
 import { MktCanaisPage } from "@/pages/marketing/canais";
 import { MktOrigensPage } from "@/pages/marketing/origens";
+import { MktVisaoPage } from "@/pages/marketing/visao";
+import { MktMetasPage } from "@/pages/marketing/metas";
+import { MktFunilPage } from "@/pages/marketing/funil";
+import { MktMidiaPage } from "@/pages/marketing/midia";
+import { MktLagPage } from "@/pages/marketing/lag";
+import { MktPlanejadorPage } from "@/pages/marketing/planejador";
+import { MktCriativosPage } from "@/pages/marketing/criativos";
+import { MktCicloVidaPage } from "@/pages/marketing/ciclo-vida";
 
 // A aplicação atual navega por QUERY (?view=) dentro de cada área — o SPA
 // respeita as MESMAS URLs (favoritos/links continuam valendo). Views ainda
@@ -28,16 +36,16 @@ const NAV: Array<{ href: string; label: string; spa: boolean; grupo?: string }> 
   { href: "/growth?view=carga", label: "Análise dos Squads", spa: false },
   { href: "/growth?view=playbooks", label: "Playbooks", spa: false },
   { href: "/growth?view=relatorios", label: "Relatórios", spa: false },
-  { href: "/marketing?view=visao", label: "Visão Geral", spa: false, grupo: "Marketing" },
-  { href: "/marketing?view=metas", label: "Metas do Semestre", spa: false },
-  { href: "/marketing?view=funil", label: "Funil de Prospecção", spa: false },
+  { href: "/marketing?view=visao", label: "Visão Geral", spa: true, grupo: "Marketing" },
+  { href: "/marketing?view=metas", label: "Metas do Semestre", spa: true },
+  { href: "/marketing?view=funil", label: "Funil de Prospecção", spa: true },
   { href: "/marketing?view=canais", label: "Ranking de Canais", spa: true },
   { href: "/marketing?view=origens", label: "Origem de Leads", spa: true },
-  { href: "/marketing?view=midia", label: "Mídia Paga", spa: false },
-  { href: "/marketing?view=lag", label: "Tempo até Resultado", spa: false },
-  { href: "/marketing?view=planejador", label: "Planejador", spa: false },
-  { href: "/marketing?view=criativos", label: "Criativos e Públicos", spa: false },
-  { href: "/marketing?view=ciclo", label: "Ciclo de Vida", spa: false },
+  { href: "/marketing?view=midia", label: "Mídia Paga", spa: true },
+  { href: "/marketing?view=lag", label: "Tempo até Resultado", spa: true },
+  { href: "/marketing?view=planejador", label: "Planejador", spa: true },
+  { href: "/marketing?view=criativos", label: "Criativos e Públicos", spa: true },
+  { href: "/marketing?view=ciclo", label: "Ciclo de Vida", spa: true },
   { href: "/prevendas?view=funil", label: "Qualificação & Speed", spa: true, grupo: "Pré-vendas" },
   { href: "/prevendas?view=horarios", label: "Melhor Horário", spa: true },
   { href: "/prevendas?view=ponte", label: "Ponte PV → Vendas", spa: true },
@@ -64,7 +72,15 @@ function MarketingRouter() {
   const [params] = useSearchParams();
   const view = params.get("view") ?? "visao";
   if (view === "origens") return <MktOrigensPage />;
-  return <MktCanaisPage />; // canais; demais views seguem no HTML (spa.py não entrega o SPA p/ elas)
+  if (view === "canais") return <MktCanaisPage />;
+  if (view === "metas") return <MktMetasPage />;
+  if (view === "funil") return <MktFunilPage />;
+  if (view === "midia") return <MktMidiaPage />;
+  if (view === "lag") return <MktLagPage />;
+  if (view === "planejador") return <MktPlanejadorPage />;
+  if (view === "criativos") return <MktCriativosPage />;
+  if (view === "ciclo") return <MktCicloVidaPage />;
+  return <MktVisaoPage />; // view padrão da área (Lote 4: Marketing 100% no SPA)
 }
 
 function VendasRouter() {

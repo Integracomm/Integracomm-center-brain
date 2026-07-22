@@ -1641,3 +1641,88 @@ def api_mkt_origens(request: Request, ini: str = Query(""), fim: str = Query("")
     _kick_deals_sync()
     with A._conn() as c:
         return mkt_origens_dados(c, i, f, midia, origem or None)
+
+
+# ---- Lote 4 (22/07): as 8 views pesadas -----------------------------------
+@router.get("/api/marketing/visao")
+def api_mkt_visao(request: Request):
+    A = _deps()
+    A._require_api(request)
+    from .dados import mkt_visao_dados
+    _kick_deals_sync()
+    with A._conn() as c:
+        return mkt_visao_dados(c)
+
+
+@router.get("/api/marketing/metas")
+def api_mkt_metas(request: Request):
+    A = _deps()
+    A._require_api(request)
+    from .dados import mkt_metas_dados
+    _kick_deals_sync()
+    with A._conn() as c:
+        return mkt_metas_dados(c)
+
+
+@router.get("/api/marketing/funil")
+def api_mkt_funil(request: Request, ini: str = Query(""), fim: str = Query("")):
+    A = _deps()
+    A._require_api(request)
+    from .dados import mkt_funil_dados
+    i, f = _periodo_api(ini, fim)
+    _kick_deals_sync()
+    with A._conn() as c:
+        return mkt_funil_dados(c, i, f)
+
+
+@router.get("/api/marketing/midia")
+def api_mkt_midia(request: Request, ini: str = Query(""), fim: str = Query("")):
+    A = _deps()
+    A._require_api(request)
+    from .dados import mkt_midia_dados
+    i, f = _periodo_api(ini, fim)
+    with A._conn() as c:
+        return mkt_midia_dados(c, i, f)
+
+
+@router.get("/api/marketing/lag")
+def api_mkt_lag(request: Request):
+    A = _deps()
+    A._require_api(request)
+    from .dados import mkt_lag_dados
+    with A._conn() as c:
+        return mkt_lag_dados(c)
+
+
+@router.get("/api/marketing/planejador")
+def api_mkt_planejador(request: Request, alvo: str = Query(""), canal: str = Query("Meta Ads"),
+                       qB1: int = Query(0), qB2: int = Query(0), qB3: int = Query(0),
+                       qB4: int = Query(0), qB5: int = Query(0)):
+    A = _deps()
+    A._require_api(request)
+    from .dados import mkt_planejador_dados
+    try:
+        alvo_d = dt.date.fromisoformat(alvo) if alvo else None
+    except ValueError:
+        alvo_d = None
+    with A._conn() as c:
+        return mkt_planejador_dados(c, {"B1": qB1, "B2": qB2, "B3": qB3, "B4": qB4, "B5": qB5},
+                                    alvo_d, canal)
+
+
+@router.get("/api/marketing/criativos")
+def api_mkt_criativos(request: Request, publico: str = Query("")):
+    A = _deps()
+    A._require_api(request)
+    from .dados import mkt_criativos_dados
+    with A._conn() as c:
+        return mkt_criativos_dados(c, publico)
+
+
+@router.get("/api/marketing/ciclo-vida")
+def api_mkt_ciclo_vida(request: Request):
+    A = _deps()
+    A._require_api(request)
+    from .dados import mkt_ciclo_vida_dados
+    with A._conn() as c:
+        return mkt_ciclo_vida_dados(c)
