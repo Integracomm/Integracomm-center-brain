@@ -123,7 +123,11 @@ function Shell({ children }: { children: React.ReactNode }) {
   // papel (Otávio 22/07). A Central usa a MESMA nav: com a lista fixa antiga
   // (NAV_CENTRAL) ela "voltava no tempo" ao ser aberta — sem o item Início e
   // com Ações da Semana nas Visões da empresa, de onde já tinha saído.
-  const comNavGeral = area === "/" || area === "/central";
+  // Visões da empresa (/semana, /raiox) usam a nav GERAL, como a home e a
+  // Central: elas não são áreas e não têm ?view=, então o filtro por
+  // `href.startsWith("/semana?")` devolvia lista vazia e o sidebar sumia
+  // (Otávio 23/07).
+  const comNavGeral = ["/", "/central", "/semana", "/raiox"].includes(area);
   const home = useApi<HomePayload>(comNavGeral ? "/api/home" : "");
   const navHome: Array<{ href: string; label: string; spa: boolean; grupo?: string }> = [
     { href: "/", label: "Início", spa: true },

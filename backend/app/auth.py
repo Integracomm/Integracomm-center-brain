@@ -124,6 +124,122 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT fal
 """
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
+# --------------------------------------------------------------------------
+# Recuperação de senha (23/07). O projeto NÃO tem envio de e-mail — só o
+# webhook do Slack —, então não existe "link no seu e-mail": quem entrega o
+# link é o ADMIN, por um canal que ele já usa com a pessoa. O fluxo:
+#   1. a pessoa pede em /recuperar (a tela NUNCA diz se a conta existe);
+#   2. o pedido aparece no Painel Administrativo;
+#   3. o admin gera um link de uso único (30 min) e passa para ela;
+#   4. ela define a senha nova em /redefinir?token=…
+# O token é guardado como HASH: vazamento do banco não devolve o link.
+# --------------------------------------------------------------------------
+_RESET_DDL = """
+CREATE TABLE IF NOT EXISTS password_resets (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email       TEXT NOT NULL,
+    token_hash  TEXT,                       -- sha256 do token; NULL = só pedido
+    pedido_em   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    gerado_em   TIMESTAMPTZ,
+    gerado_por  TEXT,
+    expira_em   TIMESTAMPTZ,
+    usado_em    TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS ix_password_resets_email ON password_resets (email);
+"""
+_RESET_TTL_MIN = 30
+
+
+def ensure_reset_table(conn: Any) -> None:
+    with conn.cursor() as cur:
+        cur.execute(_RESET_DDL)
+
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def registrar_pedido_reset(conn: Any, email: str) -> None:
+    """Registra o pedido. NÃO diz se a conta existe — quem chama responde a
+    mesma coisa nos dois casos, para a tela não virar um verificador de
+    e-mails cadastrados."""
+    email = (email or "").strip().lower()
+    if not _EMAIL_RE.match(email):
+        return
+    ensure_reset_table(conn)
+    with conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM users WHERE email=%s", (email,))
+        if not cur.fetchone():
+            return  # silencioso de propósito
+        # um pedido aberto por conta: repetir o pedido não faz fila
+        cur.execute("""SELECT 1 FROM password_resets
+                        WHERE email=%s AND usado_em IS NULL AND token_hash IS NULL""", (email,))
+        if cur.fetchone():
+            return
+        cur.execute("INSERT INTO password_resets (email) VALUES (%s)", (email,))
+
+
+def pedidos_reset_abertos(conn: Any) -> list[dict]:
+    """Pedidos ainda não atendidos — o admin vê no painel."""
+    ensure_reset_table(conn)
+    with conn.cursor() as cur:
+        cur.execute("""SELECT email, max(pedido_em) FROM password_resets
+                        WHERE usado_em IS NULL AND token_hash IS NULL
+                        GROUP BY email ORDER BY 2 DESC""")
+        return [{"email": e, "em": p.strftime("%d/%m/%Y às %H:%M")} for e, p in cur.fetchall()]
+
+
+def gerar_token_reset(conn: Any, user_id: str, actor: str) -> tuple[str, str] | None:
+    """Cria o token de uso único e devolve (token, email). O token só existe
+    aqui e no link — o banco guarda o hash."""
+    ensure_reset_table(conn)
+    with conn.cursor() as cur:
+        cur.execute("SELECT email FROM users WHERE id=%s", (user_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        email = row[0]
+        token = secrets.token_urlsafe(32)
+        # invalida o que estiver aberto p/ esta conta: um link válido por vez
+        cur.execute("""UPDATE password_resets SET usado_em=now()
+                        WHERE email=%s AND usado_em IS NULL""", (email,))
+        cur.execute("""INSERT INTO password_resets
+                           (email, token_hash, gerado_em, gerado_por, expira_em)
+                       VALUES (%s, %s, now(), %s, now() + make_interval(mins => %s))""",
+                    (email, _hash_token(token), actor, _RESET_TTL_MIN))
+    return token, email
+
+
+def validar_token_reset(conn: Any, token: str) -> str | None:
+    """E-mail do dono do token, se ele valer AGORA. Senão None."""
+    if not token:
+        return None
+    ensure_reset_table(conn)
+    with conn.cursor() as cur:
+        cur.execute("""SELECT email FROM password_resets
+                        WHERE token_hash=%s AND usado_em IS NULL AND expira_em > now()""",
+                    (_hash_token(token),))
+        row = cur.fetchone()
+    return row[0] if row else None
+
+
+def aplicar_nova_senha(conn: Any, token: str, senha: str) -> str | None:
+    """Troca a senha e QUEIMA o token. Devolve mensagem de erro ou None."""
+    import bcrypt
+
+    if len(senha or "") < 8:
+        return "senha muito curta (mínimo 8 caracteres)"
+    email = validar_token_reset(conn, token)
+    if not email:
+        return "link inválido ou expirado — peça um novo ao administrador"
+    h = bcrypt.hashpw(senha.encode(), bcrypt.gensalt()).decode()
+    with conn.cursor() as cur:
+        cur.execute("UPDATE users SET password_hash=%s WHERE email=%s", (h, email))
+        # queima ESTE token e encerra os pedidos abertos da conta
+        cur.execute("""UPDATE password_resets SET usado_em=now()
+                        WHERE email=%s AND usado_em IS NULL""", (email,))
+    return None
+
 
 def ensure_users_table(conn: Any) -> None:
     with conn.cursor() as cur:

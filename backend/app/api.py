@@ -23,10 +23,12 @@ from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 
 from .agents.growth.scoring import _top_driver, action_guideline
-from .auth import (AREA_HOME, AREAS, COOKIE, ROLE_HOME, USERS, authenticate_db,
-                   check_login, clear_login_fails, create_user, list_users,
-                   login_blocked, make_token, record_login_fail, set_user_admin,
-                   set_user_areas, set_user_status, user_areas, verify_token)
+from .auth import (AREA_HOME, AREAS, COOKIE, ROLE_HOME, USERS, aplicar_nova_senha,
+                   authenticate_db, check_login, clear_login_fails, create_user,
+                   gerar_token_reset, list_users, login_blocked, make_token,
+                   pedidos_reset_abertos, record_login_fail, registrar_pedido_reset,
+                   set_user_admin, set_user_areas, set_user_status, user_areas,
+                   validar_token_reset, verify_token)
 from .db import persistence as P
 from .help_texts import _hint
 
@@ -214,6 +216,9 @@ button{{width:100%;margin-top:20px;cursor:pointer;background:var(--brand);color:
   <input type=password name=password placeholder="insira sua senha..." autocomplete=current-password>
   <button type=submit>Entrar</button>
   <div class=hint style="text-align:center;margin-top:16px">
+    <a href="/recuperar" style="color:var(--text-muted);text-decoration:underline">Esqueceu sua senha?</a>
+  </div>
+  <div class=hint style="text-align:center;margin-top:8px">
     Primeiro acesso? <a href="/signup" style="color:var(--brand);font-weight:600;text-decoration:none">Criar sua conta</a>
   </div>
   <div class=hint>Humano no loop — a IA só sinaliza.</div>
@@ -221,11 +226,17 @@ button{{width:100%;margin-top:20px;cursor:pointer;background:var(--brand);color:
 
 
 @app.get("/login", response_class=HTMLResponse)
-def login_page(request: Request, erro: str = Query("")):
+def login_page(request: Request, erro: str = Query(""), ok: str = Query("")):
     s = _session(request)
     if s:
         return RedirectResponse(ROLE_HOME[s[1]], status_code=302)
-    return HTMLResponse(_login_html(erro))
+    html = _login_html(erro)
+    if ok == "senha":
+        html = html.replace("<label>usuário / e-mail</label>",
+                            "<div style='color:var(--status-baixo);font-size:var(--fs-sm);"
+                            "margin-bottom:12px'>Senha alterada — entre com ela agora.</div>"
+                            "<label>usuário / e-mail</label>")
+    return HTMLResponse(html)
 
 
 def _signup_html(erro: str = "", ok: bool = False) -> str:
@@ -343,6 +354,144 @@ async def do_login(request: Request):
     resp.set_cookie(COOKIE, make_token(user, role), max_age=12 * 3600, httponly=True,
                     samesite="lax", secure=(request.url.scheme == "https"))
     return resp
+
+
+# --- Recuperação de senha -----------------------------------------------
+# Sem envio de e-mail no projeto (só webhook do Slack), quem ENTREGA o link é o
+# admin, por um canal que já usa com a pessoa. Ver o bloco em auth.py.
+def _pagina_auth(titulo: str, corpo: str) -> str:
+    """Mesma casca visual do login, para as telas de senha."""
+    base = _login_html("")
+    ini, fim = base.index("<form class=card"), base.index("</body></html>")
+    return (base[:ini] + corpo + base[fim:]).replace(
+        "<title>Integracomm IA — Entrar</title>", f"<title>{escape(titulo)}</title>")
+
+
+@app.get("/recuperar", response_class=HTMLResponse)
+def recuperar_form(request: Request, ok: str = Query("")):
+    if _session(request):
+        return RedirectResponse("/", status_code=302)
+    if ok:
+        corpo = ("<div class=card><div style='margin-bottom:18px'><span class=logo></span>"
+                 "<h1>Integracomm IA</h1></div>"
+                 "<p style='font-size:var(--fs-sm);line-height:1.6'>Se existir uma conta com esse "
+                 "e-mail, o <b>administrador foi avisado</b> e vai te enviar um link para definir "
+                 "uma senha nova.</p>"
+                 "<div class=hint>O link vale por 30 minutos e só pode ser usado uma vez.</div>"
+                 "<div class=hint style='text-align:center;margin-top:16px'>"
+                 "<a href='/login' style='color:var(--brand);font-weight:600;text-decoration:none'>"
+                 "voltar para o login</a></div></div>")
+    else:
+        corpo = ("<form class=card method=post action=/recuperar>"
+                 "<div style='margin-bottom:18px'><span class=logo></span><h1>Integracomm IA</h1></div>"
+                 "<p style='font-size:var(--fs-sm);color:var(--text-muted);line-height:1.55;margin:0'>"
+                 "Informe o e-mail da sua conta. O administrador recebe o pedido e te envia um link "
+                 "para criar uma senha nova.</p>"
+                 "<label>e-mail</label>"
+                 "<input type=email name=email placeholder='seu e-mail...' autofocus required>"
+                 "<button type=submit>Pedir redefinição</button>"
+                 "<div class=hint style='text-align:center;margin-top:16px'>"
+                 "<a href='/login' style='color:var(--text-muted);text-decoration:underline'>"
+                 "voltar para o login</a></div></form>")
+    return HTMLResponse(_pagina_auth("Integracomm IA — Recuperar senha", corpo))
+
+
+@app.post("/recuperar", response_class=HTMLResponse)
+async def recuperar_post(request: Request):
+    """Resposta IDÊNTICA exista ou não a conta — a tela não pode virar um
+    verificador de quem tem cadastro. Rate limit reusa o do login."""
+    form = await request.form()
+    email = str(form.get("email") or "").strip().lower()
+    chave = f"reset:{email}|{request.client.host if request.client else '?'}"
+    if login_blocked(chave):
+        return RedirectResponse("/recuperar?ok=1", status_code=303)
+    record_login_fail(chave)
+    try:
+        with _conn() as c:
+            registrar_pedido_reset(c, email)
+    except Exception:  # noqa: BLE001 — nunca revelar falha específica aqui
+        pass
+    try:
+        from .slack import send_text, webhook_configured
+        if webhook_configured():
+            send_text("🔑 Pedido de redefinição de senha no painel — abra o Painel "
+                      "Administrativo para gerar o link.")
+    except Exception:  # noqa: BLE001 — aviso é bônus, não requisito
+        pass
+    return RedirectResponse("/recuperar?ok=1", status_code=303)
+
+
+@app.get("/redefinir", response_class=HTMLResponse)
+def redefinir_form(request: Request, token: str = Query(""), erro: str = Query("")):
+    with _conn() as c:
+        email = validar_token_reset(c, token)
+    if not email:
+        corpo = ("<div class=card><div style='margin-bottom:18px'><span class=logo></span>"
+                 "<h1>Integracomm IA</h1></div>"
+                 "<p style='font-size:var(--fs-sm);color:var(--status-critico)'>Link inválido, já "
+                 "usado ou expirado.</p>"
+                 "<div class=hint>Peça um novo ao administrador — cada link vale 30 minutos e uma "
+                 "única vez.</div>"
+                 "<div class=hint style='text-align:center;margin-top:16px'>"
+                 "<a href='/recuperar' style='color:var(--brand);font-weight:600;text-decoration:none'>"
+                 "pedir de novo</a></div></div>")
+        return HTMLResponse(_pagina_auth("Integracomm IA — Link inválido", corpo))
+    msg = (f"<div style='color:var(--status-critico);font-size:var(--fs-sm);margin-bottom:12px'>"
+           f"{escape(erro)}</div>") if erro else ""
+    corpo = (f"<form class=card method=post action=/redefinir>"
+             f"<div style='margin-bottom:18px'><span class=logo></span><h1>Integracomm IA</h1></div>"
+             f"{msg}"
+             f"<p style='font-size:var(--fs-sm);color:var(--text-muted);margin:0'>Nova senha para "
+             f"<b>{escape(email)}</b></p>"
+             f"<input type=hidden name=token value='{escape(token)}'>"
+             f"<label>nova senha</label>"
+             f"<input type=password name=senha placeholder='mínimo 8 caracteres' autofocus required "
+             f"autocomplete=new-password>"
+             f"<label>repita a senha</label>"
+             f"<input type=password name=senha2 placeholder='repita...' required autocomplete=new-password>"
+             f"<button type=submit>Salvar e entrar</button></form>")
+    return HTMLResponse(_pagina_auth("Integracomm IA — Nova senha", corpo))
+
+
+@app.post("/redefinir", response_class=HTMLResponse)
+async def redefinir_post(request: Request):
+    from urllib.parse import quote
+    form = await request.form()
+    token = str(form.get("token") or "")
+    senha, senha2 = str(form.get("senha") or ""), str(form.get("senha2") or "")
+    if senha != senha2:
+        return RedirectResponse(f"/redefinir?token={quote(token)}&erro=as+senhas+n%C3%A3o+conferem",
+                                status_code=303)
+    with _conn() as c:
+        erro = aplicar_nova_senha(c, token, senha)
+        if erro:
+            return RedirectResponse(f"/redefinir?token={quote(token)}&erro={quote(erro)}",
+                                    status_code=303)
+        with c.cursor() as cur:
+            cur.execute("INSERT INTO audit_log (actor, action, scope) VALUES (%s,%s,%s)",
+                        ("(auto)", "senha_redefinida", "reset:link"))
+    return RedirectResponse("/login?ok=senha", status_code=303)
+
+
+@app.post("/api/users/{user_id}/reset")
+def api_user_reset(user_id: str, request: Request):
+    """Gera o link de uso único p/ o admin repassar. Só admin.
+    O link aparece UMA vez, aqui — o banco só guarda o hash do token."""
+    actor, role = _require_api(request)
+    if role != "admin":
+        return JSONResponse({"error": "só o administrador gera links de redefinição"},
+                            status_code=403)
+    with _conn() as c:
+        r = gerar_token_reset(c, user_id, actor)
+        if not r:
+            return JSONResponse({"error": "usuário não encontrado"}, status_code=400)
+        token, email = r
+        with c.cursor() as cur:
+            cur.execute("INSERT INTO audit_log (actor, action, scope) VALUES (%s,%s,%s)",
+                        (actor, "senha_link", f"usuario:{user_id}"))
+    base = str(request.base_url).rstrip("/")
+    return {"ok": True, "email": email, "link": f"{base}/redefinir?token={token}",
+            "validade_min": 30}
 
 
 @app.get("/favicon.ico", include_in_schema=False)
@@ -699,6 +848,10 @@ def admin_panel(request: Request):
         from .llm_budget import month_summary
         llm = month_summary(c)
         teams = _teams_html(c) + _integracoes_html(_integracoes_status(c))
+        try:
+            pedidos = pedidos_reset_abertos(c)
+        except Exception:  # noqa: BLE001
+            pedidos = []
         with c.cursor() as cur:
             # ACESSOS = telas abertas; ÚLTIMO LOGIN = entrada de fato. A coluna
             # "Último login" lia o max de VIEW (22/07): quem entrava e navegava
@@ -715,7 +868,7 @@ def admin_panel(request: Request):
         n, ult = acessos.get(u["email"], (0, None))
         u["views"], u["last_seen"] = n, (ult.strftime("%d/%m/%Y às %H:%M") if ult else None)
     return HTMLResponse(_render_hub(user, stats, users, None, page="admin", llm=llm,
-                                    teams_html=teams))
+                                    teams_html=teams, pedidos_senha=pedidos))
 
 
 @app.post("/api/admin/times")
@@ -1619,12 +1772,29 @@ def _teams_html(conn) -> str:
             "font-family:var(--font-body);font-size:var(--fs-xs);padding:5px 8px}</style></section>")
 
 
-def _admin_html(users: list[dict], atual: str = "") -> str:
+def _admin_html(users: list[dict], atual: str = "", pedidos: list[dict] | None = None) -> str:
     """Painel administrativo: linha por conta com interruptor POR ÁREA (aplica
     na hora via /api/users/{id}/areas), nº de acessos e último login (audit_log),
     aprovar/bloquear e busca — modelo do painel da calculadora."""
     if not users:
         return "<div class=central><div class='id_'>nenhuma conta criada ainda — os gestores usam “Criar sua conta” na tela de login</div></div>"
+    # pedidos de redefinição em aberto: o admin gera o link e ENTREGA à pessoa
+    # (o painel não manda e-mail — ver o bloco de recuperação em auth.py)
+    aviso_reset = ""
+    if pedidos:
+        linhas = "".join(
+            f"<div style='padding:6px 0'><b>{escape(p['email'])}</b> "
+            f"<span style='color:var(--text-muted)'>· pediu em {escape(p['em'])}</span></div>"
+            for p in pedidos)
+        aviso_reset = (
+            "<div class=central style='border-left:3px solid var(--brand);margin-bottom:14px'>"
+            "<div style='font-family:var(--font-display);font-weight:600;margin-bottom:4px'>"
+            f"🔑 {len(pedidos)} pedido(s) de redefinição de senha</div>"
+            f"{linhas}"
+            "<div style='font-size:var(--fs-xs);color:var(--text-muted);margin-top:6px'>"
+            "Use o botão <b>senha</b> na linha da conta para gerar um link de uso único "
+            "(vale 30 min) e envie você mesmo à pessoa — por WhatsApp, Slack ou outro canal "
+            "que você já use com ela.</div></div>")
     _UST = {"pendente": "--status-medio", "aprovado": "--status-baixo", "bloqueado": "--status-critico"}
     ths = "".join(f"<th>{nome.split(' /')[0]}</th>" for nome in AREAS.values())
     rows = ""
@@ -1634,6 +1804,8 @@ def _admin_html(users: list[dict], atual: str = "") -> str:
             acts += f"<button class=abtn onclick=\"userSt('{u['id']}','aprovado')\">aprovar</button> "
         if u["status"] != "bloqueado":
             acts += f"<button class=abtn onclick=\"userSt('{u['id']}','bloqueado')\">bloquear</button>"
+        # link de redefinicao: o admin gera e ENTREGA (o painel nao manda e-mail)
+        acts += f" <button class=abtn onclick=\"resetSenha('{u['id']}')\">senha</button>"
         adm = u.get("is_admin")
         # conta admin enxerga tudo: os interruptores de área ficam travados p/
         # não prometerem um recorte que o papel ignora
@@ -1653,6 +1825,7 @@ def _admin_html(users: list[dict], atual: str = "") -> str:
                  f"<td class=anum>{escape(u.get('last_seen') or '—')}</td>"
                  f"{tgl_adm}{tgls}</tr>")
     return (
+        aviso_reset +
         "<div class=central style='padding:0;overflow-x:auto'>"
         "<div style='padding:14px 16px 0'><input id=abusca placeholder='pesquisar por nome ou e-mail…' oninput='aFiltra()' "
         "style='width:100%;max-width:420px;background:var(--bg-panel);border:1px solid var(--border-strong);border-radius:var(--radius-sm);color:var(--text);font-family:var(--font-body);font-size:var(--fs-sm);padding:9px 11px'></div>"
@@ -1663,6 +1836,14 @@ def _admin_html(users: list[dict], atual: str = "") -> str:
         "function userSt(id,st){if(st==='bloqueado'&&!confirm('Bloquear esta conta?'))return;"
         "fetch('/api/users/'+id+'/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:st})})"
         ".then(function(r){return r.json();}).then(function(j){if(j.error)alert(j.error);else location.reload();}).catch(function(){alert('falha de rede');});}"
+        "function resetSenha(id){"
+        "if(!confirm('Gerar um link de redefinicao de senha para esta conta? "
+        "O link vale 30 minutos, so pode ser usado uma vez e invalida qualquer link anterior.'))return;"
+        "fetch('/api/users/'+id+'/reset',{method:'POST'}).then(function(r){return r.json();})"
+        ".then(function(j){if(j.error){alert(j.error);return;}"
+        "window.prompt('Link de redefinicao para '+j.email+' — copie e envie a pessoa. "
+        "Vale '+j.validade_min+' minutos e so funciona UMA vez:', j.link);location.reload();})"
+        ".catch(function(){alert('falha de rede');});}"
         "function tglAdmin(id,v){if(v&&!confirm('Tornar esta conta ADMINISTRADORA? "
         "Ela passa a ver a Central, o Painel Administrativo, as Acoes da Semana e "
         "todas as areas.')){location.reload();return;}"
@@ -2473,7 +2654,8 @@ def _render_hub(role: str, st: dict, users: list[dict] | None = None,
                 mudancas: str = "", body_override: str | None = None,
                 active_page: str = "", impactos: dict | None = None,
                 lags: dict | None = None, foco_html: str = "",
-                raiox_mini: str = "", foco_kw: list[str] | None = None) -> str:
+                raiox_mini: str = "", foco_kw: list[str] | None = None,
+                pedidos_senha: list[dict] | None = None) -> str:
     n_alerts = sum(st["sev"].values())
     crit = st["sev"].get("critico", 0)
     saude = _hub_saude(st, mkt, sales)
@@ -2676,7 +2858,7 @@ __BODY__
             + _llm_budget_html(llm) + teams_html +
             "<section><h2>Contas e permissões</h2>"
             "<p class=secsub>pendentes primeiro · os interruptores aplicam NA HORA (vale em até 60s) · busca por nome/e-mail</p>"
-            + _admin_html(users or [], atual=role))  # `role` aqui é o e-mail da sessão
+            + _admin_html(users or [], atual=role, pedidos=pedidos_senha))  # `role` = e-mail da sessão
     else:
         # COCKPIT (17/07): camadas em ordem de atenção — foco da semana → o que
         # mudou → saúde → raio-x compacto → cards de área → iniciativas →

@@ -9,6 +9,7 @@ import { SaudePorArea } from "@/components/inicio/saude-por-area";
 import { RaioXBundle } from "@/components/inicio/raio-x-bundle";
 import { AndamentoAreas } from "@/components/inicio/andamento-areas";
 import { IniciativasHorizonte } from "@/components/inicio/iniciativas-horizonte";
+import { BlocoRetratil } from "@/components/inicio/bloco-retratil";
 import type { CentralPayload } from "@/components/inicio/tipos";
 
 // CENTRAL (hub do admin) — redesenho 22/07.
@@ -23,16 +24,17 @@ import type { CentralPayload } from "@/components/inicio/tipos";
 // _hub_horizonte, _hub_defasagem_linhas, raiox.mini_cards_dados). Trocar o
 // layout não pode mexer em régua — e o check de paridade confirma isso.
 
-// Cabeçalho de seção: o peso do título é o que constrói a hierarquia.
-function Secao({ titulo, sub, hint, children, nivel = 1 }: {
-  titulo: string; sub?: string; hint?: React.ReactNode;
-  children: React.ReactNode; nivel?: 1 | 2 | 3;
+// Cabeçalho de seção. Todos os títulos com o MESMO tamanho (Otávio 23/07: os
+// de Raio-X e Andamento pareciam menores que os outros) — a densidade
+// decrescente fica por conta do conteúdo e dos blocos recolhidos no fim, não
+// de encolher o título.
+function Secao({ titulo, sub, hint, children }: {
+  titulo: string; sub?: string; hint?: React.ReactNode; children: React.ReactNode;
 }) {
-  const tam = nivel === 1 ? "text-lg" : nivel === 2 ? "text-base" : "text-sm";
   return (
     <section>
       <div className="mb-3">
-        <h2 className={`font-display ${tam} inline-flex items-center gap-1.5 font-semibold`}>
+        <h2 className="font-display inline-flex items-center gap-1.5 text-base font-semibold">
           {titulo}{hint}
         </h2>
         {sub && <p className="mt-0.5 max-w-4xl text-xs leading-relaxed text-muted-foreground">{sub}</p>}
@@ -85,7 +87,7 @@ export function CentralPage() {
 
           {/* 2 · O QUE MUDOU */}
           {d.mudancas.length > 0 && (
-            <Secao titulo="O que mudou desde ontem" nivel={2}
+            <Secao titulo="O que mudou desde ontem"
               hint={<Hint area="growth/contas" titulo="Contas por risco" />}
               sub="deltas das últimas 24h / última rodada — clique para abrir o recorte exato">
               <MudouDesdeOntem itens={d.mudancas} />
@@ -93,20 +95,20 @@ export function CentralPage() {
           )}
 
           {/* 3 · NÚMEROS-CHAVE */}
-          <Secao titulo="Números-chave do mês" nivel={2}
+          <Secao titulo="Números-chave do mês"
             sub="retenção (Growth) e aquisição (Marketing/Vendas) — o termômetro rápido antes do detalhe por área">
             <KpisMes kpis={d.kpis} />
           </Secao>
 
           {/* 4 · SAÚDE POR ÁREA */}
-          <Secao titulo="Saúde por área" nivel={2}
+          <Secao titulo="Saúde por área"
             sub="diagnóstico automático do mês corrente, da área que mais demanda atenção para a mais saudável">
             <SaudePorArea itens={d.saude} />
           </Secao>
 
           {/* 5 · RAIO-X POR BUNDLE */}
           {d.bundles.length > 0 && (
-            <Secao titulo="Raio-X compacto por bundle" nivel={3}
+            <Secao titulo="Raio-X compacto por bundle"
               sub="bookings × meta do mês e churn precoce da coorte — os mesmos números do Raio-X completo">
               <RaioXBundle itens={d.bundles} nota={d.bundles_nota} />
               <p className="mt-3 text-xs">
@@ -116,7 +118,7 @@ export function CentralPage() {
           )}
 
           {/* 6 · ANDAMENTO DAS ÁREAS */}
-          <Secao titulo="Andamento das áreas" nivel={3}
+          <Secao titulo="Andamento das áreas"
             sub="resumo de cada área — clique para abrir o painel completo; verde = no ritmo da meta, vermelho = atenção">
             <AndamentoAreas itens={d.areas} />
           </Secao>
@@ -124,26 +126,20 @@ export function CentralPage() {
           {/* 7 · HORIZONTE — recolhido */}
           <IniciativasHorizonte itens={d.horizonte} />
 
-          {/* 8 · DEFASAGENS — referência, recolhida */}
-          <details className="rounded-2xl border border-border bg-card px-5 py-4">
-            <summary className="cursor-pointer font-display text-base font-semibold">
-              Defasagem esperada das correções{" "}
-              <span className="text-xs font-normal text-muted-foreground">
-                (referência — quando cobrar resultado)
-              </span>
-            </summary>
-            <p className="mt-2 text-xs text-muted-foreground">
-              medida no NOSSO histórico (medianas) — onde não há base, está dito
-            </p>
-            <div className="mt-2 divide-y divide-border">
+          {/* 8 · DEFASAGENS — referência, recolhida (mesmo molde do bloco acima) */}
+          <BlocoRetratil
+            titulo="Defasagem esperada das correções"
+            contagem={d.defasagens.length}
+            sub="referência de quando cobrar resultado · medida no NOSSO histórico (medianas) — onde não há base, está dito">
+            <ul className="divide-y divide-border">
               {d.defasagens.map((l) => (
-                <div key={l.titulo} className="py-2">
+                <li key={l.titulo} className="px-5 py-3">
                   <div className="text-sm font-medium">{l.titulo}</div>
-                  <div className="text-xs text-muted-foreground">{l.texto}</div>
-                </div>
+                  <div className="mt-0.5 text-xs text-muted-foreground">{l.texto}</div>
+                </li>
               ))}
-            </div>
-          </details>
+            </ul>
+          </BlocoRetratil>
         </>
       )}
     </div>

@@ -35,7 +35,12 @@ export function KpiCard({ title, value, subtitle, icon: Icon, tone = "primary", 
           <span className="min-w-0 whitespace-normal leading-tight">{title}</span>
           {caveat && <Caveat text={caveat} />}
         </div>
-        <div className="mt-1 font-display text-3xl font-bold tabular-nums leading-tight text-foreground">
+        <div className={cn(
+          "mt-1 font-display font-bold tabular-nums leading-tight text-foreground break-words",
+          // o número manda no tamanho: "R$ 186.671" não cabe em text-3xl numa
+          // coluna estreita (medido: 162px de texto em 91px de caixa)
+          value.length <= 6 ? "text-3xl" : value.length <= 10 ? "text-2xl" : "text-xl",
+        )}>
           {value}
         </div>
         {subtitle && <div className="mt-1 text-sm text-muted-foreground">{subtitle}</div>}

@@ -1,6 +1,6 @@
-import { ChevronDown } from "lucide-react";
 import { formatBRL } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { BlocoRetratil } from "./bloco-retratil";
 import { NIVEL_DOT, type CentralPayload } from "./tipos";
 
 // INICIATIVAS DE MAIOR HORIZONTE — o último degrau da densidade decrescente,
@@ -9,26 +9,17 @@ import { NIVEL_DOT, type CentralPayload } from "./tipos";
 
 export function IniciativasHorizonte({ itens }: { itens: CentralPayload["horizonte"] }) {
   return (
-    <details className="group rounded-2xl border border-border bg-card">
-      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-5 py-4">
-        <div>
-          <div className="font-display text-base font-semibold">
-            Iniciativas de maior horizonte
-            <span className="ml-2 text-xs font-normal text-muted-foreground">({itens.length})</span>
-          </div>
-          <div className="text-xs italic text-muted-foreground">
-            gargalos que NÃO viraram objetivo desta semana · potencial estimado, não promessa · ordenado por R$/mês
-          </div>
-        </div>
-        <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
-      </summary>
+    <BlocoRetratil
+      titulo="Iniciativas de maior horizonte"
+      contagem={itens.length}
+      sub="gargalos que NÃO viraram objetivo desta semana · potencial estimado, não promessa · ordenado por R$/mês">
       {itens.length === 0 ? (
-        <p className="border-t border-border px-5 py-4 text-sm text-muted-foreground">
+        <p className="px-5 py-4 text-sm text-muted-foreground">
           Nenhuma iniciativa além das prioridades da semana — os gargalos atuais já viraram
           objetivos confirmados.
         </p>
       ) : (
-        <ul className="divide-y divide-border border-t border-border">
+        <ul className="divide-y divide-border">
           {itens.map((it) => (
             <li key={it.titulo} className="px-5 py-4">
               <a href={it.href} className="block hover:opacity-80">
@@ -53,6 +44,6 @@ export function IniciativasHorizonte({ itens }: { itens: CentralPayload["horizon
           ))}
         </ul>
       )}
-    </details>
+    </BlocoRetratil>
   );
 }

@@ -1,6 +1,27 @@
 import { cn } from "@/lib/utils";
-import { NIVEL_BG, NIVEL_BORDA, type CentralPayload } from "./tipos";
-import { valorComMeta } from "./formato";
+import { NIVEL_BG, NIVEL_BORDA, type CentralPayload, type Metrica } from "./tipos";
+import { fmtValor, mval } from "./formato";
+
+// Métrica do card: VALOR grande, "/meta" apagado ao lado, rótulo miúdo embaixo.
+// O formato lista (rótulo à esquerda, valor à direita, ambos pequenos) deixava
+// o número menos visível — o Otávio preferiu este (23/07).
+function Metric({ m }: { m: Metrica }) {
+  return (
+    <div className="min-w-0">
+      <div className="font-display text-xl font-bold leading-none tabular-nums">
+        {mval(m)}
+        {m.meta != null && m.valor != null && (
+          <span className="text-sm font-semibold text-muted-foreground/70">
+            /{fmtValor(m.meta, m.formato)}
+          </span>
+        )}
+      </div>
+      <div className="mt-1 text-[10px] uppercase leading-tight tracking-wide text-muted-foreground">
+        {m.rotulo}
+      </div>
+    </div>
+  );
+}
 
 // ANDAMENTO DAS ÁREAS — cards compactos lado a lado. Quais métricas entram em
 // cada card é decisão do backend (_hub_area_cards, composição COMPLEMENTAR:
@@ -21,14 +42,9 @@ export function AndamentoAreas({ itens }: { itens: CentralPayload["areas"] }) {
             </span>
           </div>
           {a.metricas.length > 0 && (
-            <dl className="mt-3 space-y-1.5">
-              {a.metricas.map((m) => (
-                <div key={m.rotulo} className="flex items-baseline justify-between gap-3 text-sm">
-                  <dt className="min-w-0 truncate text-muted-foreground" title={m.rotulo}>{m.rotulo}</dt>
-                  <dd className="shrink-0 font-display font-semibold tabular-nums">{valorComMeta(m)}</dd>
-                </div>
-              ))}
-            </dl>
+            <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-3">
+              {a.metricas.map((m) => <Metric key={m.rotulo} m={m} />)}
+            </div>
           )}
           <p className="mt-3 text-xs leading-snug text-muted-foreground">{a.detalhe}</p>
         </a>
