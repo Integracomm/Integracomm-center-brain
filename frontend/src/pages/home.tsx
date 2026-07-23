@@ -17,7 +17,11 @@ export interface HomePayload {
   role: string;
   areas: Array<{ slug: string; nome: string; href: string }>;
   visoes: Array<{ slug: string; nome: string; href: string }>;
-  admin: Array<{ slug: string; nome: string; href: string }>;
+  // `pendencias` = o que espera o admin (pedido de senha, cadastro a aprovar).
+  // O selo aparece no SIDEBAR: a home é só a marca, e o pedido de senha não vai
+  // para o grupo do Slack (23/07), então precisa saltar aos olhos na navegação.
+  admin: Array<{ slug: string; nome: string; href: string;
+    pendencias?: number; pendencias_detalhe?: string }>;
 }
 
 export function HomePage() {

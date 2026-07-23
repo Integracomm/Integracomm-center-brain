@@ -16,6 +16,24 @@ def webhook_configured() -> bool:
     return bool(os.environ.get("SLACK_WEBHOOK_URL"))
 
 
+def admin_webhook_configured() -> bool:
+    return bool(os.environ.get("SLACK_WEBHOOK_ADMIN_URL"))
+
+
+def send_admin_text(text: str) -> None:
+    """Posta num canal SÓ DO ADMIN (`SLACK_WEBHOOK_ADMIN_URL`, opcional).
+
+    Existe porque o webhook padrão vai para o grupo dos GESTORES, e há aviso que
+    não é para eles — o pedido de redefinição de senha, por exemplo (Otávio
+    23/07: "ali todos os gestores têm acesso e não seria útil para eles").
+    Sem a variável configurada, não envia nada: o aviso vive no painel, que é
+    onde o admin resolve. NUNCA cai no webhook do grupo."""
+    url = os.environ.get("SLACK_WEBHOOK_ADMIN_URL", "")
+    if not url:
+        return
+    httpx.post(url, json={"text": text}, timeout=30.0).raise_for_status()
+
+
 def send_text(text: str) -> None:
     """Posta `text` no canal do webhook. Levanta exceção em falha (sem retry
     silencioso: quem chama decide reportar)."""

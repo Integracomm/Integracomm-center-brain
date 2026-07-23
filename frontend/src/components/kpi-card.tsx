@@ -26,25 +26,29 @@ export interface KpiCardProps {
 export function KpiCard({ title, value, subtitle, icon: Icon, tone = "primary", caveat, className }: KpiCardProps) {
   const t = toneClasses[tone];
   return (
-    <div className={cn("relative flex items-start gap-4 rounded-xl p-5 shadow-sm border border-transparent", t.wash, className)}>
-      <div className={cn("flex h-11 w-11 shrink-0 items-center justify-center rounded-xl", t.iconBg)}>
-        <Icon className={cn("h-5 w-5", t.icon)} strokeWidth={2.2} />
-      </div>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground uppercase tracking-wide">
+    // Ícone + rótulo em cima; o VALOR embaixo, ocupando a largura inteira do
+    // card (Otávio 23/07). Antes o número dividia a coluna estreita com o
+    // ícone e quebrava em duas linhas: "R$ 186.671" tinha 91px para caber.
+    // Assim o espaço útil quase dobra e o número fica numa linha só.
+    <div className={cn("relative rounded-xl p-5 shadow-sm border border-transparent", t.wash, className)}>
+      <div className="flex items-start gap-3">
+        <div className={cn("flex h-11 w-11 shrink-0 items-center justify-center rounded-xl", t.iconBg)}>
+          <Icon className={cn("h-5 w-5", t.icon)} strokeWidth={2.2} />
+        </div>
+        <div className="flex min-w-0 flex-1 items-center gap-2 pt-0.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
           <span className="min-w-0 whitespace-normal leading-tight">{title}</span>
           {caveat && <Caveat text={caveat} />}
         </div>
-        <div className={cn(
-          "mt-1 font-display font-bold tabular-nums leading-tight text-foreground break-words",
-          // o número manda no tamanho: "R$ 186.671" não cabe em text-3xl numa
-          // coluna estreita (medido: 162px de texto em 91px de caixa)
-          value.length <= 6 ? "text-3xl" : value.length <= 10 ? "text-2xl" : "text-xl",
-        )}>
-          {value}
-        </div>
-        {subtitle && <div className="mt-1 text-sm text-muted-foreground">{subtitle}</div>}
       </div>
+      <div className={cn(
+        "mt-3 font-display font-bold tabular-nums leading-none text-foreground",
+        // mesmo com a largura toda, "1.252 / 1.506" não cabe em text-3xl numa
+        // coluna de 6 — o tamanho cede conforme o texto
+        value.length <= 8 ? "text-3xl" : value.length <= 12 ? "text-2xl" : "text-xl",
+      )}>
+        {value}
+      </div>
+      {subtitle && <div className="mt-1.5 text-sm text-muted-foreground">{subtitle}</div>}
     </div>
   );
 }

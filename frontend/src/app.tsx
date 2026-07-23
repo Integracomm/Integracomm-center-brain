@@ -37,7 +37,9 @@ const SPA_GROWTH_VIEWS = ["contas", "alertas", "cancelamentos"] as const;
 
 // itens SEM o prefixo da área (Otávio 21/07: já estamos dentro dela) —
 // o cabeçalho do grupo diz onde o usuário está
-const NAV: Array<{ href: string; label: string; spa: boolean; grupo?: string }> = [
+type ItemNav = { href: string; label: string; spa: boolean; grupo?: string; selo?: number };
+
+const NAV: Array<ItemNav> = [
   { href: "/growth?view=contas", label: "Contas", spa: true, grupo: "Growth / Assessoria" },
   { href: "/growth?view=alertas", label: "Alertas", spa: true },
   { href: "/growth?view=cancelamentos", label: "Cancelamentos", spa: true },
@@ -129,7 +131,7 @@ function Shell({ children }: { children: React.ReactNode }) {
   // (Otávio 23/07).
   const comNavGeral = ["/", "/central", "/semana", "/raiox"].includes(area);
   const home = useApi<HomePayload>(comNavGeral ? "/api/home" : "");
-  const navHome: Array<{ href: string; label: string; spa: boolean; grupo?: string }> = [
+  const navHome: Array<ItemNav> = [
     { href: "/", label: "Início", spa: true },
     ...(home.data?.areas ?? []).map((a, i) => ({
       href: a.href, label: a.nome, spa: true, grupo: i === 0 ? "Áreas" : undefined })),
@@ -137,7 +139,7 @@ function Shell({ children }: { children: React.ReactNode }) {
       href: v.href, label: v.nome, spa: true, grupo: i === 0 ? "Visões da empresa" : undefined })),
     ...(home.data?.admin ?? []).map((a, i) => ({
       href: a.href, label: a.nome, spa: a.slug === "central" || a.slug === "semana",
-      grupo: i === 0 ? "Admin" : undefined })),
+      grupo: i === 0 ? "Admin" : undefined, selo: a.pendencias })),
   ];
   const itens = comNavGeral ? navHome
     : NAV.filter((n) => (area === "/app" ? n.href === "/app" : n.href.startsWith(`${area}?`)));
@@ -194,6 +196,13 @@ function Shell({ children }: { children: React.ReactNode }) {
                     : "text-muted-foreground hover:bg-muted hover:text-foreground"
                 }`}>
                 {n.label}{!n.spa && <span className="ml-1 text-[10px] text-muted-foreground/60">(HTML)</span>}
+                {/* pendências do admin (pedido de senha, cadastro a aprovar):
+                    sem aviso no grupo do Slack, é aqui que ele fica sabendo */}
+                {!!n.selo && (
+                  <span className="ml-1.5 rounded-full bg-destructive px-1.5 py-0.5 text-[10px] font-bold text-destructive-foreground">
+                    {n.selo}
+                  </span>
+                )}
               </a>
               </span>
             );

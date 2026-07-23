@@ -411,11 +411,13 @@ async def recuperar_post(request: Request):
             registrar_pedido_reset(c, email)
     except Exception:  # noqa: BLE001 — nunca revelar falha específica aqui
         pass
+    # NÃO avisa o grupo dos gestores (Otávio 23/07): o pedido não é assunto
+    # deles. O aviso vive no Painel Administrativo — e, se houver um canal
+    # exclusivo do admin configurado, também lá.
     try:
-        from .slack import send_text, webhook_configured
-        if webhook_configured():
-            send_text("🔑 Pedido de redefinição de senha no painel — abra o Painel "
-                      "Administrativo para gerar o link.")
+        from .slack import send_admin_text
+        send_admin_text("🔑 Pedido de redefinição de senha no painel — abra o Painel "
+                        "Administrativo para gerar o link.")
     except Exception:  # noqa: BLE001 — aviso é bônus, não requisito
         pass
     return RedirectResponse("/recuperar?ok=1", status_code=303)
@@ -1147,6 +1149,24 @@ def api_home(request: Request):
              {"slug": "semana", "nome": "Ações da Semana", "href": "/semana"},
              {"slug": "admin", "nome": "Painel Administrativo", "href": "/admin"},
              {"slug": "allhands", "nome": "All Hands", "href": "/allhands"}] if role == "admin" else []
+    # o que ESPERA o admin — hoje só pedidos de senha e cadastros pendentes.
+    # É por aqui que ele fica sabendo: o pedido de senha não vai para o grupo
+    # do Slack (23/07), então precisa aparecer onde ele trabalha.
+    if role == "admin":
+        try:
+            with _conn() as c:
+                n_senha = len(pedidos_reset_abertos(c))
+                with c.cursor() as cur:
+                    cur.execute("SELECT count(*) FROM users WHERE status='pendente'")
+                    n_cad = int(cur.fetchone()[0])
+        except Exception:  # noqa: BLE001 — o contador nunca derruba a home
+            n_senha = n_cad = 0
+        for it in admin:
+            if it["slug"] == "admin":
+                it["pendencias"] = n_senha + n_cad
+                it["pendencias_detalhe"] = " · ".join(
+                    p for p in ((f"{n_senha} pedido(s) de senha" if n_senha else ""),
+                                (f"{n_cad} cadastro(s) a aprovar" if n_cad else "")) if p)
     return {"usuario": user, "role": role, "areas": areas, "visoes": visoes,
             "admin": admin}
 
