@@ -47,6 +47,13 @@ def view_response(request: Request, area: str, view: str):
     Habilitação por env SPA_<AREA>_VIEWS (csv) — ex.: SPA_GROWTH_VIEWS=
     "contas,alertas,cancelamentos". Vazio (padrão) = tudo no HTML; o flip por
     ambiente permite validar local sem tocar produção."""
+    # ESCOTILHA `?legado=1` (Lote 6): força a tela ANTIGA mesmo com a view
+    # migrada. Existe porque uma tela pode ter um sub-fluxo ainda não portado
+    # (ex.: a geração em lote do Relatório de Assessoria) — sem isso, ligar a
+    # flag tornaria esse fluxo inacessível. É uma ponte, não um destino: cada
+    # uso é uma pendência registrada.
+    if request.query_params.get("legado"):
+        return None
     habilitadas = {v.strip() for v in
                    os.environ.get(f"SPA_{area.upper()}_VIEWS", "").split(",") if v.strip()}
     if view not in habilitadas:

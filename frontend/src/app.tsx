@@ -4,6 +4,8 @@ import { BibliotecaPage } from "@/pages/biblioteca";
 import { GrowthContasPage } from "@/pages/growth/contas";
 import { GrowthAlertasPage } from "@/pages/growth/alertas";
 import { GrowthCancelamentosPage } from "@/pages/growth/cancelamentos";
+import { GrowthPlaybooksPage } from "@/pages/growth/playbooks";
+import { GrowthRelatoriosPage } from "@/pages/growth/relatorios";
 import { PrevendasPage } from "@/pages/prevendas";
 import { MelhorHorarioPage } from "@/pages/prevendas/melhor-horario";
 import { PrevendasSdrsPage } from "@/pages/prevendas/sdrs";
@@ -37,7 +39,7 @@ import { useApi } from "@/hooks/use-api";
 // respeita as MESMAS URLs (favoritos/links continuam valendo). Views ainda
 // não migradas de /growth (carga, playbooks, relatorios) seguem no HTML:
 // o backend só entrega o SPA para as views listadas em spa.py.
-const SPA_GROWTH_VIEWS = ["contas", "alertas", "cancelamentos"] as const;
+const SPA_GROWTH_VIEWS = ["contas", "alertas", "cancelamentos", "playbooks", "relatorios"] as const;
 
 // itens SEM o prefixo da área (Otávio 21/07: já estamos dentro dela) —
 // o cabeçalho do grupo diz onde o usuário está
@@ -48,8 +50,8 @@ const NAV: Array<ItemNav> = [
   { href: "/growth?view=alertas", label: "Alertas", spa: true },
   { href: "/growth?view=cancelamentos", label: "Cancelamentos", spa: true },
   { href: "/growth?view=carga", label: "Análise dos Squads", spa: false },
-  { href: "/growth?view=playbooks", label: "Playbooks", spa: false },
-  { href: "/growth?view=relatorios", label: "Relatórios", spa: false },
+  { href: "/growth?view=playbooks", label: "Playbooks", spa: true },
+  { href: "/growth?view=relatorios", label: "Relatórios", spa: true },
   { href: "/marketing?view=visao", label: "Visão Geral", spa: true, grupo: "Marketing" },
   { href: "/marketing?view=metas", label: "Metas do Semestre", spa: true },
   { href: "/marketing?view=funil", label: "Funil de Prospecção", spa: true },
@@ -119,6 +121,8 @@ function GrowthRouter() {
   const view = params.get("view") ?? "contas";
   if (view === "alertas") return <GrowthAlertasPage />;
   if (view === "cancelamentos") return <GrowthCancelamentosPage />;
+  if (view === "playbooks") return <GrowthPlaybooksPage />;
+  if (view === "relatorios") return <GrowthRelatoriosPage />;
   if (view === "contas" || !SPA_GROWTH_VIEWS.includes(view as never)) return <GrowthContasPage />;
   return <GrowthContasPage />;
 }

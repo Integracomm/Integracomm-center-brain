@@ -1171,6 +1171,44 @@ def api_home(request: Request):
             "admin": admin}
 
 
+@app.get("/api/growth/playbooks")
+def api_growth_playbooks(request: Request):
+    """Playbooks em dados (Lote 6) — EMBRULHA `_top_practices` e
+    `_recent_interventions`, que já eram funções puras. Nenhuma régua nova."""
+    _require_api(request)
+    with _conn() as c:
+        practices = _top_practices(c)
+        interv = _recent_interventions(c)
+    return {
+        "praticas": [{"driver": d, "driver_label": _DRIVER_LABEL.get(d, d),
+                      "acao": a, "reteve": n}
+                     for d, (a, n) in practices.items()],
+        "acoes": [{"conta": i.get("name"), "acao": i.get("action_text"),
+                   "desfecho": i.get("result"), "driver": i.get("driver"),
+                   "quando": _fmt_date_br(i.get("taken_at"))}
+                  for i in interv],
+    }
+
+
+@app.get("/api/growth/relatorios")
+def api_growth_relatorios(request: Request):
+    """Aba Relatórios em dados (Lote 6). O resumo é o MESMO `_report_from` de
+    /api/reports/summary e do envio ao Slack — aqui só se junta a lista de
+    contas do Relatório de Assessoria (que o bloco HTML monta no seletor)."""
+    _require_api(request)
+    with _conn() as c:
+        scores = _latest_scores(c)
+        rep = _report_from(scores, _open_alerts(c))
+    import datetime as _dt
+    prev = (_dt.date.today().replace(day=1) - _dt.timedelta(days=1)).strftime("%Y-%m")
+    return {"resumo": rep,
+            "stage_labels": _STAGE_LABEL,
+            "mes_referencia_padrao": prev,
+            "contas": [{"id": s["account_id"], "nome": s["name"]}
+                       for s in sorted(scores, key=lambda x: x["name"].lower())],
+            "bundles_churn": ["B1", "B2", "B3", "B4", "B5"]}
+
+
 @app.get("/api/rodape")
 def api_rodape(request: Request):
     """Rodapé de FONTE por área (procedência do dado + defasagem) + o e-mail da

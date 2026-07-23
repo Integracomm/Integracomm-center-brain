@@ -78,6 +78,21 @@ a suposta (janela diferente): as duas pontas usam o mês corrente. São deals cu
 que entram no total de Vendas (23) e em nenhum bundle (21). O `bundles_nota`
 recalcula isso sozinho e a nota aparece sob os cards.
 
+## Lote 6 — o que ficou no HTML (escotilha `?legado=1`)
+
+**1. Relatório de Assessoria (dentro de Growth › Relatórios).** É um fluxo de
+GERAÇÃO com estado de sessão (seleciona N clientes + mês → `POST
+/api/reports/batch` → lista os gerados na sessão), não uma visualização. Não
+portei: a migração até aqui só trocou telas de LEITURA, e um fluxo de geração
+em lote pede decisão sua sobre como ele deve se comportar no SPA (a lista "gerados
+nesta sessão" some ao recarregar, por exemplo). O link na tela nova abre a
+versão anterior via `?legado=1`.
+
+**2. A escotilha `?legado=1` é nova** (`spa.py`): força a tela antiga mesmo com
+a view migrada. Existe para o caso acima — sem ela, ligar a flag tornaria o
+fluxo de geração inacessível. É uma ponte, não um destino; cada uso é uma
+pendência aqui.
+
 ## Lote 0
 
 1. **Bundle JS de 755 KB (225 KB gzip)** — Recharts é o peso. Funciona normal;
