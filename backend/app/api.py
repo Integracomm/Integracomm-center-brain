@@ -1171,6 +1171,27 @@ def api_home(request: Request):
             "admin": admin}
 
 
+@app.get("/api/growth/carga")
+def api_growth_carga(request: Request):
+    """Análise dos Squads em dados (Lote 6) — EMBRULHA
+    `growth_carga.carga_dados`, a MESMA função que a tela HTML formata."""
+    _require_api(request)
+    from .growth_carga import carga_dados
+    with _conn() as c:
+        scores = _latest_scores(c)
+        try:
+            from .sources.mirror import carrega as _carrega_mirror
+            mirror = _carrega_mirror()
+        except Exception:  # noqa: BLE001 — espelho fora não derruba a aba
+            mirror = None
+        d = carga_dados(c, scores, mirror)
+        # o ranking/plano por squad é outra função pura já existente
+        an, sem_squad = _squad_analysis(scores)
+    d["analise"] = an
+    d["sem_squad"] = sem_squad
+    return d
+
+
 @app.get("/api/growth/playbooks")
 def api_growth_playbooks(request: Request):
     """Playbooks em dados (Lote 6) — EMBRULHA `_top_practices` e
@@ -3114,301 +3135,124 @@ _STAGE_LABEL = {"saudavel": "saudável", "desengajamento_inicial": "desengajamen
 
 
 def _carga_content(scores: list[dict], mirror: dict | None) -> str:
-    """Carga e Capacidade por Squad (cross-área #2, 14/07): risco por TIME e
-    por responsável, não por conta — alocação e suporte, NÃO ranking.
-    Squad = o REAL da planilha de composição (S1..S8, sem fragmentar por
-    serviço/bundle — feedback 14/07); responsável = campo 'gerente de contas'
-    do espelho da Operação (mistura Growth e GC; cobertura reportada)."""
-    def agrega(chave):
-        m: dict[str, dict] = {}
-        for s in scores:
-            k = chave(s)
-            d = m.setdefault(k, {"n": 0, "mrr": 0.0, "mrr_risco": 0.0, "crit": 0, "alto": 0,
-                                 "atencao": 0, "exec_atr": 0, "bandas": {"baixo": 0, "medio": 0, "alto": 0, "critico": 0, "sem": 0}})
-            d["n"] += 1
-            mrr = max(0.0, _mrr_val(s))
-            d["mrr"] += mrr
-            band = s["risk_band"] if s["evaluable"] else "sem"
-            d["bandas"][band if band in d["bandas"] else "sem"] += 1
-            if band in ("alto", "critico"):
-                d["mrr_risco"] += mrr
-            sev = s.get("alert_sev")
-            if sev in ("critico", "alto", "atencao"):
-                d[sev if sev != "critico" else "crit"] = d.get(sev if sev != "critico" else "crit", 0) + 1
-            if (s.get("exec_score") or 100) < 40:
-                d["exec_atr"] += 1
-        return m
+    """Análise dos Squads — HTML. O CÁLCULO vive em `growth_carga.carga_dados`
+    (Lote 6, extraído das 411 linhas que misturavam conta e marcação); aqui só
+    formatação, e o `/api/growth/carga` embrulha a mesma função."""
+    from .growth_carga import carga_dados
+    D = carga_dados(None, scores, mirror)
 
-    por_squad = agrega(lambda s: _resolve_squad(s["name"], mirror) or "(sem squad na planilha)")
-    tot_risco = sum(d["mrr_risco"] for d in por_squad.values()) or 1.0
     _td = "padding:7px 9px;border-bottom:1px solid var(--border);text-align:right;font-variant-numeric:tabular-nums;font-size:var(--fs-sm)"
     _tdl = _td.replace("text-align:right", "text-align:left")
 
-    def tabela(m, rotulo):
-        linhas = ""
-        for k, d in sorted(m.items(), key=lambda x: (x[0].startswith("(sem"), -x[1]["mrr_risco"], -x[1]["crit"])):
-            conc = d["mrr_risco"] / tot_risco
-            chip = (" <span class=chip style='--c:var(--status-critico)'>concentração de risco</span>"
-                    if (d["crit"] >= 3 or conc >= 0.3) and not k.startswith("(sem") else "")
-            faixas = (f"<span style='color:var(--status-baixo)'>{d['bandas']['baixo']}</span> · "
-                      f"<span style='color:var(--status-medio)'>{d['bandas']['medio']}</span> · "
-                      f"<span style='color:var(--status-alto)'>{d['bandas']['alto']}</span> · "
-                      f"<span style='color:var(--status-critico)'>{d['bandas']['critico']}</span>"
-                      + (f" · <span style='color:var(--text-faint)'>{d['bandas']['sem']} s/d</span>" if d['bandas']['sem'] else ""))
-            linhas += (f"<tr><td style='{_tdl}'><b>{escape(k)}</b>{chip}</td>"
-                       f"<td style='{_td}'>{d['n']}</td>"
-                       f"<td style='{_td}'>R$ {d['mrr']:,.0f}</td>".replace(",", ".") +
-                       f"<td style='{_td};color:var(--status-critico)'>{d['crit'] or ''}</td>"
-                       f"<td style='{_td}'>{d['alto'] or ''}</td>"
-                       f"<td style='{_td}'>{d['atencao'] or ''}</td>"
-                       f"<td style='{_td}'>R$ {d['mrr_risco']:,.0f} ({conc * 100:.0f}%)</td>".replace(",", ".") +
-                       f"<td style='{_td}'>{d['exec_atr'] or ''}</td>"
-                       f"<td style='{_td};text-align:center'>{faixas}</td></tr>")
-        ths = "".join(f"<th style='text-align:{al};padding:7px 9px;font-size:var(--fs-2xs)'>{h}</th>" for h, al in
-                      ((rotulo, "left"), ("Contas", "right"), ("MRR", "right"), ("Crít.", "right"),
-                       ("Alto", "right"), ("Aten.", "right"), ("MRR em risco", "right"),
-                       ("Exec. crítica", "right"), ("Faixas 🟢🟡🟠🔴", "center")))
-        return f"<div class=central style='padding:6px 14px 12px;overflow-x:auto'><table style='width:100%;border-collapse:collapse'><tr>{ths}</tr>{linhas}</table></div>"
-    # ---- capacidade de atendimento: carteira ÷ tamanho do time (14/07 —
-    # substitui 'Por responsável': não existe UM responsável, é o squad; o
-    # Growth é o líder. Pergunta: o time dá conta? Redistribuir clientes?
-    try:
-        from .sources.squads_sheet import squad_teams
-        times = squad_teams()
-    except Exception:  # noqa: BLE001 — planilha fora não derruba a aba
-        times = {}
-    cap_rows = []
-    for k, d in por_squad.items():
-        if k.startswith("(sem"):
-            continue
-        pessoas = len(times.get(k, []))
-        cap_rows.append((k, pessoas, d))
-    # tarefas ABERTAS por squad (Otávio 16/07): contas/pessoa sozinho engana —
-    # tarefas recorrentes (semanais+) fazem squads com MENOS contas carregarem
-    # MAIS trabalho; a carga real é o nº de tarefas ativas no ClickUp
-    try:
-        from .sources.clickup_activities import open_task_ids as _open_fn
-    except Exception:  # noqa: BLE001
-        _open_fn = None
-    # clientes pausados por inadimplência/concluídos ficam FORA das contagens
-    # de tarefas (capacidade e atrasos): serviço suspenso não é carga nem
-    # cobrança do squad (Otávio 20/07 — pausados inflavam os números)
-    try:
-        from .sources.clickup_activities import client_inactive_status as _inat_fn
-    except Exception:  # noqa: BLE001
-        _inat_fn = None
+    def _brl0(v):
+        return f"R$ {v:,.0f}".replace(",", ".")
 
-    def _inativo(nm: str) -> str | None:
-        return _inat_fn(nm) if _inat_fn else None
-    # dedupe por ID de tarefa (caso LUFRAN 20/07): cliente com 2+ contas no
-    # painel (bundle + ADS, ou grupo duplicado) casa com o MESMO card do
-    # ClickUp e a tarefa contava 2x. A conta 'principal' (não-ADS) entra
-    # primeiro e fica com a atribuição.
-    def _ordem_dedup(s):
-        return (s["name"].upper().lstrip("[ ").startswith("ADS"), s["name"])
-    tarefas_sq: dict[str, int] = {}
-    _abertas_vistas: set[str] = set()
-    if _open_fn is not None:
-        for s in sorted(scores, key=_ordem_dedup):
-            k_sq = _resolve_squad(s["name"], mirror)
-            if k_sq is None or _inativo(s["name"]):
-                continue
-            try:
-                ids = _open_fn(s["name"]) or set()
-            except Exception:  # noqa: BLE001 — conta sem match não derruba a aba
-                continue
-            novas = ids - _abertas_vistas
-            _abertas_vistas |= novas
-            tarefas_sq[k_sq] = tarefas_sq.get(k_sq, 0) + len(novas)
-    medias = [d["n"] / p for _k, p, d in cap_rows if p]
-    med_cp = (sum(medias) / len(medias)) if medias else None
-    _tps = [tarefas_sq.get(k, 0) / p for k, p, _d in cap_rows if p] if tarefas_sq else []
-    med_tp = (sum(_tps) / len(_tps)) if _tps else None
+    # ---- carga de risco por squad -----------------------------------------
+    linhas_r = ""
+    for r in D["ranking"]:
+        chip = (" <span class=chip style='--c:var(--status-critico)'>concentração de risco</span>"
+                if r["concentra_risco"] else "")
+        b = r["bandas"]
+        faixas = (f"<span style='color:var(--status-baixo)'>{b['baixo']}</span> · "
+                  f"<span style='color:var(--status-medio)'>{b['medio']}</span> · "
+                  f"<span style='color:var(--status-alto)'>{b['alto']}</span> · "
+                  f"<span style='color:var(--status-critico)'>{b['critico']}</span>"
+                  + (f" · <span style='color:var(--text-faint)'>{b['sem']} s/d</span>" if b["sem"] else ""))
+        linhas_r += (f"<tr><td style='{_tdl}'><b>{escape(r['squad'])}</b>{chip}</td>"
+                     f"<td style='{_td}'>{r['contas']}</td>"
+                     f"<td style='{_td}'>{_brl0(r['mrr'])}</td>"
+                     f"<td style='{_td};color:var(--status-critico)'>{r['criticos'] or ''}</td>"
+                     f"<td style='{_td}'>{r['altos'] or ''}</td>"
+                     f"<td style='{_td}'>{r['atencao'] or ''}</td>"
+                     f"<td style='{_td}'>{_brl0(r['mrr_risco'])} ({r['concentracao'] * 100:.0f}%)</td>"
+                     f"<td style='{_td}'>{r['exec_critica'] or ''}</td>"
+                     f"<td style='{_td};text-align:center'>{faixas}</td></tr>")
+    ths_r = "".join(f"<th style='text-align:{al};padding:7px 9px;font-size:var(--fs-2xs)'>{h}</th>" for h, al in
+                    (("Squad", "left"), ("Contas", "right"), ("MRR", "right"), ("Crít.", "right"),
+                     ("Alto", "right"), ("Aten.", "right"), ("MRR em risco", "right"),
+                     ("Exec. crítica", "right"), ("Faixas 🟢🟡🟠🔴", "center")))
+    tabela_risco = (f"<div class=central style='padding:6px 14px 12px;overflow-x:auto'>"
+                    f"<table style='width:100%;border-collapse:collapse'><tr>{ths_r}</tr>{linhas_r}</table></div>")
+
+    # ---- capacidade --------------------------------------------------------
     linhas_cap = ""
-    sobre, folga = [], []
-    for k, p, d in sorted(cap_rows, key=lambda x: -(x[2]["n"] / x[1] if x[1] else 0)):
-        cp = d["n"] / p if p else None
-        graves = d["crit"] + d["alto"]
+    for c in D["capacidade"]:
         chip = ""
-        if cp is not None and med_cp:
-            if cp >= med_cp * 1.3:
-                chip = " <span class=chip style='--c:var(--status-critico)'>sobrecarga</span>"
-                sobre.append((k, cp, graves))
-            elif cp <= med_cp * 0.7:
-                chip = " <span class=chip style='--c:var(--status-baixo)'>folga</span>"
-                folga.append((k, cp))
-        saudaveis = d["bandas"]["baixo"]
-        avaliadas = d["n"] - d["bandas"]["sem"]
-        mrr_p = f"R$ {d['mrr'] / p:,.0f}".replace(",", ".") if p else "—"
-        cp_txt = f"{cp:.1f}" if cp is not None else "—"
-        graves_p = f"{graves / p:.1f}" if p else "—"
-        saud_txt = f"{saudaveis / avaliadas * 100:.0f}%" if avaliadas else "—"
-        tar = tarefas_sq.get(k, 0)
-        tp = tar / p if p else None
-        # tarefas/pessoa colorida vs média: é a CARGA REAL — pode divergir de
-        # contas/pessoa quando o mix tem muita tarefa recorrente
+        if c["estado"] == "sobrecarga":
+            chip = " <span class=chip style='--c:var(--status-critico)'>sobrecarga</span>"
+        elif c["estado"] == "folga":
+            chip = " <span class=chip style='--c:var(--status-baixo)'>folga</span>"
         tp_cor = ""
-        if tp is not None and med_tp:
-            if tp >= med_tp * 1.3:
-                tp_cor = ";color:var(--status-critico);font-weight:700"
-            elif tp <= med_tp * 0.7:
-                tp_cor = ";color:var(--status-baixo)"
-        tar_txt = f"{tar}" if tarefas_sq else "—"
-        tp_txt = f"{tp:.0f}" if tp is not None and tarefas_sq else "—"
-        linhas_cap += (f"<tr><td style='{_tdl}'><b>{escape(k)}</b>{chip}</td>"
-                       f"<td style='{_td}'>{p or '—'}</td>"
-                       f"<td style='{_td}'>{d['n']}</td>"
+        if c["tom_tarefas"] == "critico":
+            tp_cor = ";color:var(--status-critico);font-weight:700"
+        elif c["tom_tarefas"] == "ok":
+            tp_cor = ";color:var(--status-baixo)"
+        cp_txt = f"{c['contas_pessoa']:.1f}" if c["contas_pessoa"] is not None else "—"
+        mrr_p = _brl0(c["mrr_pessoa"]) if c["mrr_pessoa"] is not None else "—"
+        graves_p = f"{c['graves_pessoa']:.1f}" if c["graves_pessoa"] is not None else "—"
+        saud = f"{c['pct_saudavel'] * 100:.0f}%" if c["pct_saudavel"] is not None else "—"
+        tar_txt = f"{c['tarefas_abertas']}" if D["tem_tarefas"] else "—"
+        tp_txt = (f"{c['tarefas_pessoa']:.0f}"
+                  if (c["tarefas_pessoa"] is not None and D["tem_tarefas"]) else "—")
+        linhas_cap += (f"<tr><td style='{_tdl}'><b>{escape(c['squad'])}</b>{chip}</td>"
+                       f"<td style='{_td}'>{c['pessoas'] or '—'}</td>"
+                       f"<td style='{_td}'>{c['contas']}</td>"
                        f"<td style='{_td}'><b>{cp_txt}</b></td>"
                        f"<td style='{_td}'>{tar_txt}</td>"
                        f"<td style='{_td}{tp_cor}'>{tp_txt}</td>"
                        f"<td style='{_td}'>{mrr_p}</td>"
                        f"<td style='{_td}'>{graves_p}</td>"
-                       f"<td style='{_td}'>{saud_txt}</td></tr>")
-    leitura_cap = "Cargas relativamente equilibradas entre os squads — sem caso claro de redistribuição agora."
-    if sobre:
-        pior = sobre[0]
-        alvo = f" O squad {folga[0][0]} tem folga ({folga[0][1]:.1f} contas/pessoa) e é o candidato natural a absorver contas do mesmo bundle." if folga else ""
-        leitura_cap = (f"{pior[0]} está com {pior[1]:.1f} contas por pessoa (média: {med_cp:.1f}) e {pior[2]} alerta(s) grave(s) — "
-                       f"candidato a redistribuição de clientes ou reforço.{alvo}")
-    if tarefas_sq and med_tp:
-        _rank_tp = sorted(((k, tarefas_sq.get(k, 0) / p) for k, p, _d in cap_rows if p), key=lambda x: -x[1])
-        _rank_cp = sorted(((k, d["n"] / p) for k, p, d in cap_rows if p), key=lambda x: -x[1])
-        if _rank_tp and _rank_cp and _rank_tp[0][0] != _rank_cp[0][0]:
-            leitura_cap += (f" Atenção à carga REAL de trabalho: {_rank_tp[0][0]} lidera em tarefas abertas/pessoa "
-                            f"({_rank_tp[0][1]:.0f}) embora {_rank_cp[0][0]} tenha mais contas/pessoa ({_rank_cp[0][1]:.1f}) — "
-                            "tarefas recorrentes fazem a carga diferir do tamanho da carteira; use as duas colunas juntas.")
+                       f"<td style='{_td}'>{saud}</td></tr>")
     ths_cap = "".join(f"<th style='text-align:{al};padding:7px 9px;font-size:var(--fs-2xs)'>{h}</th>" for h, al in
                       (("Squad", "left"), ("Pessoas", "right"), ("Contas", "right"), ("Contas/pessoa", "right"),
                        ("Tarefas abertas", "right"), ("Tarefas/pessoa", "right"),
                        ("MRR/pessoa", "right"), ("Graves/pessoa", "right"), ("% saudável", "right")))
-    # ---- atividades em atraso por squad e por responsável (Otávio 16/07): os
-    # atrasos que a aba Contas mostra por conta, agregados aqui por TIME e por
-    # pessoa — e cruzados com contas/pessoa p/ responder se o atraso vem de
-    # SOBRECARGA (capacidade) ou de RITMO/processo (squad sem excesso de carga)
-    from collections import Counter
-    try:
-        from .sources.clickup_activities import _overdue_from_clickup as _atr_fn
-    except Exception:  # noqa: BLE001 — sem ClickUp, a seção reporta indisponível
-        _atr_fn = None
-    atr_sq: dict[str, dict] = {}
-    atr_resp: dict[str, dict] = {}
-    atr_sem_squad = 0
-    atr_inativos = 0        # tarefas vencidas de clientes pausados/concluídos
-    atr_inativos_contas = 0  # (fora da conta — serviço suspenso; Otávio 20/07)
-    atr_dup = 0             # mesma tarefa em 2+ contas do MESMO cliente (LUFRAN)
-    _atr_vistas: set[str] = set()
-    if _atr_fn is not None:
-        _agora = dt.datetime.now(dt.timezone.utc)
-        for s in sorted(scores, key=_ordem_dedup):
-            try:
-                tasks = _atr_fn(s["name"], _agora) or []
-            except Exception:  # noqa: BLE001 — conta sem match não derruba a seção
-                tasks = []
-            if not tasks:
-                continue
-            if _inativo(s["name"]):
-                atr_inativos += len(tasks)
-                atr_inativos_contas += 1
-                continue
-            ineditas = [t for t in tasks if t["url"] not in _atr_vistas]
-            atr_dup += len(tasks) - len(ineditas)
-            _atr_vistas.update(t["url"] for t in ineditas)
-            tasks = ineditas
-            if not tasks:
-                continue
-            sq = _resolve_squad(s["name"], mirror)
-            if sq is None:
-                atr_sem_squad += len(tasks)
-            else:
-                d = atr_sq.setdefault(sq, {"tarefas": 0, "contas": 0, "pior": 0, "itens": []})
-                d["tarefas"] += len(tasks)
-                d["contas"] += 1
-                d["pior"] = max(d["pior"], max(t["dias_atraso"] for t in tasks))
-                d["itens"].extend((s["name"], t) for t in tasks)
-            for t in tasks:
-                for nome in (t.get("responsavel") or "(sem responsável)").split(", "):
-                    r = atr_resp.setdefault(nome, {"tarefas": 0, "contas": set(), "squads": Counter(),
-                                                   "pior": 0, "itens": []})
-                    r["tarefas"] += 1
-                    r["contas"].add(s["name"])
-                    r["itens"].append((s["name"], t))
-                    if sq:
-                        r["squads"][sq] += 1
-                    r["pior"] = max(r["pior"], t["dias_atraso"])
-    # atrasos/pessoa por squad (mesmo denominador da capacidade) + correlação
-    cp_by = {k: (d["n"] / p if p else None) for k, p, d in cap_rows}
-    pess_by = {k: p for k, p, _d in cap_rows}
-    apps = [atr_sq.get(k, {}).get("tarefas", 0) / p for k, p, _d in cap_rows if p]
-    med_app = (sum(apps) / len(apps)) if apps else None
 
-    def _pearson(pares: list[tuple[float, float]]) -> float | None:
-        n = len(pares)
-        if n < 3:
-            return None
-        mx = sum(x for x, _ in pares) / n
-        my = sum(y for _, y in pares) / n
-        sx = sum((x - mx) ** 2 for x, _ in pares) ** 0.5
-        sy = sum((y - my) ** 2 for _, y in pares) ** 0.5
-        if not sx or not sy:
-            return None
-        return sum((x - mx) * (y - my) for x, y in pares) / (sx * sy)
-
-    _r_atr = _pearson([(cp_by[k], atr_sq.get(k, {}).get("tarefas", 0) / p)
-                       for k, p, _d in cap_rows if p and cp_by.get(k) is not None])
-
-    # drill-down (Otávio 16/07): clicar no squad/responsável abre a lista das
-    # tarefas vencidas, cada uma com link direto p/ a TAREFA no ClickUp
-    def _atr_lista(itens: list[tuple[str, dict]]) -> str:
+    # ---- atividades em atraso (com drill-down) -----------------------------
+    def _atr_lista(itens):
         li = ""
-        for conta, t in sorted(itens, key=lambda x: -x[1]["dias_atraso"]):
-            nome_t = escape((t.get("nome") or "?")[:70])
-            if t.get("url"):
-                nome_t = (f"<a href='{t['url']}' target=_blank rel=noopener "
+        for it in itens:
+            nome_t = escape((it.get("tarefa") or "?")[:70])
+            if it.get("url"):
+                nome_t = (f"<a href='{it['url']}' target=_blank rel=noopener "
                           f"style='color:var(--text);text-decoration:underline;text-decoration-style:dotted' "
                           f"title='abrir a tarefa no ClickUp'>{nome_t}</a>")
-            venceu = f"{t['vence_em'][8:10]}/{t['vence_em'][5:7]}" if t.get("vence_em") else "—"
+            venceu = f"{it['vence_em'][8:10]}/{it['vence_em'][5:7]}" if it.get("vence_em") else "—"
             li += (f"<div style='display:flex;gap:10px;align-items:baseline;padding:4px 0;"
                    f"border-bottom:1px solid var(--border);font-size:var(--fs-xs)'>"
                    f"<span style='color:var(--status-critico);font-variant-numeric:tabular-nums;"
-                   f"min-width:44px;text-align:right'>{t['dias_atraso']} d</span>"
+                   f"min-width:44px;text-align:right'>{it['dias_atraso']} d</span>"
                    f"<span style='flex:1;min-width:220px'>{nome_t}"
-                   f"<span style='color:var(--text-muted)'> — {escape(conta[:42])}</span></span>"
-                   f"<span style='color:var(--text-muted)'>{escape(t.get('responsavel') or 'sem responsável')}</span>"
+                   f"<span style='color:var(--text-muted)'> — {escape(it['conta'][:42])}</span></span>"
+                   f"<span style='color:var(--text-muted)'>{escape(it.get('responsavel') or 'sem responsável')}</span>"
                    f"<span style='color:var(--text-faint);white-space:nowrap'>venceu {venceu}</span></div>")
         return (f"<div style='padding:6px 10px 10px;background:var(--bg-panel);"
                 f"border-radius:var(--radius-sm)'>{li}</div>")
 
-    linhas_atr, top_atr = "", None
-    for _i_sq, (k, _p, d) in enumerate(sorted(cap_rows, key=lambda x: -atr_sq.get(x[0], {}).get("tarefas", 0))):
-        a = atr_sq.get(k, {"tarefas": 0, "contas": 0, "pior": 0})
-        p = pess_by.get(k) or 0
-        app = a["tarefas"] / p if p else None
-        cp = cp_by.get(k)
+    linhas_atr = ""
+    for _i_sq, a in enumerate(D["atrasos_squad"]):
         chip = ""
-        # chip só quando o squad atrasa bem acima da média: a CAUSA provável
-        # vem da comparação com a carga (contas/pessoa vs média dos squads)
-        if app is not None and med_app and a["tarefas"] and app >= med_app * 1.3:
-            if cp is not None and med_cp and cp >= med_cp * 1.3:
-                chip = (" <span class=chip style='--c:var(--status-alto)' title='atrasos altos E carga alta: "
-                        "o atraso é coerente com sobrecarga — redistribuir contas ou reforçar o time'>capacidade</span>")
-            else:
-                chip = (" <span class=chip style='--c:var(--status-critico)' title='atrasos altos SEM carga acima da média: "
-                        "o gargalo não é falta de gente — revisar rotina, priorização e disciplina de prazo do squad'>ritmo/processo</span>")
-        if top_atr is None and a["tarefas"]:
-            top_atr = (k, a, chip)
-        pct = f"{a['contas'] / d['n'] * 100:.0f}%" if d["n"] else "—"
+        if a["diagnostico"] == "capacidade":
+            chip = (" <span class=chip style='--c:var(--status-alto)' title='atrasos altos E carga alta: "
+                    "o atraso é coerente com sobrecarga — redistribuir contas ou reforçar o time'>capacidade</span>")
+        elif a["diagnostico"] == "ritmo":
+            chip = (" <span class=chip style='--c:var(--status-critico)' title='atrasos altos SEM carga acima da média: "
+                    "o gargalo não é falta de gente — revisar rotina, priorização e disciplina de prazo do squad'>ritmo/processo</span>")
+        pct = f"{a['pct_carteira'] * 100:.0f}%" if a["pct_carteira"] is not None else "—"
         if a["tarefas"]:
             seta = ("<span style='color:var(--brand);font-size:var(--fs-2xs)' "
                     "title='clique para ver as tarefas'>▸</span> ")
             nome_sq = (f"<span style='cursor:pointer' onclick=\"atrTgl('atr-sq-{_i_sq}')\">"
-                       f"{seta}<b style='text-decoration:underline;text-decoration-style:dotted'>{escape(k)}</b></span>")
+                       f"{seta}<b style='text-decoration:underline;text-decoration-style:dotted'>{escape(a['squad'])}</b></span>")
         else:
-            nome_sq = f"<b>{escape(k)}</b>"
+            nome_sq = f"<b>{escape(a['squad'])}</b>"
+        app_ = a["tarefas_pessoa"]
+        cp = a["contas_pessoa"]
         linhas_atr += (f"<tr><td style='{_tdl}'>{nome_sq}{chip}</td>"
                        f"<td style='{_td};color:var(--status-critico)'><b>{a['tarefas'] or ''}</b></td>"
                        f"<td style='{_td}'>{a['contas'] or ''}</td>"
                        f"<td style='{_td}'>{pct}</td>"
-                       f"<td style='{_td}'>{f'{app:.1f}' if app is not None else '—'}</td>"
+                       f"<td style='{_td}'>{f'{app_:.1f}' if app_ is not None else '—'}</td>"
                        f"<td style='{_td}'>{f'{cp:.1f}' if cp is not None else '—'}</td>"
                        f"<td style='{_td}'>{a['pior'] or ''}</td></tr>")
         if a["tarefas"]:
@@ -3418,17 +3262,18 @@ def _carga_content(scores: list[dict], mirror: dict | None) -> str:
                       (("Squad", "left"), ("Tarefas atrasadas", "right"), ("Contas com atraso", "right"),
                        ("% da carteira", "right"), ("Atrasos/pessoa", "right"), ("Contas/pessoa", "right"),
                        ("Maior atraso (dias)", "right")))
+
     linhas_resp = ""
-    resp_ord = sorted(atr_resp.items(), key=lambda x: -x[1]["tarefas"])
-    for _i_r, (nome, r) in enumerate(resp_ord[:15]):
-        sq_txt = ", ".join(f"{s} ({n})" for s, n in r["squads"].most_common(3)) or "—"
+    resp_ord = D["atrasos_responsavel"]
+    for _i_r, r in enumerate(resp_ord[:15]):
+        sq_txt = ", ".join(r["squads_txt"]) if r.get("squads_txt") else "—"
         seta = ("<span style='color:var(--brand);font-size:var(--fs-2xs)' "
                 "title='clique para ver as tarefas'>▸</span> ")
         nome_r = (f"<span style='cursor:pointer' onclick=\"atrTgl('atr-rp-{_i_r}')\">"
-                  f"{seta}<b style='text-decoration:underline;text-decoration-style:dotted'>{escape(nome)}</b></span>")
+                  f"{seta}<b style='text-decoration:underline;text-decoration-style:dotted'>{escape(r['responsavel'])}</b></span>")
         linhas_resp += (f"<tr><td style='{_tdl}'>{nome_r}</td>"
                         f"<td style='{_td};color:var(--status-critico)'><b>{r['tarefas']}</b></td>"
-                        f"<td style='{_td}'>{len(r['contas'])}</td>"
+                        f"<td style='{_td}'>{r['contas']}</td>"
                         f"<td style='{_tdl}'>{escape(sq_txt)}</td>"
                         f"<td style='{_td}'>{r['pior']}</td></tr>"
                         f"<tr id='atr-rp-{_i_r}' style='display:none'>"
@@ -3436,51 +3281,21 @@ def _carga_content(scores: list[dict], mirror: dict | None) -> str:
     ths_resp = "".join(f"<th style='text-align:{al};padding:7px 9px;font-size:var(--fs-2xs)'>{h}</th>" for h, al in
                        (("Responsável", "left"), ("Tarefas atrasadas", "right"), ("Contas", "right"),
                         ("Squad(s)", "left"), ("Maior atraso (dias)", "right")))
-    # leitura automática: correlação carga × atraso responde a pergunta de
-    # capacidade no agregado; o chip por squad responde caso a caso
-    tot_atr = sum(a["tarefas"] for a in atr_sq.values())
-    if _atr_fn is None:
-        leitura_atr = "ClickUp não configurado — sem dados de atraso nesta visão."
-    elif not tot_atr:
-        leitura_atr = "Nenhuma tarefa aberta com vencimento estourado nos squads da planilha — carteira em dia."
-    else:
-        partes = []
-        if top_atr:
-            k, a, chip_top = top_atr
-            causa = (" — e a carga dele também está acima da média: atraso coerente com SOBRECARGA"
-                     if "capacidade" in chip_top else
-                     " — SEM carga acima da média: aponta para ritmo/processo, não falta de gente"
-                     if "ritmo" in chip_top else "")
-            partes.append(f"{k} concentra mais atrasos ({a['tarefas']} tarefas em {a['contas']} conta(s)){causa}.")
-        if _r_atr is not None:
-            if _r_atr >= 0.5:
-                partes.append(f"No agregado, atrasos ACOMPANHAM a carga (correlação {_r_atr:.2f} entre contas/pessoa e "
-                              "atrasos/pessoa): o quadro geral é de capacidade — redistribuição/reforço tende a resolver.")
-            elif _r_atr <= 0.1:
-                partes.append(f"No agregado, atrasos NÃO acompanham a carga (correlação {_r_atr:.2f}): squads mais "
-                              "carregados não são os que mais atrasam — o problema é de ritmo/processo em squads "
-                              "específicos, não de falta de gente.")
-            else:
-                partes.append(f"Correlação carga × atraso moderada ({_r_atr:.2f}): capacidade explica parte dos atrasos, "
-                              "mas há squads fora do padrão — olhar o chip de cada linha.")
-        sem_resp = atr_resp.get("(sem responsável)", {}).get("tarefas", 0)
-        if sem_resp:
-            partes.append(f"{sem_resp} tarefa(s) vencida(s) SEM responsável atribuído no ClickUp — atraso órfão, "
-                          "ninguém está sendo cobrado por elas.")
-        leitura_atr = " ".join(partes)
-    nota_atr = (f"<p class=note style='margin-top:8px'>{atr_sem_squad} tarefa(s) atrasada(s) em contas sem squad "
-                "identificado ficaram fora da tabela.</p>" if atr_sem_squad else "")
-    if atr_inativos:
-        nota_atr += (f"<p class=note style='margin-top:4px'>{atr_inativos} tarefa(s) vencida(s) de "
-                     f"{atr_inativos_contas} cliente(s) <b>pausado(s) por inadimplência ou concluído(s)</b> no ClickUp "
+
+    nota_atr = (f"<p class=note style='margin-top:8px'>{D['atrasos_sem_squad']} tarefa(s) atrasada(s) em contas sem squad "
+                "identificado ficaram fora da tabela.</p>" if D["atrasos_sem_squad"] else "")
+    if D["atrasos_inativos"]:
+        nota_atr += (f"<p class=note style='margin-top:4px'>{D['atrasos_inativos']} tarefa(s) vencida(s) de "
+                     f"{D['atrasos_inativos_contas']} cliente(s) <b>pausado(s) por inadimplência ou concluído(s)</b> no ClickUp "
                      "ficaram fora das contagens — serviço suspenso não é cobrança do squad. "
                      "Voltam a contar se o cliente reativar.</p>")
-    if atr_dup:
-        nota_atr += (f"<p class=note style='margin-top:4px'>{atr_dup} tarefa(s) apareciam em <b>mais de uma conta "
+    if D["atrasos_duplicados"]:
+        nota_atr += (f"<p class=note style='margin-top:4px'>{D['atrasos_duplicados']} tarefa(s) apareciam em <b>mais de uma conta "
                      "do mesmo cliente</b> (ex.: conta do bundle + conta ADS) e foram contadas UMA vez, na conta "
                      "principal — se o cliente tem grupos duplicados no painel, vale unificar.</p>")
     resto_resp = (f"<p class=note style='margin-top:8px'>+ {len(resp_ord) - 15} responsável(is) com menos atrasos "
                   "fora do top 15.</p>" if len(resp_ord) > 15 else "")
+
     atrasos_html = (
         "<section><h2>Atividades em atraso</h2>"
         "<p class=secsub>tarefas ABERTAS com vencimento estourado no ClickUp (as mesmas da coluna 'Atrasos' da aba Contas), "
@@ -3490,12 +3305,13 @@ def _carga_content(scores: list[dict], mirror: dict | None) -> str:
         "tarefas, cada uma com link direto no ClickUp</p>"
         "<script>function atrTgl(id){var e=document.getElementById(id);"
         "e.style.display=(e.style.display==='none')?'':'none';}</script>"
-        f"<div class=card><div class=sug-item>→ {escape(leitura_atr)}</div></div>"
+        f"<div class=card><div class=sug-item>→ {escape(D['leitura_atrasos'])}</div></div>"
         f"<div class=central style='padding:6px 14px 12px;overflow-x:auto'><table style='width:100%;border-collapse:collapse'>"
         f"<tr>{ths_atr}</tr>{linhas_atr}</table></div>{nota_atr}"
         "<div class=asslbl style='margin:14px 0 6px'>por responsável (assignee das tarefas vencidas no ClickUp)</div>"
         f"<div class=central style='padding:6px 14px 12px;overflow-x:auto'><table style='width:100%;border-collapse:collapse'>"
         f"<tr>{ths_resp}</tr>{linhas_resp}</table></div>{resto_resp}</section>")
+
     # análise/ranking por squad (antes na aba Relatórios — unificação 15/07:
     # 'Análise dos Squads' = ranking + insights + carga + capacidade num lugar só)
     _squad_an, _sem_squad = _squad_analysis(scores)
@@ -3512,12 +3328,12 @@ def _carga_content(scores: list[dict], mirror: dict | None) -> str:
         "<section><h2>Carga de risco por squad</h2>"
         "<p class=secsub>onde há carga desproporcional de contas críticas e MRR em risco — decidir realocação/reforço "
         "ANTES de a sobrecarga virar churn · chip = concentração (≥3 críticos ou ≥30% do MRR em risco)</p>"
-        + tabela(por_squad, "Squad") + "</section>"
+        + tabela_risco + "</section>"
         "<section><h2>Capacidade de atendimento</h2>"
         "<p class=secsub>carteira E carga de trabalho ÷ tamanho do time — contas/pessoa mede a carteira; "
         "<b>tarefas abertas/pessoa</b> mede o trabalho REAL no ClickUp (tarefas recorrentes fazem os dois divergirem) · "
         "chip sobrecarga/folga = contas/pessoa vs média · tarefas/pessoa em vermelho/verde = bem acima/abaixo da média</p>"
-        f"<div class=card><div class=sug-item>→ {escape(leitura_cap)}</div>"
+        f"<div class=card><div class=sug-item>→ {escape(D['leitura_capacidade'])}</div>"
         "<style>.sug-item{padding:7px 0 12px;font-size:var(--fs-sm);line-height:1.6;color:var(--text-2)}</style></div>"
         f"<div class=central style='padding:6px 14px 12px;overflow-x:auto'><table style='width:100%;border-collapse:collapse'>"
         f"<tr>{ths_cap}</tr>{linhas_cap}</table></div></section>"

@@ -129,4 +129,83 @@ else:
     check("ressalva de amostra pequena coerente com os dados",
           ("amostra pequena" in html_h) == any(x["amostra_pequena"] for x in dh["por_hora"]))
 
+
+# ------------------------------------------------------------ Growth · aba
+print("\n== Growth · Playbooks e Relatorios")
+
+with A._conn() as c:
+    practices = A._top_practices(c)
+    interv = A._recent_interventions(c)
+    html_pb = sem_tags(A._playbooks_content(practices, interv))
+    scores = A._latest_scores(c)
+    rep = A._report_from(scores, A._open_alerts(c))
+    html_rel = sem_tags(A._relatorios_content(rep, scores))
+
+if practices:
+    for d_, (acao, n) in list(practices.items())[:4]:
+        check(f"pratica “{acao[:26]}” ({n}x)", acao[:26] in html_pb)
+else:
+    check("playbooks: estado vazio COM caminho (nao so 'sem dados')",
+          "Registre as ações" in html_pb)
+for i in interv[:3]:
+    check(f"acao recente em “{(i.get('name') or '')[:22]}”",
+          (i.get("name") or "")[:22] in html_pb)
+
+# Relatorios: o resumo e o MESMO _report_from do envio ao Slack
+check(f"monitoradas {rep['monitoradas']}", str(rep["monitoradas"]) in html_rel)
+check(f"avaliaveis {rep['avaliaveis']}", str(rep["avaliaveis"]) in html_rel)
+check(f"alertas abertos {rep['alertas_total']}", str(rep["alertas_total"]) in html_rel)
+check(f"MRR em risco {rep['mrr_risco']:.0f}",
+      f"{rep['mrr_risco']:,.0f}".replace(",", ".") in html_rel)
+check(f"execucao critica {rep['exec_atrasada']}", str(rep["exec_atrasada"]) in html_rel)
+for pior in rep["piores"][:3]:
+    check(f"pior conta “{pior['nome'][:24]}”", pior["nome"][:24] in html_rel)
+for grupo, dist in (("faixa", rep["faixa"]), ("estagio", rep["estagio"]),
+                    ("trajetoria", rep["trajetoria"])):
+    tot = sum(dist.values())
+    check(f"distribuicao de {grupo}: {tot} contas somadas", tot > 0)
+check("botao de envio ao Slack presente no HTML", "Enviar ao Slack" in html_rel)
+
+
+# ------------------------------------------------- Growth · Analise dos Squads
+print("\n== Growth · Analise dos Squads (carga)")
+from app.growth_carga import carga_dados
+
+with A._conn() as c:
+    _scores = A._latest_scores(c)
+    dcg = carga_dados(c, _scores, None)
+    html_cg = sem_tags(A._carga_content(_scores, None))
+
+for r in dcg["ranking"][:5]:
+    check(f"squad {r['squad'][:14]}: {r['contas']} contas", str(r["contas"]) in html_cg)
+    if r["concentra_risco"]:
+        check(f"   selo de concentracao em {r['squad'][:12]}", "concentração de risco" in html_cg)
+for cp in dcg["capacidade"][:5]:
+    if cp["contas_pessoa"] is not None:
+        check(f"capacidade {cp['squad'][:14]}: {cp['contas_pessoa']:.1f} contas/pessoa",
+              f"{cp['contas_pessoa']:.1f}" in html_cg)
+    if cp["estado"]:
+        check(f"   estado “{cp['estado']}” marcado", cp["estado"] in html_cg)
+check("leitura da capacidade presente", dcg["leitura_capacidade"][:40] in html_cg)
+check("leitura dos atrasos presente", dcg["leitura_atrasos"][:40] in html_cg)
+for a_ in dcg["atrasos_squad"][:4]:
+    if a_["tarefas"]:
+        check(f"atrasos {a_['squad'][:14]}: {a_['tarefas']} tarefas", str(a_["tarefas"]) in html_cg)
+    if a_["diagnostico"]:
+        rot = "capacidade" if a_["diagnostico"] == "capacidade" else "ritmo/processo"
+        check(f"   diagnostico “{rot}” em {a_['squad'][:12]}", rot in html_cg)
+for r_ in dcg["atrasos_responsavel"][:3]:
+    check(f"responsavel {r_['responsavel'][:20]}: {r_['tarefas']} tarefas",
+          r_["responsavel"][:20] in html_cg)
+# as ressalvas do que ficou FORA da conta sao parte do numero
+if dcg["atrasos_inativos"]:
+    check("ressalva de clientes pausados/concluidos", "pausado(s) por inadimplência" in html_cg)
+if dcg["atrasos_duplicados"]:
+    check("ressalva de tarefa em 2+ contas do mesmo cliente",
+          "mais de uma conta" in html_cg)
+if dcg["atrasos_sem_squad"]:
+    check("ressalva de contas sem squad", "sem squad" in html_cg)
+check("correlacao carga x atraso calculada (ou None com <3 squads)",
+      dcg["correlacao_carga_atraso"] is None or -1 <= dcg["correlacao_carga_atraso"] <= 1)
+
 print(f"\n=========== LOTE 6 · PARIDADE: {ok} OK · {fail} FALHA(S) ===========")
