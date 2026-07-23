@@ -6,6 +6,7 @@ import { GrowthAlertasPage } from "@/pages/growth/alertas";
 import { GrowthCancelamentosPage } from "@/pages/growth/cancelamentos";
 import { PrevendasPage } from "@/pages/prevendas";
 import { MelhorHorarioPage } from "@/pages/prevendas/melhor-horario";
+import { PrevendasSdrsPage } from "@/pages/prevendas/sdrs";
 import { VendasWinLossPage } from "@/pages/vendas/winloss";
 import { VendasFunilPage } from "@/pages/vendas/funil";
 import { VendasPontePage } from "@/pages/vendas/ponte";
@@ -59,7 +60,7 @@ const NAV: Array<ItemNav> = [
   { href: "/prevendas?view=funil", label: "Qualificação & Speed", spa: true, grupo: "Pré-vendas" },
   { href: "/prevendas?view=horarios", label: "Melhor Horário", spa: true },
   { href: "/prevendas?view=ponte", label: "Ponte PV → Vendas", spa: true },
-  { href: "/prevendas?view=sdrs", label: "Desempenho Individual", spa: false },
+  { href: "/prevendas?view=sdrs", label: "Desempenho Individual", spa: true },
   { href: "/vendas?view=funil", label: "Funil de Fechamento", spa: true, grupo: "Vendas" },
   { href: "/vendas?view=ponte", label: "Ponte PV → Vendas", spa: true },
   { href: "/vendas?view=winloss", label: "Win/Loss", spa: true },
@@ -77,6 +78,7 @@ function PrevendasRouter() {
   const view = params.get("view") ?? "funil";
   if (view === "horarios") return <MelhorHorarioPage />;
   if (view === "ponte") return <VendasPontePage />; // MESMA tela nas duas áreas (HTML idem)
+  if (view === "sdrs") return <PrevendasSdrsPage />;
   return <PrevendasPage />; // funil e speed viraram UMA página no redesenho
 }
 

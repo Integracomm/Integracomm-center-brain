@@ -583,3 +583,169 @@ def vd_ciclo_dados(conn: Any, ini: dt.date, fim: dt.date) -> dict:
                        "valor": _f(val), "dias": round(float(dias), 0)}
                       for did, _sid, val, prod, own, dias in empacados],
     }
+
+
+def pv_sdrs_dados(conn: Any, ini: dt.date, fim: dt.date) -> dict:
+    """Desempenho individual de PRÉ-VENDAS (Lote 6). Extraído de `_pv_sdrs`
+    (sales/ui.py) sem mudar régua nenhuma — o HTML e o SPA passam a ler daqui.
+
+    Régua (a mesma dos gráficos do Pipedrive que a gestão acompanha):
+      atribuição = campo SDR do deal, SEM fallback; deal sem o campo cai em
+      '(sem SDR definido)'. Leads = deals CRIADOS no período; Oportunidades =
+      Dia Oportunidade no período (todos os deals, não é coorte); Bookings =
+      won no período. Speed = mediana do 1º contato registrado.
+    Desligados (detectados no Pipedrive) NÃO aparecem: os números deles vão
+    para a linha agregada '(ex-colaboradores)', para o Total continuar fechando.
+    """
+    from .. import team_config as TC
+    a, b = _brt(ini, fim)
+    SEM = "(sem SDR definido)"
+
+    with conn.cursor() as cur:
+        cur.execute("""SELECT COALESCE(sdr, %s), count(*)
+                         FROM mkt_deals_attribution
+                        WHERE add_time >= %s AND add_time < %s GROUP BY 1""", (SEM, a, b))
+        leads_por = dict(cur.fetchall())
+        cur.execute("""SELECT COALESCE(sdr, %s), count(*)
+                         FROM mkt_deals_attribution
+                        WHERE oport_time >= %s AND oport_time < %s GROUP BY 1""", (SEM, a, b))
+        oport_por = dict(cur.fetchall())
+        cur.execute("""SELECT COALESCE(sdr, %s), count(*),
+                              COALESCE(sum(COALESCE(valor_custom, valor)), 0)
+                         FROM mkt_deals_attribution
+                        WHERE status='won' AND won_time >= %s AND won_time < %s GROUP BY 1""",
+                    (SEM, a, b))
+        book_por = {n: (q, float(v)) for n, q, v in cur.fetchall()}
+        cur.execute("""
+            SELECT t.quem,
+                   percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(epoch FROM t.first_at - d.add_time) / 60)
+              FROM sales_first_touch t
+              JOIN mkt_deals_attribution d ON d.deal_id = t.deal_id
+             WHERE d.add_time >= %s AND d.add_time < %s AND t.quem IS NOT NULL AND t.quem <> ''
+             GROUP BY 1""", (a, b))
+        speed_por = {TC.norm(q): float(s) for q, s in cur.fetchall() if s is not None}
+
+    nomes = sorted(set(leads_por) | set(oport_por),
+                   key=lambda n: (n == SEM, -leads_por.get(n, 0), -oport_por.get(n, 0)))
+    pessoas, visiveis = [], []
+    total = {"leads": 0, "oport": 0, "book": 0}
+    ex = {"leads": 0, "oport": 0, "book": 0}
+    for nome in nomes[:15]:
+        l, o = leads_por.get(nome, 0), oport_por.get(nome, 0)
+        bq, _bv = book_por.get(nome, (0, 0.0))
+        total["leads"] += l; total["oport"] += o; total["book"] += bq
+        if nome != SEM and TC.eh_desligado(conn, "prevendas", nome):
+            ex["leads"] += l; ex["oport"] += o; ex["book"] += bq
+            continue
+        if nome != SEM:
+            visiveis.append(nome)
+        papel = None if nome == SEM else TC.papel_de(conn, "prevendas", nome)
+        pessoas.append({
+            "nome": nome, "sem_sdr": nome == SEM, "papel": papel,
+            # o rótulo do chip acompanha a cor (regra da biblioteca)
+            "papel_label": {"coordenacao": "coordenação", "gerencia": "gerência",
+                            "membro": None}.get(papel, None if nome == SEM else "fora do time de PV"),
+            "leads": l, "oport": o, "taxa": (o / l if l else None),
+            "bookings": bq, "speed_min": speed_por.get(TC.norm(nome)),
+        })
+    total["taxa"] = (total["oport"] / total["leads"]) if total["leads"] else None
+
+    cols = visiveis[:5]  # os estudos cruzados cabem em 5 colunas sem rolar
+
+    # (a) motivos de DESQUALIFICAÇÃO por SDR — perdidos antes do handoff
+    with conn.cursor() as cur:
+        cur.execute("""SELECT COALESCE(sdr, %s), COALESCE(lost_reason, '(sem motivo)'), count(*)
+                         FROM mkt_deals_attribution
+                        WHERE add_time >= %s AND add_time < %s AND status='lost'
+                          AND stage_id NOT IN (6, 5, 7)
+                        GROUP BY 1, 2""", (SEM, a, b))
+        desq_por: dict = {}
+        for nome, m, n in cur.fetchall():
+            desq_por.setdefault(nome, []).append((m, int(n)))
+    desqualificacao = []
+    for nome in cols:
+        motivos = sorted(desq_por.get(nome) or [], key=lambda x: -x[1])
+        tot_d = sum(n for _m, n in motivos)
+        desqualificacao.append({
+            "nome": nome, "total": tot_d, "leads": leads_por.get(nome, 0),
+            "motivos": [{"motivo": m, "n": n, "pct": (n / tot_d if tot_d else 0),
+                         "sem_motivo": m == "(sem motivo)"} for m, n in motivos[:4]],
+        })
+
+    # (b) conversão lead→oportunidade por ORIGEM × SDR (coorte do período)
+    with conn.cursor() as cur:
+        cur.execute("""SELECT COALESCE(sdr, %s), COALESCE(origem, '(vazio)'), count(*),
+                              count(*) FILTER (WHERE oport_time IS NOT NULL)
+                         FROM mkt_deals_attribution
+                        WHERE add_time >= %s AND add_time < %s GROUP BY 1, 2""", (SEM, a, b))
+        ori: dict = {}
+        ori_tot: dict = {}
+        for nome, og, n, op in cur.fetchall():
+            ori.setdefault(og, {})[nome] = (int(n), int(op))
+            t = ori_tot.setdefault(og, [0, 0])
+            t[0] += int(n); t[1] += int(op)
+    origens_top = sorted((og for og, t in ori_tot.items() if t[0] >= 10),
+                         key=lambda og: -ori_tot[og][0])[:8]
+    origens = []
+    for og in origens_top:
+        tl_o, to_o = ori_tot[og]
+        tx_time = to_o / tl_o if tl_o else 0
+        celulas = []
+        for nome in cols:
+            n, op = ori.get(og, {}).get(nome, (0, 0))
+            tx = (op / n) if n else None
+            # destaque só com amostra: <8 leads não vira diagnóstico
+            tom = None
+            if n >= 8 and tx_time:
+                tom = "ok" if tx >= tx_time * 1.15 else ("ruim" if tx <= tx_time * 0.7 else None)
+            celulas.append({"nome": nome, "n": n, "oport": op, "taxa": tx, "tom": tom,
+                            "amostra_pequena": 0 < n < 8})
+        origens.append({"origem": og, "leads": tl_o, "oport": to_o,
+                        "taxa_time": tx_time, "celulas": celulas})
+
+    # (c) oportunidades por PLANO × SDR
+    with conn.cursor() as cur:
+        cur.execute("""SELECT COALESCE(sdr, %s),
+                              COALESCE(substring(produto FROM 'B[1-5]'),
+                                       CASE WHEN produto IS NULL OR produto = '' THEN '(sem plano)' ELSE 'outros' END),
+                              count(*)
+                         FROM mkt_deals_attribution
+                        WHERE oport_time >= %s AND oport_time < %s GROUP BY 1, 2""", (SEM, a, b))
+        bnd: dict = {}
+        for nome, bd, n in cur.fetchall():
+            bnd.setdefault(bd, {})[nome] = int(n)
+    ordem_b = [x for x in ("B1", "B2", "B3", "B4", "B5", "outros", "(sem plano)") if x in bnd] \
+        + sorted(set(bnd) - {"B1", "B2", "B3", "B4", "B5", "outros", "(sem plano)"})
+    tot_sdr_b = {nome: sum(bnd[bd].get(nome, 0) for bd in bnd) for nome in cols}
+    planos = [{"plano": bd,
+               "celulas": [{"nome": nome, "n": bnd[bd].get(nome, 0),
+                            "pct": (bnd[bd].get(nome, 0) / tot_sdr_b[nome]) if tot_sdr_b.get(nome) else 0}
+                           for nome in cols]}
+              for bd in ordem_b]
+
+    # planos de ação individuais — DETERMINÍSTICOS (especialista.plano_sdr
+    # compara com a mediana do time; não é texto de LLM), então entram no
+    # payload em vez de ficarem só no HTML. Ordem: maior taxa primeiro.
+    from .especialista import plano_sdr, PERSONA_PREVENDAS, COORD_PREVENDAS
+    time_stats = [{"nome": x["nome"], "leads": x["leads"], "agendadas": x["oport"],
+                   "taxa_agend": x["taxa"], "speed_min": x["speed_min"], "ativo": True}
+                  for x in pessoas if x["papel"] == "membro"]
+    _desq = {x["nome"]: x["motivos"] for x in desqualificacao}
+    acoes_individuais = []
+    for pes in sorted(time_stats, key=lambda x: -(x["taxa_agend"] or 0)):
+        mot = [m for m in (_desq.get(pes["nome"]) or []) if not m["sem_motivo"]]
+        if mot:
+            top = max(mot, key=lambda x: x["n"])
+            if top["n"] >= 5:
+                pes["desq_top"] = (top["motivo"], top["n"])
+        pl = plano_sdr(pes, time_stats)
+        acoes_individuais.append({"nome": pes["nome"], "fortes": pl["fortes"],
+                                  "fracos": pl["fracos"], "acoes": pl["acoes"]})
+
+    return {"ini": ini.isoformat(), "fim": fim.isoformat(),
+            "pessoas": pessoas, "total": total,
+            "ex_colaboradores": (ex if any(ex.values()) else None),
+            "colunas": cols, "desqualificacao": desqualificacao,
+            "origens": origens, "planos": planos,
+            "acoes_individuais": acoes_individuais,
+            "persona": PERSONA_PREVENDAS, "coordenacao": COORD_PREVENDAS}

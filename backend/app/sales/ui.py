@@ -395,94 +395,46 @@ def _pv_speed(conn, request: Request) -> str:
 
 
 def _pv_sdrs(conn, request: Request) -> str:
+    """Desempenho individual de PV — HTML. O CÁLCULO vive em
+    `sales.dados.pv_sdrs_dados` (Lote 6): esta função só formata, e o
+    `/api/prevendas/sdrs` embrulha a mesma função. Nenhuma régua aqui."""
     _ensure_touch(conn)
     ini, fim, form = _periodo(request)
-    a, b = _brt(ini, fim)
-    from .. import team_config as TC
+    from .dados import pv_sdrs_dados
+    d = pv_sdrs_dados(conn, ini, fim)
 
-    # ---- números OFICIAIS por colaborador (régua dos gráficos do Pipedrive/
-    # Insights que a gestão acompanha): atribuição = campo SDR do deal, SEM
-    # fallback — deal sem o campo entra em '(sem SDR definido)'. Leads = deals
-    # CRIADOS no período; Oportunidades = campo Dia Oportunidade no período
-    # (TODOS os deals, não é coorte); Bookings = won no período
-    _SEM = "(sem SDR definido)"
-    with conn.cursor() as cur:
-        cur.execute("""SELECT COALESCE(sdr, %s), count(*)
-                         FROM mkt_deals_attribution
-                        WHERE add_time >= %s AND add_time < %s GROUP BY 1""", (_SEM, a, b))
-        leads_por = dict(cur.fetchall())
-        cur.execute("""SELECT COALESCE(sdr, %s), count(*)
-                         FROM mkt_deals_attribution
-                        WHERE oport_time >= %s AND oport_time < %s GROUP BY 1""", (_SEM, a, b))
-        oport_por = dict(cur.fetchall())
-        cur.execute("""SELECT COALESCE(sdr, %s), count(*),
-                              COALESCE(sum(COALESCE(valor_custom, valor)), 0)
-                         FROM mkt_deals_attribution
-                        WHERE status='won' AND won_time >= %s AND won_time < %s GROUP BY 1""", (_SEM, a, b))
-        book_por = {n: (q, float(v)) for n, q, v in cur.fetchall()}
-    # speed do 1º contato por pessoa (sales_first_touch) — entra como COLUNA
-    # da mesma tabela, casada por nome; os volumes são sempre os oficiais acima
-    with conn.cursor() as cur:
-        cur.execute("""
-            SELECT t.quem,
-                   percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(epoch FROM t.first_at - d.add_time) / 60)
-              FROM sales_first_touch t
-              JOIN mkt_deals_attribution d ON d.deal_id = t.deal_id
-             WHERE d.add_time >= %s AND d.add_time < %s AND t.quem IS NOT NULL AND t.quem <> ''
-             GROUP BY 1""", (a, b))
-        speed_por = {TC.norm(q): float(s) for q, s in cur.fetchall() if s is not None}
+    def _abrev(n: str) -> str:
+        ps = n.split()
+        return n if len(ps) < 2 else f"{ps[0]} {ps[1][0]}."
 
-    colaboradores = sorted(set(leads_por) | set(oport_por),
-                           key=lambda n: (n == _SEM, -leads_por.get(n, 0), -oport_por.get(n, 0)))
-    orows, tl, ex = "", [0, 0, 0], [0, 0, 0]
-    time_stats, planos, visiveis = [], "", []
-    for nome in colaboradores[:15]:
-        l, o = leads_por.get(nome, 0), oport_por.get(nome, 0)
-        bq, _bv = book_por.get(nome, (0, 0.0))
-        tl[0] += l; tl[1] += o; tl[2] += bq
-        # desligados (detecção automática no Pipedrive) NÃO aparecem — os
-        # números vão p/ a linha agregada '(ex-colaboradores)' p/ o Total fechar
-        if nome != _SEM and TC.eh_desligado(conn, "prevendas", nome):
-            ex[0] += l; ex[1] += o; ex[2] += bq
-            continue
-        if nome != _SEM:
-            visiveis.append(nome)
-        speed = speed_por.get(TC.norm(nome))
-        papel = TC.papel_de(conn, "prevendas", nome)
-        if nome == _SEM:
-            chip = ""
-        elif papel == "coordenacao":
-            # coordenação trabalha leads mas não entra em planos/mediana do time
-            chip = " <span class=chip style='--c:var(--brand)'>coordenação</span>"
-        elif papel == "gerencia":
-            chip = " <span class=chip style='--c:var(--brand)'>gerência</span>"
-        elif papel == "membro":
-            chip = ""
-        else:
-            chip = " <span class=chip style='--c:var(--status-semdados)'>fora do time de PV</span>"
-        orows += (f"<tr><td style='{_TD}'><b>{escape(nome[:30])}</b>{chip}</td>"
-                  f"<td style='{_TD};text-align:right'>{l}</td>"
-                  f"<td style='{_TD};text-align:right'>{o}</td>"
-                  f"<td style='{_TD};text-align:right'>{_fmt(o / l if l else None, 'pct')}</td>"
-                  f"<td style='{_TD};text-align:right'>{bq or ''}</td>"
-                  f"<td style='{_TD};text-align:right'>{_fmt(speed, 'min')}</td></tr>")
-        if papel == "membro":
-            time_stats.append({"nome": nome, "leads": l, "agendadas": o,
-                               "taxa_agend": (o / l if l else None), "speed_min": speed,
-                               "ativo": True})
-    if any(ex):
+    # ---- tabela oficial por colaborador
+    orows = ""
+    for pes in d["pessoas"]:
+        lbl = pes["papel_label"]
+        cor = "--brand" if pes["papel"] in ("coordenacao", "gerencia") else "--status-semdados"
+        chip = f" <span class=chip style='--c:var({cor})'>{escape(lbl)}</span>" if lbl else ""
+        orows += (f"<tr><td style='{_TD}'><b>{escape(pes['nome'][:30])}</b>{chip}</td>"
+                  f"<td style='{_TD};text-align:right'>{pes['leads']}</td>"
+                  f"<td style='{_TD};text-align:right'>{pes['oport']}</td>"
+                  f"<td style='{_TD};text-align:right'>{_fmt(pes['taxa'], 'pct')}</td>"
+                  f"<td style='{_TD};text-align:right'>{pes['bookings'] or ''}</td>"
+                  f"<td style='{_TD};text-align:right'>{_fmt(pes['speed_min'], 'min')}</td></tr>")
+    ex = d["ex_colaboradores"]
+    if ex:
         orows += (f"<tr><td style='{_TD};color:var(--text-faint)'>(ex-colaboradores)</td>"
-                  f"<td style='{_TD};text-align:right;color:var(--text-faint)'>{ex[0] or ''}</td>"
-                  f"<td style='{_TD};text-align:right;color:var(--text-faint)'>{ex[1] or ''}</td>"
+                  f"<td style='{_TD};text-align:right;color:var(--text-faint)'>{ex['leads'] or ''}</td>"
+                  f"<td style='{_TD};text-align:right;color:var(--text-faint)'>{ex['oport'] or ''}</td>"
                   f"<td style='{_TD}'></td>"
-                  f"<td style='{_TD};text-align:right;color:var(--text-faint)'>{ex[2] or ''}</td>"
+                  f"<td style='{_TD};text-align:right;color:var(--text-faint)'>{ex['book'] or ''}</td>"
                   f"<td style='{_TD}'></td></tr>")
-    orows += (f"<tr><td style='{_TD};border-top:2px solid var(--border-strong)'><b>Total</b></td>"
-              f"<td style='{_TD};text-align:right;border-top:2px solid var(--border-strong)'><b>{tl[0]}</b></td>"
-              f"<td style='{_TD};text-align:right;border-top:2px solid var(--border-strong)'><b>{tl[1]}</b></td>"
-              f"<td style='{_TD};text-align:right;border-top:2px solid var(--border-strong)'>{_fmt(tl[1] / tl[0] if tl[0] else None, 'pct')}</td>"
-              f"<td style='{_TD};text-align:right;border-top:2px solid var(--border-strong)'><b>{tl[2]}</b></td>"
-              f"<td style='{_TD};border-top:2px solid var(--border-strong)'></td></tr>")
+    t = d["total"]
+    _bt = "border-top:2px solid var(--border-strong)"
+    orows += (f"<tr><td style='{_TD};{_bt}'><b>Total</b></td>"
+              f"<td style='{_TD};text-align:right;{_bt}'><b>{t['leads']}</b></td>"
+              f"<td style='{_TD};text-align:right;{_bt}'><b>{t['oport']}</b></td>"
+              f"<td style='{_TD};text-align:right;{_bt}'>{_fmt(t['taxa'], 'pct')}</td>"
+              f"<td style='{_TD};text-align:right;{_bt}'><b>{t['book']}</b></td>"
+              f"<td style='{_TD};{_bt}'></td></tr>")
     oficial = ("<section><h2>Leads e oportunidades por colaborador</h2>"
                "<p class=secsub>volumes na régua dos gráficos do Pipedrive (atribuição pelo campo SDR do deal; "
                "leads = criados no período · oportunidades = Dia Oportunidade no período) · Speed = mediana do 1º contato registrado (atividades) · "
@@ -490,130 +442,88 @@ def _pv_sdrs(conn, request: Request) -> str:
                + _card(_tbl([("Colaborador", "left"), ("Leads", "right"), ("Oportunidades", "right"),
                              ("Lead→Oport", "right"), ("Bookings", "right"), ("Speed 1º contato", "right")], orows)) + "</section>")
 
-    # ---- estudos por SDR (pedidos 14/07): desqualificação, origem e plano ---
-    cols = visiveis[:5]
+    cols = d["colunas"]
     _nc = "padding:6px 7px;border-bottom:1px solid var(--border);font-variant-numeric:tabular-nums;font-size:var(--fs-xs)"
 
-    def _abrev(n: str) -> str:
-        ps = n.split()
-        return n if len(ps) < 2 else f"{ps[0]} {ps[1][0]}."
-
-    # (a) motivos de DESQUALIFICAÇÃO por SDR (perdidos pré-handoff da coorte)
-    with conn.cursor() as cur:
-        cur.execute("""SELECT COALESCE(sdr, %s), COALESCE(lost_reason, '(sem motivo)'), count(*)
-                         FROM mkt_deals_attribution
-                        WHERE add_time >= %s AND add_time < %s AND status='lost'
-                          AND stage_id NOT IN (6, 5, 7)
-                        GROUP BY 1, 2""", (_SEM, a, b))
-        desq_por: dict[str, list[tuple[str, int]]] = {}
-        for nome, m, n in cur.fetchall():
-            desq_por.setdefault(nome, []).append((m, n))
+    # (a) desqualificação — HTML PRESERVADO do original (a extração não pode
+    # mudar a tela; a única fonte que mudou é de onde vêm os números)
     dcards = ""
-    for nome in cols:
-        motivos = desq_por.get(nome) or []
-        tot_d = sum(n for _m, n in motivos)
-        l_tot = leads_por.get(nome, 0)
+    for item in d["desqualificacao"]:
         linhas_m = ""
-        for m, n in sorted(motivos, key=lambda x: -x[1])[:4]:
-            pct = n / tot_d if tot_d else 0
-            cor_txt = "var(--text-faint)" if m == "(sem motivo)" else "var(--text-2)"
+        for m in item["motivos"]:
+            pct = m["pct"]
+            cor_txt = "var(--text-faint)" if m["sem_motivo"] else "var(--text-2)"
             linhas_m += (
                 f"<div style='margin-top:7px'><div style='display:flex;justify-content:space-between;gap:8px;"
-                f"font-size:var(--fs-xs);color:{cor_txt}'><span>{escape(str(m)[:38])}</span>"
-                f"<span style='white-space:nowrap;font-variant-numeric:tabular-nums'><b>{n}</b> · {_fmt(pct, 'pct')}</span></div>"
+                f"font-size:var(--fs-xs);color:{cor_txt}'><span>{escape(str(m['motivo'])[:38])}</span>"
+                f"<span style='white-space:nowrap;font-variant-numeric:tabular-nums'><b>{m['n']}</b> · {_fmt(pct, 'pct')}</span></div>"
                 f"<div style='height:4px;background:var(--surface-3);border-radius:2px;overflow:hidden;margin-top:2px'>"
                 f"<div style='height:100%;width:{pct * 100:.0f}%;background:var(--status-alto);border-radius:2px'></div></div></div>")
+        l_tot = item["leads"]
         dcards += (f"<div class=card><div style='display:flex;justify-content:space-between;align-items:baseline'>"
-                   f"<b>{escape(_abrev(nome))}</b><span style='color:var(--text-muted);font-size:var(--fs-xs)'>"
-                   f"{tot_d} desq. · {_fmt(tot_d / l_tot if l_tot else None, 'pct')} dos leads</span></div>"
+                   f"<b>{escape(_abrev(item['nome']))}</b><span style='color:var(--text-muted);font-size:var(--fs-xs)'>"
+                   f"{item['total']} desq. · {_fmt(item['total'] / l_tot if l_tot else None, 'pct')} dos leads</span></div>"
                    + (linhas_m or "<div class=note style='margin-top:7px'>sem desqualificações no período</div>") + "</div>")
     sec_desq = ("<section><h2>Motivos de desqualificação por SDR</h2>"
                 "<p class=secsub>perdidos antes do handoff, dentre os leads do período de cada uma — motivo dominante em UMA pessoa = dificuldade específica (roteiro/abordagem); igual em todas = qualidade do lead</p>"
                 f"<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;align-items:start'>{dcards}</div></section>") if dcards else ""
 
-    # (b) conversão por ORIGEM × SDR (coorte: lead do período que virou oportunidade)
-    with conn.cursor() as cur:
-        cur.execute("""SELECT COALESCE(sdr, %s), COALESCE(origem, '(vazio)'), count(*),
-                              count(*) FILTER (WHERE oport_time IS NOT NULL)
-                         FROM mkt_deals_attribution
-                        WHERE add_time >= %s AND add_time < %s GROUP BY 1, 2""", (_SEM, a, b))
-        ori: dict[str, dict[str, tuple[int, int]]] = {}
-        ori_tot: dict[str, list[int]] = {}
-        for nome, og, n, op in cur.fetchall():
-            ori.setdefault(og, {})[nome] = (n, op)
-            t = ori_tot.setdefault(og, [0, 0])
-            t[0] += n; t[1] += op
-    origens_top = sorted((og for og, t in ori_tot.items() if t[0] >= 10),
-                         key=lambda og: -ori_tot[og][0])[:8]
+    # (b) origem × SDR
     xrows = ""
-    for og in origens_top:
-        tl_o, to_o = ori_tot[og]
-        tx_time = to_o / tl_o if tl_o else 0
+    for og in d["origens"]:
         tds = ""
-        for nome in cols:
-            n, op = ori.get(og, {}).get(nome, (0, 0))
-            if not n:
+        for cel in og["celulas"]:
+            if not cel["n"]:
                 tds += f"<td style='{_nc};text-align:center;color:var(--text-faint)'>—</td>"
                 continue
-            tx = op / n
-            cls = ""
-            if n >= 8 and tx_time:
-                cls = (" class=pos" if tx >= tx_time * 1.15 else (" class=neg" if tx <= tx_time * 0.7 else ""))
-            tds += (f"<td style='{_nc};text-align:center'{cls} title='{op} oportunidade(s) de {n} leads'>"
-                    f"{_fmt(tx, 'pct')}<span style='color:var(--text-faint);font-size:var(--fs-2xs)'> ({n})</span></td>")
-        xrows += (f"<tr><td style='{_nc}'>{escape(og[:26])}</td>"
-                  f"<td style='{_nc};text-align:center'><b>{_fmt(tx_time, 'pct')}</b>"
-                  f"<span style='color:var(--text-faint);font-size:var(--fs-2xs)'> ({tl_o})</span></td>{tds}</tr>")
+            cls = " class=pos" if cel["tom"] == "ok" else (" class=neg" if cel["tom"] == "ruim" else "")
+            tds += (f"<td style='{_nc};text-align:center'{cls} title='{cel['oport']} oportunidade(s) de {cel['n']} leads'>"
+                    f"{_fmt(cel['taxa'], 'pct')}<span style='color:var(--text-faint);font-size:var(--fs-2xs)'> ({cel['n']})</span></td>")
+        xrows += (f"<tr><td style='{_nc}'>{escape(og['origem'][:26])}</td>"
+                  f"<td style='{_nc};text-align:center'><b>{_fmt(og['taxa_time'], 'pct')}</b>"
+                  f"<span style='color:var(--text-faint);font-size:var(--fs-2xs)'> ({og['leads']})</span></td>{tds}</tr>")
     sec_ori = ("<section><h2>Conversão por origem × SDR</h2>"
                "<p class=secsub>taxa lead→oportunidade (coorte do período; a oportunidade conta a qualquer tempo) · verde = bem acima do time naquela origem, vermelho = bem abaixo (mín. 8 leads) — mostra quem trata melhor cada tipo de lead</p>"
                + _card(_tbl([("Origem", "left"), ("Time", "center")] + [(_abrev(n), "center") for n in cols], xrows))
                + "</section>") if xrows else ""
 
-    # (c) AGENDAMENTOS (oportunidades) por PLANO × SDR
-    with conn.cursor() as cur:
-        cur.execute("""SELECT COALESCE(sdr, %s),
-                              COALESCE(substring(produto FROM 'B[1-5]'),
-                                       CASE WHEN produto IS NULL OR produto = '' THEN '(sem plano)' ELSE 'outros' END),
-                              count(*)
-                         FROM mkt_deals_attribution
-                        WHERE oport_time >= %s AND oport_time < %s GROUP BY 1, 2""", (_SEM, a, b))
-        bnd: dict[str, dict[str, int]] = {}
-        for nome, bd, n in cur.fetchall():
-            bnd.setdefault(bd, {})[nome] = n
-    ordem_b = [x for x in ("B1", "B2", "B3", "B4", "B5", "outros", "(sem plano)") if x in bnd] \
-        + sorted(set(bnd) - {"B1", "B2", "B3", "B4", "B5", "outros", "(sem plano)"})
-    tot_sdr_b = {nome: sum(bnd[bd].get(nome, 0) for bd in bnd) for nome in cols}
+    # (c) plano × SDR
     brws = ""
-    for bd in ordem_b:
+    for pl in d["planos"]:
         tds = ""
-        for nome in cols:
-            n = bnd[bd].get(nome, 0)
-            pct = n / tot_sdr_b[nome] if tot_sdr_b.get(nome) else 0
+        for cel in pl["celulas"]:
+            n = cel["n"]
             tds += (f"<td style='{_nc};text-align:center'>{n or '—'}"
-                    + (f"<span style='color:var(--text-faint);font-size:var(--fs-2xs)'> ({pct * 100:.0f}%)</span>" if n else "")
+                    + (f"<span style='color:var(--text-faint);font-size:var(--fs-2xs)'> ({cel['pct'] * 100:.0f}%)</span>" if n else "")
                     + "</td>")
-        brws += f"<tr><td style='{_nc}'><b>{escape(bd)}</b></td>{tds}</tr>"
+        brws += f"<tr><td style='{_nc}'><b>{escape(pl['plano'])}</b></td>{tds}</tr>"
     sec_bnd = ("<section><h2>Oportunidades por plano × SDR</h2>"
                "<p class=secsub>oportunidades geradas no período por bundle (% = participação no total da própria SDR) · mix concentrado em B1 numa pessoa com o time mirando B3-B5 = qualificação a puxar para cima</p>"
                + _card(_tbl([("Plano", "left")] + [(_abrev(n), "center") for n in cols], brws))
                + "</section>") if brws else ""
 
-    # planos de ação individuais sobre os MESMOS números da tabela (só time ativo)
-    for p in sorted(time_stats, key=lambda x: -(x["taxa_agend"] or 0)):
-        if not p["ativo"]:
-            continue
-        # motivo de desqualificação dominante da pessoa entra no plano (14/07)
-        motivos_p = [x for x in (desq_por.get(p["nome"]) or []) if x[0] != "(sem motivo)"]
+    # planos de ação individuais (especialista) — só p/ quem é MEMBRO do time.
+    # O motivo de desqualificação dominante da pessoa entra no plano (14/07).
+    time_stats = [{"nome": pes["nome"], "leads": pes["leads"], "agendadas": pes["oport"],
+                   "taxa_agend": pes["taxa"], "speed_min": pes["speed_min"], "ativo": True}
+                  for pes in d["pessoas"] if pes["papel"] == "membro"]
+    _desq = {x["nome"]: x["motivos"] for x in d["desqualificacao"]}
+    planos = ""
+    # ordem dos planos: MAIOR taxa primeiro (não a ordem da tabela, que é por
+    # volume de leads) — preservado do original
+    for pes in sorted(time_stats, key=lambda x: -(x["taxa_agend"] or 0)):
+        motivos_p = [m for m in (_desq.get(pes["nome"]) or []) if not m["sem_motivo"]]
         if motivos_p:
-            top_m = max(motivos_p, key=lambda x: x[1])
-            if top_m[1] >= 5:
-                p["desq_top"] = top_m
-        pl = ESP.plano_sdr(p, time_stats)
+            top_m = max(motivos_p, key=lambda x: x["n"])
+            if top_m["n"] >= 5:
+                pes["desq_top"] = (top_m["motivo"], top_m["n"])
+        pl = ESP.plano_sdr(pes, time_stats)
         itens = ("".join(f"<li style='color:var(--status-baixo)'>{escape(f)}</li>" for f in pl["fortes"])
                  + "".join(f"<li style='color:var(--status-alto)'>{escape(f)}</li>" for f in pl["fracos"])
                  + "".join(f"<li>→ {escape(acao)}</li>" for acao in pl["acoes"]))
-        planos += (f"<div style='margin-top:12px'><b>{escape(p['nome'])}</b>"
+        planos += (f"<div style='margin-top:12px'><b>{escape(pes['nome'])}</b>"
                    f"<ul class=note style='margin:4px 0 0;padding-left:18px'>{itens}</ul></div>")
+
     return (f"<h1>Desempenho Individual — Pré-vendas</h1><div class=sub>coordenação: {ESP.COORD_PREVENDAS} · lista do time editável no Painel Administrativo · comparação com a mediana, tom construtivo</div>"
             f"<form method=get action=/prevendas><input type=hidden name=view value=sdrs>{form}</form>"
             + oficial + sec_desq + sec_ori + sec_bnd +
@@ -2387,6 +2297,19 @@ def api_vd_ponte(request: Request, ini: str = Query(""), fim: str = Query("")):
     i, f = _periodo_api(ini, fim)
     with A._conn() as c:
         return vd_ponte_dados(c, i, f)
+
+
+@router.get("/api/prevendas/sdrs")
+def api_pv_sdrs(request: Request, ini: str = Query(""), fim: str = Query("")):
+    """Desempenho individual de PV em dados (Lote 6) — EMBRULHA
+    `pv_sdrs_dados`, a mesma função que a tela HTML formata."""
+    A = _deps()
+    A._require_api(request)
+    from .dados import pv_sdrs_dados
+    i, f = _periodo_api(ini, fim)
+    with A._conn() as c:
+        _ensure_touch(c)
+        return pv_sdrs_dados(c, i, f)
 
 
 @router.get("/api/vendas/ciclo")
