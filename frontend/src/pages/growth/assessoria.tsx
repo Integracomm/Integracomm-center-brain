@@ -1,5 +1,6 @@
 import { ExternalLink, FileText, Loader2, Search, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
+import { useListaDaSessao } from "./usar-lista-sessao";
 import { apiDelete, apiPost } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,6 +12,10 @@ import { cn } from "@/lib/utils";
 // A lista "gerados nesta sessão" foi mantida (Otávio 23/07) e ganhou EXCLUIR:
 // a geração é sob demanda e às vezes sai para o cliente ou o mês errado — sem
 // excluir, o engano ficava no histórico para sempre.
+//
+// A lista SOBREVIVE AO RECARREGAR e morre ao sair da tela (Otávio 23/07) —
+// ver `useListaDaSessao`. Recarregar por engano no meio de uma geração de 20
+// clientes custava caro; sair da tela é uma decisão consciente.
 //
 // Falha de UMA conta não derruba o lote (o backend devolve status por item);
 // os itens com erro aparecem na lista com o motivo, em vez de sumirem.
@@ -36,7 +41,7 @@ export function RelatorioAssessoria({ contas, mesPadrao }: {
   const [mes, setMes] = useState(mesPadrao);
   const [gerando, setGerando] = useState(false);
   const [msg, setMsg] = useState("");
-  const [gerados, setGerados] = useState<Gerado[]>([]);
+  const [gerados, setGerados] = useListaDaSessao<Gerado>("assessoria:gerados", []);
 
   const visiveis = useMemo(() => {
     const q = busca.toLowerCase().trim();
@@ -77,7 +82,7 @@ export function RelatorioAssessoria({ contas, mesPadrao }: {
         status: x.status === "ok" ? "ok" : "erro",
         erro: x.error,
       }));
-      setGerados((g) => [...novos, ...g]);
+      setGerados([...novos, ...gerados]);
     } catch (e) {
       setMsg(e instanceof Error ? e.message : "falha na geração");
     } finally {
@@ -86,16 +91,16 @@ export function RelatorioAssessoria({ contas, mesPadrao }: {
   }
 
   async function excluir(g: Gerado) {
-    if (!g.report_id) { setGerados((l) => l.filter((x) => x.chave !== g.chave)); return; }
+    if (!g.report_id) { setGerados(gerados.filter((x) => x.chave !== g.chave)); return; }
     if (!confirm(`Excluir o relatório de ${g.conta} (${mesLabel(g.mes)})? `
       + "O relatório sai do histórico; a conta e os dados de origem não são afetados.")) return;
-    setGerados((l) => l.map((x) => x.chave === g.chave ? { ...x, excluindo: true } : x));
+    setGerados(gerados.map((x) => x.chave === g.chave ? { ...x, excluindo: true } : x));
     try {
       await apiDelete(`/api/reports/${g.report_id}`);
-      setGerados((l) => l.filter((x) => x.chave !== g.chave));
+      setGerados(gerados.filter((x) => x.chave !== g.chave));
       setMsg(`relatório de ${g.conta} excluído.`);
     } catch (e) {
-      setGerados((l) => l.map((x) => x.chave === g.chave ? { ...x, excluindo: false } : x));
+      setGerados(gerados.map((x) => x.chave === g.chave ? { ...x, excluindo: false } : x));
       setMsg(e instanceof Error ? e.message : "falha ao excluir");
     }
   }
@@ -155,6 +160,10 @@ export function RelatorioAssessoria({ contas, mesPadrao }: {
         <div>
           <div className="mb-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">
             relatórios gerados nesta sessão
+            <span className="ml-1.5 normal-case tracking-normal text-muted-foreground/70">
+              (a lista sobrevive a um recarregar; sai da tela e ela zera — os relatórios seguem
+              no histórico)
+            </span>
           </div>
           <ul className="divide-y divide-border rounded-lg border border-border">
             {gerados.map((g) => (
