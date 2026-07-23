@@ -135,21 +135,40 @@ def carga_dados(conn: Any, scores: list[dict], mirror: dict | None) -> dict:
     _tps = [tarefas_sq.get(k, 0) / p for k, p, _d in cap_rows if p] if tarefas_sq else []
     med_tp = (sum(_tps) / len(_tps)) if _tps else None
 
+    # ORDEM: por tarefas/pessoa desc — a carga REAL de trabalho, que é o que a
+    # seção existe para mostrar (Otávio 23/07). Ordenar por contas/pessoa
+    # escondia o squad afogado: B2-S1 tinha 88 tarefas/pessoa (2× o segundo) e
+    # caía em 3º só porque a carteira dele era média. Sem ClickUp, `med_tp` é
+    # None e a chave cai para contas/pessoa — a tabela nunca perde a ordem.
+    def _ord(x):
+        k, p, d = x
+        tp = (tarefas_sq.get(k, 0) / p) if (p and tarefas_sq) else None
+        cp = (d["n"] / p) if p else 0
+        return (-(tp if tp is not None else -1), -cp, k)
+
     capacidade, sobre, folga = [], [], []
-    for k, p, d in sorted(cap_rows, key=lambda x: (-(x[2]["n"] / x[1] if x[1] else 0), x[0])):
+    for k, p, d in sorted(cap_rows, key=_ord):
         cp = (d["n"] / p) if p else None
         graves = d["crit"] + d["alto"]
-        estado = None
-        if cp is not None and med_cp:
-            if cp >= med_cp * 1.3:
-                estado = "sobrecarga"
-                sobre.append((k, cp, graves))
-            elif cp <= med_cp * 0.7:
-                estado = "folga"
-                folga.append((k, cp))
-        avaliadas = d["n"] - d["bandas"]["sem"]
         tar = tarefas_sq.get(k, 0)
         tp = (tar / p) if p else None
+        # SELO pelas DUAS cargas (Otávio 23/07): sobrecarga se contas/pessoa OU
+        # tarefas/pessoa está bem acima da média — B2-S1, afogado em tarefas mas
+        # com carteira média, não podia ficar sem sinal. Folga só quando AS DUAS
+        # estão baixas: B2-S2 tinha 6 contas/pessoa mas 32 tarefas/pessoa (na
+        # média), então deixa de ser "folga".
+        cp_alta = cp is not None and med_cp and cp >= med_cp * 1.3
+        tp_alta = tp is not None and med_tp and tp >= med_tp * 1.3
+        cp_baixa = cp is not None and med_cp and cp <= med_cp * 0.7
+        tp_baixa = (tp is None) or (med_tp and tp <= med_tp * 0.7)
+        estado = None
+        if cp_alta or tp_alta:
+            estado = "sobrecarga"
+            sobre.append((k, cp or 0, graves))
+        elif cp_baixa and tp_baixa:
+            estado = "folga"
+            folga.append((k, cp or 0))
+        avaliadas = d["n"] - d["bandas"]["sem"]
         tom_tp = None
         if tp is not None and med_tp:
             tom_tp = "critico" if tp >= med_tp * 1.3 else ("ok" if tp <= med_tp * 0.7 else None)
@@ -166,12 +185,28 @@ def carga_dados(conn: Any, scores: list[dict], mirror: dict | None) -> dict:
     leitura_cap = ("Cargas relativamente equilibradas entre os squads — sem caso claro de "
                    "redistribuição agora.")
     if sobre:
-        pior = sobre[0]
+        # o "pior" é o mais sobrecarregado pela carga que DISPAROU o selo: se há
+        # tarefas, a carga real (tarefas/pessoa) manda; senão, contas/pessoa.
+        # (pess_by só nasce na seção de atrasos, adiante — aqui vai um local.)
+        _pess = {k: p for k, p, _d in cap_rows}
+
+        def _peso(k):
+            p = _pess.get(k) or 0
+            return (tarefas_sq.get(k, 0) / p) if (p and tarefas_sq and med_tp) \
+                else ((por_squad[k]["n"] / p) if p else 0)
+        pk = max((k for k, _cp, _g in sobre), key=_peso)
+        pd = por_squad[pk]
+        pp = _pess.get(pk) or 0
+        cp_p = (pd["n"] / pp) if pp else 0
+        tp_p = (tarefas_sq.get(pk, 0) / pp) if pp else 0
+        graves_p = pd["crit"] + pd["alto"]
+        motivo = (f"{tp_p:.0f} tarefas abertas por pessoa (média: {med_tp:.0f})"
+                  if (med_tp and tp_p >= med_tp * 1.3)
+                  else f"{cp_p:.1f} contas por pessoa (média: {med_cp:.1f})")
         alvo = (f" O squad {folga[0][0]} tem folga ({folga[0][1]:.1f} contas/pessoa) e é o "
                 "candidato natural a absorver contas do mesmo bundle." if folga else "")
-        leitura_cap = (f"{pior[0]} está com {pior[1]:.1f} contas por pessoa (média: {med_cp:.1f}) "
-                       f"e {pior[2]} alerta(s) grave(s) — candidato a redistribuição de clientes "
-                       f"ou reforço.{alvo}")
+        leitura_cap = (f"{pk} está com {motivo} e {graves_p} alerta(s) grave(s) — candidato a "
+                       f"redistribuição de clientes ou reforço.{alvo}")
     if tarefas_sq and med_tp:
         _rank_tp = sorted(((k, tarefas_sq.get(k, 0) / p) for k, p, _d in cap_rows if p),
                           key=lambda x: -x[1])
