@@ -99,6 +99,29 @@ def api_reports_batch(request: Request, payload: dict = Body(...)):
     return {"month": ref, "reports": out}
 
 
+@router.delete("/api/reports/{report_id}")
+def api_report_delete(report_id: str, request: Request):
+    """Exclui um relatório de assessoria gerado (Otávio 23/07).
+
+    Existe porque a geração é sob demanda e o gestor às vezes gera para o
+    cliente errado ou para o mês errado — sem isto, o engano fica no histórico
+    para sempre. Apaga a LINHA do relatório; não toca em conta, alerta ou
+    qualquer dado de origem. Fica na auditoria (action='report_delete')."""
+    A = _deps()
+    user, _role = A._require_api(request)
+    with A._conn() as c:
+        with c.cursor() as cur:
+            cur.execute("DELETE FROM reports WHERE id = %s RETURNING account_name, reference_month",
+                        (report_id,))
+            row = cur.fetchone()
+        if not row:
+            return JSONResponse({"error": "relatório não encontrado"}, status_code=404)
+        with c.cursor() as cur:
+            cur.execute("INSERT INTO audit_log (actor, action, scope) VALUES (%s,%s,%s)",
+                        (user, "report_delete", f"relatorio:{report_id}"))
+    return {"ok": True, "conta": row[0], "mes": row[1].strftime("%Y-%m")}
+
+
 @router.post("/api/accounts/{account_id}/updates")
 def api_case_update(account_id: str, request: Request, payload: dict = Body(...)):
     """Atualização de caso escrita pelo GESTOR (ex.: resultado da reunião).

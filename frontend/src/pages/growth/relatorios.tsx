@@ -7,6 +7,7 @@ import { LoadingSkeleton, ErrorState } from "@/components/states";
 import { KpiCard } from "@/components/kpi-card";
 import { SectionCard } from "@/components/blocks/section-card";
 import { Button } from "@/components/ui/button";
+import { RelatorioAssessoria } from "./assessoria";
 import { cn } from "@/lib/utils";
 import { formatBRL, formatNumber } from "@/lib/format";
 
@@ -192,19 +193,10 @@ export function GrowthRelatoriosPage() {
             </p>
           </SectionCard>
 
-          {/* O Relatório de Assessoria (seleção de clientes + geração em lote)
-              segue na tela anterior: é um fluxo de GERAÇÃO com estado de sessão,
-              não uma visualização — registrado no PENDENCIAS para decidir. */}
-          <SectionCard title="Relatório de Assessoria"
-            subtitle="relatório mensal individual por cliente — faturamento, atividades e saúde">
-            <p className="text-sm text-muted-foreground">
-              A geração em lote ({d.contas.length} clientes disponíveis · mês de referência padrão{" "}
-              {d.mes_referencia_padrao.split("-").reverse().join("/")}) continua na versão anterior
-              desta tela.{" "}
-              <a href="/growth?view=relatorios&legado=1" className="text-primary hover:underline">
-                abrir
-              </a>
-            </p>
+          <SectionCard hint={<Hint area="growth/relatorios" titulo="Relatório de Assessoria" />}
+            title="Relatório de Assessoria"
+            subtitle="relatório mensal individual por cliente — faturamento, atividades e saúde · a geração busca planilha, ClickUp e sinais, então leva alguns segundos por cliente">
+            <RelatorioAssessoria contas={d.contas} mesPadrao={d.mes_referencia_padrao} />
           </SectionCard>
         </>
       )}

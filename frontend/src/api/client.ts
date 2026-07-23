@@ -26,9 +26,18 @@ export async function apiGet<T>(path: string): Promise<T> {
   return r.json() as Promise<T>;
 }
 
+export async function apiDelete<T>(path: string): Promise<T> {
+  return apiSend<T>(path, "DELETE");
+}
+
 export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
+  return apiSend<T>(path, "POST", body);
+}
+
+// POST/DELETE compartilham tratamento de 401 e de erro com mensagem do backend
+async function apiSend<T>(path: string, method: string, body?: unknown): Promise<T> {
   const r = await fetch(path, {
-    method: "POST",
+    method,
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
