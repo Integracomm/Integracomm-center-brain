@@ -31,7 +31,7 @@ interface Payload {
   capacidade: Array<{ squad: string; pessoas: number; contas: number;
     contas_pessoa: number | null; estado: string | null;
     tarefas_abertas: number | null; tarefas_pessoa: number | null;
-    tom_tarefas: string | null; mrr_pessoa: number | null;
+    tom_contas: string | null; tom_tarefas: string | null; mrr_pessoa: number | null;
     graves_pessoa: number | null; pct_saudavel: number | null }>;
   media_contas_pessoa: number | null;
   leitura_capacidade: string;
@@ -285,7 +285,12 @@ export function GrowthSquadsPage() {
                       </TableCell>
                       <TableCell className="text-right tabular-nums">{c.pessoas || "—"}</TableCell>
                       <TableCell className="text-right tabular-nums">{c.contas}</TableCell>
-                      <TableCell className="text-right font-semibold tabular-nums">
+                      {/* contas/pessoa em vermelho quando bem acima da média:
+                          quando o selo de sobrecarga veio da carteira, a coluna
+                          que o causou fica evidente (Otávio 23/07) */}
+                      <TableCell className={cn("text-right font-semibold tabular-nums",
+                        c.tom_contas === "critico" ? "text-destructive"
+                          : c.tom_contas === "ok" ? "text-success" : "")}>
                         {c.contas_pessoa != null ? c.contas_pessoa.toFixed(1) : "—"}
                       </TableCell>
                       <TableCell className="text-right tabular-nums">

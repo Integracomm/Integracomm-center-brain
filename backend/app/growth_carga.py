@@ -172,9 +172,15 @@ def carga_dados(conn: Any, scores: list[dict], mirror: dict | None) -> dict:
         tom_tp = None
         if tp is not None and med_tp:
             tom_tp = "critico" if tp >= med_tp * 1.3 else ("ok" if tp <= med_tp * 0.7 else None)
+        # tom de CONTAS/pessoa na mesma régua (Otávio 23/07): quando o selo de
+        # sobrecarga dispara pela carteira, a coluna que o causou fica em
+        # vermelho — o leitor vê de onde veio a tag, sem adivinhar
+        tom_cp = None
+        if cp is not None and med_cp:
+            tom_cp = "critico" if cp >= med_cp * 1.3 else ("ok" if cp <= med_cp * 0.7 else None)
         capacidade.append({
             "squad": k, "pessoas": p, "contas": d["n"], "contas_pessoa": cp,
-            "estado": estado,
+            "estado": estado, "tom_contas": tom_cp,
             "tarefas_abertas": (tar if tarefas_sq else None),
             "tarefas_pessoa": (tp if tarefas_sq else None), "tom_tarefas": tom_tp,
             "mrr_pessoa": (d["mrr"] / p) if p else None,

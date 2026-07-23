@@ -3191,6 +3191,11 @@ def _carga_content(scores: list[dict], mirror: dict | None) -> str:
             tp_cor = ";color:var(--status-critico);font-weight:700"
         elif c["tom_tarefas"] == "ok":
             tp_cor = ";color:var(--status-baixo)"
+        cp_cor = ""
+        if c["tom_contas"] == "critico":
+            cp_cor = ";color:var(--status-critico);font-weight:700"
+        elif c["tom_contas"] == "ok":
+            cp_cor = ";color:var(--status-baixo)"
         cp_txt = f"{c['contas_pessoa']:.1f}" if c["contas_pessoa"] is not None else "—"
         mrr_p = _brl0(c["mrr_pessoa"]) if c["mrr_pessoa"] is not None else "—"
         graves_p = f"{c['graves_pessoa']:.1f}" if c["graves_pessoa"] is not None else "—"
@@ -3201,7 +3206,7 @@ def _carga_content(scores: list[dict], mirror: dict | None) -> str:
         linhas_cap += (f"<tr><td style='{_tdl}'><b>{escape(c['squad'])}</b>{chip}</td>"
                        f"<td style='{_td}'>{c['pessoas'] or '—'}</td>"
                        f"<td style='{_td}'>{c['contas']}</td>"
-                       f"<td style='{_td}'><b>{cp_txt}</b></td>"
+                       f"<td style='{_td}{cp_cor}'><b>{cp_txt}</b></td>"
                        f"<td style='{_td}'>{tar_txt}</td>"
                        f"<td style='{_td}{tp_cor}'>{tp_txt}</td>"
                        f"<td style='{_td}'>{mrr_p}</td>"
