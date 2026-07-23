@@ -1179,10 +1179,14 @@ def api_growth_carga(request: Request):
     from .growth_carga import carga_dados
     with _conn() as c:
         scores = _latest_scores(c)
+        # MESMO espelho da tela HTML. Eu tinha importado de `sources.mirror`,
+        # que não existe: o try/except engolia o ImportError, mandava None e os
+        # squads resolviam SÓ pelo nome — números diferentes da tela antiga
+        # (pego pelo Otávio em 23/07). Falha silenciosa, de novo.
         try:
-            from .sources.mirror import carrega as _carrega_mirror
-            mirror = _carrega_mirror()
-        except Exception:  # noqa: BLE001 — espelho fora não derruba a aba
+            from .sources.clickup_activities import _mirror_clientes
+            mirror = _mirror_clientes()
+        except Exception:  # noqa: BLE001 — sem espelho, resolve só pelo nome
             mirror = None
         d = carga_dados(c, scores, mirror)
         # o ranking/plano por squad é outra função pura já existente

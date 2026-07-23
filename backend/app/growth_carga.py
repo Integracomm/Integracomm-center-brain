@@ -71,8 +71,15 @@ def carga_dados(conn: Any, scores: list[dict], mirror: dict | None) -> dict:
 
     tot_risco = sum(d["mrr_risco"] for d in por_squad.values()) or 1.0
     ranking = []
+    # DESEMPATE pelo NOME no fim (23/07): squads sem MRR em risco e sem
+    # críticos empatam em (0, 0), e aí a ordem caía na ordem de inserção do
+    # dict — que depende de como a lista de scores chegou. O handler HTML passa
+    # `ordered` (avaliáveis primeiro) e o endpoint passava a lista crua, então
+    # B2-S1 e B2-S2 trocavam de lugar entre as duas telas com os MESMOS
+    # números. Com o nome na chave, as duas ficam iguais e estáveis.
     for k, d in sorted(por_squad.items(),
-                       key=lambda x: (x[0].startswith("(sem"), -x[1]["mrr_risco"], -x[1]["crit"])):
+                       key=lambda x: (x[0].startswith("(sem"), -x[1]["mrr_risco"],
+                                      -x[1]["crit"], x[0])):
         conc = d["mrr_risco"] / tot_risco
         ranking.append({
             "squad": k, "sem_squad": k.startswith("(sem"),
@@ -129,7 +136,7 @@ def carga_dados(conn: Any, scores: list[dict], mirror: dict | None) -> dict:
     med_tp = (sum(_tps) / len(_tps)) if _tps else None
 
     capacidade, sobre, folga = [], [], []
-    for k, p, d in sorted(cap_rows, key=lambda x: -(x[2]["n"] / x[1] if x[1] else 0)):
+    for k, p, d in sorted(cap_rows, key=lambda x: (-(x[2]["n"] / x[1] if x[1] else 0), x[0])):
         cp = (d["n"] / p) if p else None
         graves = d["crit"] + d["alto"]
         estado = None
@@ -242,7 +249,8 @@ def carga_dados(conn: Any, scores: list[dict], mirror: dict | None) -> dict:
     # com zero atrasos precisa aparecer na tabela — é informação, não ausência
     atrasos_squad, top_atr = [], None
     n_por_squad = {k: d["n"] for k, d in por_squad.items()}
-    for k, _p, _d0 in sorted(cap_rows, key=lambda x: -atr_sq.get(x[0], {}).get("tarefas", 0)):
+    for k, _p, _d0 in sorted(cap_rows,
+                            key=lambda x: (-atr_sq.get(x[0], {}).get("tarefas", 0), x[0])):
         d = atr_sq.get(k, {"tarefas": 0, "contas": 0, "pior": 0, "itens": []})
         pess = pess_by.get(k) or 0
         app_ = (d["tarefas"] / pess) if pess else None

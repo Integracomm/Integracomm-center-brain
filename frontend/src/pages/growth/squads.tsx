@@ -46,8 +46,11 @@ interface Payload {
   atrasos_sem_squad: number; atrasos_inativos: number; atrasos_inativos_contas: number;
   atrasos_duplicados: number;
   correlacao_carga_atraso: number | null;
-  analise: Array<{ squad: string; n: number; score?: number; dor?: string;
-    fortes: string[]; fracos: string[]; acoes: string[] }>;
+  // já vem ORDENADO por score desc do `_squad_analysis` — o front não reordena
+  analise: Array<{ squad: string; n: number; score: number; rel: number; exe: number;
+    risco_pct: number; caindo_pct: number; cp: number | null; pessoas: number;
+    n_alert: number; exec_atr: number; mrr_risco: number; dor: string | null;
+    drivers?: unknown; fortes: string[]; fracos: string[]; acoes: string[] }>;
   sem_squad: number;
 }
 
@@ -109,6 +112,80 @@ export function GrowthSquadsPage() {
       {q.error && <ErrorState message={q.error} onRetry={q.refetch} />}
       {d && (
         <>
+          {/* RANKING NO TOPO (Otávio 23/07): é a leitura de entrada da tela —
+              quem está bem, quem está mal e o que fazer. O score composto e a
+              POSIÇÃO tinham sumido no port; a ordem vem do backend
+              (`_squad_analysis`, já ordenado por score desc). */}
+          {d.analise.length > 0 && (
+            <SectionCard hint={<Hint area="growth/carga" titulo="Ranking e análise" />}
+              title="Ranking e análise por squad"
+              subtitle="score composto: 50% relacionamento · 25% execução · 25% risco — dores dominantes e plano de ação por equipe; fortes e fracos já consideram carga e concentração de risco">
+              <div className="grid gap-3 lg:grid-cols-2">
+                {d.analise.map((a, i) => (
+                  <div key={a.squad} className="rounded-xl border border-border p-4">
+                    <div className="flex flex-wrap items-baseline justify-between gap-2">
+                      <b className="font-display text-sm">
+                        <span className="mr-1.5 text-muted-foreground">{i + 1}º</span>
+                        {a.squad}
+                      </b>
+                      <span className="flex items-baseline gap-2">
+                        <span className={cn("font-display text-xl font-bold tabular-nums",
+                          a.score >= 65 ? "text-success"
+                            : a.score >= 55 ? "text-warning" : "text-destructive")}>
+                          {a.score.toFixed(1)}
+                        </span>
+                        <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                          score
+                        </span>
+                      </span>
+                    </div>
+                    {/* as 3 partes do score, para o número não ser uma caixa-preta */}
+                    <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
+                      <div>
+                        <div className="tabular-nums font-semibold">{a.rel.toFixed(0)}</div>
+                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                          relacion. 50%
+                        </div>
+                      </div>
+                      <div>
+                        <div className="tabular-nums font-semibold">{a.exe.toFixed(0)}</div>
+                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                          execução 25%
+                        </div>
+                      </div>
+                      <div>
+                        <div className="tabular-nums font-semibold">
+                          {formatPct(a.risco_pct * 100)}
+                        </div>
+                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                          em risco 25%
+                        </div>
+                      </div>
+                    </div>
+                    <div className="mt-2 text-xs text-muted-foreground">
+                      {a.n} contas
+                      {a.pessoas ? ` · ${a.pessoas} pessoa(s)` : ""}
+                      {a.cp != null ? ` · ${a.cp.toFixed(1)} contas/pessoa` : ""}
+                      {a.n_alert ? ` · ${a.n_alert} alerta(s)` : ""}
+                      {a.dor ? ` · dor dominante: ${a.dor}` : ""}
+                    </div>
+                    <ul className="mt-2 space-y-1 text-sm">
+                      {a.fortes.map((f) => <li key={f} className="text-success">• {f}</li>)}
+                      {a.fracos.map((f) => <li key={f} className="text-warning">• {f}</li>)}
+                      {a.acoes.map((x) => <li key={x} className="text-muted-foreground">→ {x}</li>)}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+              {!!d.sem_squad && (
+                <p className="mt-3 flex items-start gap-1.5 text-xs text-muted-foreground">
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  {d.sem_squad} conta(s) sem squad identificado na planilha ficaram fora desta análise.
+                </p>
+              )}
+            </SectionCard>
+          )}
+
           <SectionCard hint={<Hint area="growth/carga" titulo="Carga de risco por squad" />}
             title="Carga de risco por squad"
             subtitle="onde há carga desproporcional de contas críticas e MRR em risco — decidir realocação/reforço ANTES de a sobrecarga virar churn · o selo marca concentração (3+ críticos ou 30%+ do MRR em risco)">
@@ -374,39 +451,6 @@ export function GrowthSquadsPage() {
             </div>
           </SectionCard>
 
-          {d.analise.length > 0 && (
-            <SectionCard hint={<Hint area="growth/carga" titulo="Ranking e análise" />}
-              title="Ranking e análise por squad"
-              subtitle="score composto (50% relacionamento · 25% execução · 25% risco), dores dominantes e plano de ação — fortes e fracos já consideram carga e concentração de risco">
-              <div className="grid gap-3 md:grid-cols-2">
-                {d.analise.map((a) => (
-                  <div key={a.squad} className="rounded-xl border border-border p-4">
-                    <div className="flex items-baseline justify-between gap-2">
-                      <b className="font-display text-sm">
-                        <Users className="mr-1.5 inline h-3.5 w-3.5 text-muted-foreground" />
-                        {a.squad}
-                      </b>
-                      <span className="text-xs text-muted-foreground">{a.n} contas</span>
-                    </div>
-                    {a.dor && (
-                      <p className="mt-1 text-xs text-muted-foreground">dor dominante: {a.dor}</p>
-                    )}
-                    <ul className="mt-2 space-y-1 text-sm">
-                      {a.fortes.map((f) => <li key={f} className="text-success">• {f}</li>)}
-                      {a.fracos.map((f) => <li key={f} className="text-warning">• {f}</li>)}
-                      {a.acoes.map((x) => <li key={x} className="text-muted-foreground">→ {x}</li>)}
-                    </ul>
-                  </div>
-                ))}
-              </div>
-              {!!d.sem_squad && (
-                <p className="mt-3 flex items-start gap-1.5 text-xs text-muted-foreground">
-                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                  {d.sem_squad} conta(s) sem squad identificado na planilha ficaram fora desta análise.
-                </p>
-              )}
-            </SectionCard>
-          )}
         </>
       )}
     </div>
