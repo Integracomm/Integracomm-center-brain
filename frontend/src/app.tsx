@@ -13,6 +13,7 @@ import { VendasPontePage } from "@/pages/vendas/ponte";
 import { VendasCicloPage } from "@/pages/vendas/ciclo";
 import { VendasClosersPage } from "@/pages/vendas/closers";
 import { VendasForecastPage } from "@/pages/vendas/forecast";
+import { VendasHorariosPage } from "@/pages/vendas/horarios";
 import { MktCanaisPage } from "@/pages/marketing/canais";
 import { MktOrigensPage } from "@/pages/marketing/origens";
 import { MktVisaoPage } from "@/pages/marketing/visao";
@@ -67,7 +68,7 @@ const NAV: Array<ItemNav> = [
   { href: "/vendas?view=ponte", label: "Ponte PV → Vendas", spa: true },
   { href: "/vendas?view=winloss", label: "Win/Loss", spa: true },
   { href: "/vendas?view=ciclo", label: "Ciclo & Empacados", spa: true },
-  { href: "/vendas?view=horarios", label: "Melhor Horário", spa: false },
+  { href: "/vendas?view=horarios", label: "Melhor Horário", spa: true },
   { href: "/vendas?view=closers", label: "Desempenho Individual", spa: true },
   { href: "/vendas?view=forecast", label: "Performance & Meta", spa: true },
   { href: "/financeiro?view=visao", label: "Planejamento x Realizado", spa: true, grupo: "Financeiro" },
@@ -106,6 +107,9 @@ function VendasRouter() {
   if (view === "ponte") return <VendasPontePage />;
   if (view === "ciclo") return <VendasCicloPage />;
   if (view === "closers") return <VendasClosersPage />;
+  // NÃO é a mesma tela de PV, apesar do nome (Otávio 23/07): lá a pergunta é
+  // quando o lead ATENDE; aqui é em que horário a REUNIÃO fecha
+  if (view === "horarios") return <VendasHorariosPage />;
   if (view === "forecast") return <VendasForecastPage />;
   return <VendasFunilPage />; // view padrão da área (Lote 3)
 }

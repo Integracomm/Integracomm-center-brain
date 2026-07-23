@@ -104,4 +104,29 @@ for f_ in df["faltantes"][:3]:
     check(f"falta {f_['plano']}: {f_['gap']:.0f} bookings", f"{f_['gap']:.0f}" in html_f)
 check("mes corrente marcado", isinstance(df["corrente"], bool))
 
+
+# -------------------------------------------------------- Vendas · horarios
+print("\n== Vendas · Melhor Horario (horarios)")
+from app.sales.dados import vd_horarios_dados
+
+with A._conn() as c:
+    dh = vd_horarios_dados(c, hoje.replace(day=1), hoje)
+    html_h = sem_tags(U._vd_horarios(c, Req()))
+
+if dh["sem_dados"]:
+    check("horarios: aviso de sem reunioes", "sem reuni" in html_h)
+else:
+    k = dh["kpis"]
+    check(f"reunioes no periodo {k['reunioes']}", str(k["reunioes"]) in html_h)
+    check(f"ganhas {k['won']} de {k['decididas']} decididas",
+          str(k["won"]) in html_h and str(k["decididas"]) in html_h)
+    check(f"em aberto {k['abertas']}", str(k["abertas"]) in html_h)
+    if k["melhor_hora"] is not None:
+        check(f"melhor hora {k['melhor_hora']:02d}h", f"{k['melhor_hora']:02d}h" in html_h)
+    for ph in dh["por_hora"][:5]:
+        check(f"hora {ph['hora']:02d}h com {ph['reunioes']} reunioes",
+              f"{ph['hora']:02d}h" in html_h and str(ph["reunioes"]) in html_h)
+    check("ressalva de amostra pequena coerente com os dados",
+          ("amostra pequena" in html_h) == any(x["amostra_pequena"] for x in dh["por_hora"]))
+
 print(f"\n=========== LOTE 6 · PARIDADE: {ok} OK · {fail} FALHA(S) ===========")

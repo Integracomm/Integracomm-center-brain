@@ -1900,90 +1900,55 @@ def _vd_ponte(conn, request: Request, area: str = "vendas") -> str:
 
 
 def _vd_horarios(conn, request: Request) -> str:
-    """Melhor Horário de VENDAS (pedido 14/07): existe hora melhor p/ a
-    REUNIÃO acontecer? Base: 1ª entrada do deal em Negociação (7) — o card é
-    movido após a reunião, então o carimbo é o proxy da reunião realizada.
-    TAXA = ganhas ÷ DECIDIDAS (won+lost) da própria coorte: deals ainda
-    abertos não derrubam a taxa (14/07 — o 9,1% sobre o total confundia com
-    os 15,2% do funil, que mistura coortes: bookings do mês ÷ oportunidades
-    do mês, incluindo reuniões de meses anteriores)."""
+    """Melhor Horário de Vendas — HTML. O CÁLCULO vive em
+    `sales.dados.vd_horarios_dados` (Lote 6); aqui só formatação."""
     ini, fim, bundle = _horarios_periodo(request)
-    a, b = _brt(ini, fim)
-    filtro_b, args = "", [a, b]
-    if bundle in ("B1", "B2", "B3", "B4", "B5"):
-        filtro_b = " AND substring(d.produto FROM 'B[1-5]') = %s"
-        args.append(bundle)
-    with conn.cursor() as cur:
-        cur.execute(f"""
-            WITH primeira AS (
-                SELECT e.deal_id, min(e.entered_at) AS entered_at
-                  FROM mkt_stage_events e
-                  JOIN mkt_deals_attribution d ON d.deal_id = e.deal_id
-                 WHERE e.stage_id = 7 AND e.entered_at >= %s AND e.entered_at < %s{filtro_b}
-                 GROUP BY e.deal_id)
-            SELECT extract(dow  FROM p.entered_at AT TIME ZONE 'America/Sao_Paulo')::int,
-                   extract(hour FROM p.entered_at AT TIME ZONE 'America/Sao_Paulo')::int,
-                   count(*), count(*) FILTER (WHERE d.status = 'won'),
-                   count(*) FILTER (WHERE d.status = 'lost')
-              FROM primeira p JOIN mkt_deals_attribution d ON d.deal_id = p.deal_id
-             GROUP BY 1, 2""", args)
-        celulas = {(dow, h): (n, w, lo) for dow, h, n, w, lo in cur.fetchall()}
-    total = sum(n for n, _w, _lo in celulas.values())
-    if not total:
+    from .dados import vd_horarios_dados
+    d = vd_horarios_dados(conn, ini, fim, bundle)
+    if d["sem_dados"]:
         return ("<h1>Melhor Horário — reuniões de Vendas</h1><div class=sub>quando as reuniões acontecem e quanto convertem</div>"
                 "<section><div class=warn>sem reuniões no período/filtro selecionado</div></section>")
-    total_w = sum(w for _n, w, _lo in celulas.values())
-    total_lo = sum(lo for _n, _w, lo in celulas.values())
-    abertas = total - total_w - total_lo
 
-    # --- heatmap dia × hora (reuniões; tooltip traz a conversão da célula) ---
-    dows = [1, 2, 3, 4, 5] + ([6] if any(d == 6 for d, _ in celulas) else []) \
-        + ([0] if any(d == 0 for d, _ in celulas) else [])
-    horas = sorted({h for _, h in celulas})
-    horas = list(range(min(horas), max(horas) + 1))
-    vmax = max(n for n, _w, _lo in celulas.values())
-    linhas = ""
+    cel = {(c["dow"], c["hora"]): c for c in d["celulas"]}
+    dows, horas = d["dows"], d["horas"]
+    vmax = max(c["n"] for c in d["celulas"])
+    linhas_h = ""
     for h in horas:
         tds = ""
-        for d in dows:
-            n, w, lo = celulas.get((d, h), (0, 0, 0))
+        for dw in dows:
+            c = cel.get((dw, h))
+            n = c["n"] if c else 0
             alpha = int(8 + 62 * (n / vmax)) if n else 0
             bg = f"background:color-mix(in srgb,var(--brand) {alpha}%,transparent);" if n else ""
-            dec = w + lo
-            tds += (f"<td title='{_DOW_NOME[d]} {h:02d}h — {n} reunião(ões): {w} fechada(s), {lo} perdida(s), {n - dec} em aberto"
-                    f"{f' · taxa {w / dec * 100:.0f}% das decididas' if dec else ''}' "
-                    if n else "<td ") + f"style='{_TD};text-align:center;{bg}'>{n or ''}</td>"
-        linhas += f"<tr><td style='{_TD};color:var(--text-muted)'>{h:02d}h</td>{tds}</tr>"
-    heat = _tbl([("", "left")] + [(_DOW_NOME[d], "left") for d in dows], linhas)
+            if n:
+                dec = c["won"] + c["lost"]
+                tx_txt = f" · taxa {c['taxa'] * 100:.0f}% das decididas" if dec else ""
+                tds += (f"<td title='{_DOW_NOME[dw]} {h:02d}h — {n} reunião(ões): {c['won']} fechada(s), "
+                        f"{c['lost']} perdida(s), {c['abertas']} em aberto{tx_txt}' ")
+            else:
+                tds += "<td "
+            tds += f"style='{_TD};text-align:center;{bg}'>{n or ''}</td>"
+        linhas_h += f"<tr><td style='{_TD};color:var(--text-muted)'>{h:02d}h</td>{tds}</tr>"
+    heat = _tbl([("", "left")] + [(_DOW_NOME[dw], "left") for dw in dows], linhas_h)
 
-    # --- por HORA: a pergunta central — taxa = fechadas ÷ DECIDIDAS ---------
-    por_hora: dict[int, list[int]] = {}
-    for (_d, h), (n, w, lo) in celulas.items():
-        t = por_hora.setdefault(h, [0, 0, 0])
-        t[0] += n; t[1] += w; t[2] += lo
-    hrows, melhores = "", []
-    for h in sorted(por_hora):
-        n, w, lo = por_hora[h]
-        dec = w + lo
-        tx = w / dec if dec else None
-        if dec >= 15:
-            melhores.append((tx or 0, h, dec))
-        hrows += (f"<tr><td style='{_TD}'><b>{h:02d}h</b></td>"
-                  f"<td style='{_TD};text-align:right'>{n}</td>"
-                  f"<td style='{_TD};text-align:right'>{w}</td>"
-                  f"<td style='{_TD};text-align:right'>{lo}</td>"
-                  f"<td style='{_TD};text-align:right;color:var(--text-muted)'>{n - dec}</td>"
-                  f"<td style='{_TD};text-align:right'><b>{_fmt(tx, 'pct')}</b></td>"
-                  f"<td style='{_TD};text-align:right'>{'<span class=note>amostra pequena</span>' if dec < 15 else ''}</td></tr>")
-    melhores.sort(key=lambda x: -x[0])
-    melhor_txt = (f"{melhores[0][1]:02d}h ({_fmt(melhores[0][0], 'pct')} em {melhores[0][2]} decididas)"
-                  if melhores else "—")
-    decididas = total_w + total_lo
+    hrows = ""
+    for ph in d["por_hora"]:
+        hrows += (f"<tr><td style='{_TD}'><b>{ph['hora']:02d}h</b></td>"
+                  f"<td style='{_TD};text-align:right'>{ph['reunioes']}</td>"
+                  f"<td style='{_TD};text-align:right'>{ph['won']}</td>"
+                  f"<td style='{_TD};text-align:right'>{ph['lost']}</td>"
+                  f"<td style='{_TD};text-align:right;color:var(--text-muted)'>{ph['abertas']}</td>"
+                  f"<td style='{_TD};text-align:right'><b>{_fmt(ph['taxa'], 'pct')}</b></td>"
+                  f"<td style='{_TD};text-align:right'>{'<span class=note>amostra pequena</span>' if ph['amostra_pequena'] else ''}</td></tr>")
+
+    k = d["kpis"]
+    melhor_txt = (f"{k['melhor_hora']:02d}h ({_fmt(k['melhor_taxa'], 'pct')} em {k['melhor_dec']} decididas)"
+                  if k["melhor_hora"] is not None else "—")
     kpis = ("<div class=kpis>"
-            f"<div class=kpi><div class=n>{total}</div><div class=l>reuniões no período</div><div class=s>1ª entrada em Negociação</div></div>"
-            f"<div class=kpi><div class=n>{_fmt(total_w / decididas if decididas else None, 'pct')}</div><div class=l>taxa de fechamento</div>"
-            f"<div class=s>{total_w} ganhas ÷ {decididas} decididas</div></div>"
-            f"<div class=kpi><div class=n>{abertas}</div><div class=l>ainda em aberto</div><div class=s>fora da taxa — a coorte segue amadurecendo</div></div>"
+            f"<div class=kpi><div class=n>{k['reunioes']}</div><div class=l>reuniões no período</div><div class=s>1ª entrada em Negociação</div></div>"
+            f"<div class=kpi><div class=n>{_fmt(k['taxa'], 'pct')}</div><div class=l>taxa de fechamento</div>"
+            f"<div class=s>{k['won']} ganhas ÷ {k['decididas']} decididas</div></div>"
+            f"<div class=kpi><div class=n>{k['abertas']}</div><div class=l>ainda em aberto</div><div class=s>fora da taxa — a coorte segue amadurecendo</div></div>"
             f"<div class=kpi><div class=n>{escape(melhor_txt)}</div><div class=l>melhor hora (conversão)</div><div class=s>mín. 15 decididas na hora</div></div></div>")
 
     opts_b = "".join(f"<option value='{v}' {'selected' if bundle == v else ''}>{lbl}</option>"
@@ -2161,6 +2126,18 @@ def api_vd_ponte(request: Request, ini: str = Query(""), fim: str = Query("")):
     i, f = _periodo_api(ini, fim)
     with A._conn() as c:
         return vd_ponte_dados(c, i, f)
+
+
+@router.get("/api/vendas/horarios")
+def api_vd_horarios(request: Request, ini: str = Query(""), fim: str = Query(""),
+                    bundle: str = Query("todos")):
+    """Melhor Horário de Vendas em dados — EMBRULHA `vd_horarios_dados`."""
+    A = _deps()
+    A._require_api(request)
+    from .dados import vd_horarios_dados
+    i, f = _periodo_api(ini, fim)
+    with A._conn() as c:
+        return vd_horarios_dados(c, i, f, bundle)
 
 
 @router.get("/api/vendas/closers")

@@ -987,3 +987,85 @@ def vd_forecast_dados(conn: Any, mes: dt.date) -> dict:
             "linhas": linhas, "total": tot,
             "faltantes": sorted(faltantes, key=lambda x: -x["gap"]),
             "meses_disponiveis": meses_opts}
+
+
+def vd_horarios_dados(conn: Any, ini: dt.date, fim: dt.date, bundle: str = "todos") -> dict:
+    """Melhor Horário de VENDAS (Lote 6). Extraído de `_vd_horarios`.
+
+    Base: 1ª entrada do deal em Negociação (stage 7) — o card é movido depois
+    da reunião, então o carimbo é o PROXY de quando ela aconteceu.
+
+    TAXA = ganhas ÷ DECIDIDAS (won+lost) da PRÓPRIA coorte: deal ainda aberto
+    não derruba a taxa. É por isso que ela difere da taxa do funil, que divide
+    bookings do mês por oportunidades do mês misturando coortes (14/07 — o
+    9,1% sobre o total confundia com os 15,2% do funil)."""
+    a, b = _brt(ini, fim)
+    filtro_b, args = "", [a, b]
+    if bundle in ("B1", "B2", "B3", "B4", "B5"):
+        filtro_b = " AND substring(d.produto FROM 'B[1-5]') = %s"
+        args.append(bundle)
+    with conn.cursor() as cur:
+        cur.execute(f"""
+            WITH primeira AS (
+                SELECT e.deal_id, min(e.entered_at) AS entered_at
+                  FROM mkt_stage_events e
+                  JOIN mkt_deals_attribution d ON d.deal_id = e.deal_id
+                 WHERE e.stage_id = 7 AND e.entered_at >= %s AND e.entered_at < %s{filtro_b}
+                 GROUP BY e.deal_id)
+            SELECT extract(dow  FROM p.entered_at AT TIME ZONE 'America/Sao_Paulo')::int,
+                   extract(hour FROM p.entered_at AT TIME ZONE 'America/Sao_Paulo')::int,
+                   count(*), count(*) FILTER (WHERE d.status = 'won'),
+                   count(*) FILTER (WHERE d.status = 'lost')
+              FROM primeira p JOIN mkt_deals_attribution d ON d.deal_id = p.deal_id
+             GROUP BY 1, 2""", args)
+        celulas = {(int(dow), int(h)): (int(n), int(w), int(lo))
+                   for dow, h, n, w, lo in cur.fetchall()}
+    total = sum(n for n, _w, _lo in celulas.values())
+    if not total:
+        return {"ini": ini.isoformat(), "fim": fim.isoformat(), "bundle": bundle,
+                "sem_dados": True, "celulas": [], "dows": [], "horas": [],
+                "por_hora": [], "kpis": {}}
+
+    total_w = sum(w for _n, w, _lo in celulas.values())
+    total_lo = sum(lo for _n, _w, lo in celulas.values())
+    dows = [1, 2, 3, 4, 5] + ([6] if any(d == 6 for d, _ in celulas) else []) \
+        + ([0] if any(d == 0 for d, _ in celulas) else [])
+    hs = sorted({h for _, h in celulas})
+    horas = list(range(min(hs), max(hs) + 1))
+
+    grade = []
+    for (d_, h), (n, w, lo) in celulas.items():
+        if d_ not in dows:
+            continue
+        dec = w + lo
+        grade.append({"dow": d_, "hora": h, "n": n, "won": w, "lost": lo,
+                      "abertas": n - dec,
+                      "taxa": (w / dec) if dec else None})
+
+    por_hora_map: dict = {}
+    for (_d, h), (n, w, lo) in celulas.items():
+        t = por_hora_map.setdefault(h, [0, 0, 0])
+        t[0] += n; t[1] += w; t[2] += lo
+    por_hora, melhores = [], []
+    for h in sorted(por_hora_map):
+        n, w, lo = por_hora_map[h]
+        dec = w + lo
+        tx = (w / dec) if dec else None
+        # só hora com 15+ DECIDIDAS concorre a "melhor" — abaixo disso é ruído
+        if dec >= 15:
+            melhores.append((tx or 0, h, dec))
+        por_hora.append({"hora": h, "reunioes": n, "won": w, "lost": lo,
+                         "abertas": n - dec, "taxa": tx,
+                         "amostra_pequena": dec < 15})
+    melhores.sort(key=lambda x: -x[0])
+    decididas = total_w + total_lo
+
+    return {"ini": ini.isoformat(), "fim": fim.isoformat(), "bundle": bundle,
+            "sem_dados": False, "celulas": grade, "dows": dows, "horas": horas,
+            "por_hora": por_hora,
+            "kpis": {"reunioes": total, "won": total_w, "lost": total_lo,
+                     "decididas": decididas, "abertas": total - decididas,
+                     "taxa": (total_w / decididas) if decididas else None,
+                     "melhor_hora": (melhores[0][1] if melhores else None),
+                     "melhor_taxa": (melhores[0][0] if melhores else None),
+                     "melhor_dec": (melhores[0][2] if melhores else None)}}
