@@ -758,3 +758,232 @@ def pv_sdrs_dados(conn: Any, ini: dt.date, fim: dt.date) -> dict:
             "origens": origens, "planos": planos,
             "acoes_individuais": acoes_individuais,
             "persona": PERSONA_PREVENDAS, "coordenacao": COORD_PREVENDAS}
+
+
+def vd_closers_dados(conn: Any, ini: dt.date, fim: dt.date) -> dict:
+    """Desempenho individual de VENDAS (Lote 6). Extraído de `_vd_closers`
+    (sales/ui.py) sem mudar régua — HTML e SPA leem daqui.
+
+    Régua: atribuição pelo DONO do deal (owner_name). Ticket em MRR — B1 é
+    contrato SEMESTRAL pago à vista, então divide por 6 para comparar com os
+    mensais (regra do Otávio, reafirmada 14/07); sem isso quem fecha muito B1
+    aparecia com "ticket alto" indevidamente. Ciclo = mediana 1ª reunião → won.
+    Quem não está na lista do time (ou está desligado) NÃO aparece.
+    """
+    from .. import team_config as TC
+    from .especialista import plano_closer, PERSONA_VENDAS, COORD_VENDAS
+    a, b = _brt(ini, fim)
+
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT d.owner_name,
+                   count(*) FILTER (WHERE d.oport_time >= %s AND d.oport_time < %s) AS oports,
+                   count(*) FILTER (WHERE d.status='won' AND d.won_time >= %s AND d.won_time < %s) AS wins,
+                   avg(CASE WHEN substring(d.produto FROM 'B[1-5]') = 'B1'
+                            THEN COALESCE(d.valor_custom, d.valor) / 6.0
+                            ELSE COALESCE(d.valor_custom, d.valor) END)
+                       FILTER (WHERE d.status='won' AND d.won_time >= %s AND d.won_time < %s) AS ticket
+              FROM mkt_deals_attribution d
+             WHERE d.owner_name IS NOT NULL
+             GROUP BY 1""", (a, b, a, b, a, b))
+        dados = cur.fetchall()
+        cur.execute("""
+            SELECT d.owner_name,
+                   percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(epoch FROM d.won_time - m.primeiro) / 86400)
+              FROM mkt_deals_attribution d
+              JOIN (SELECT deal_id, min(entered_at) AS primeiro FROM mkt_stage_events
+                     WHERE stage_id IN (6, 5, 7) GROUP BY 1) m ON m.deal_id = d.deal_id
+             WHERE d.status='won' AND d.won_time >= %s AND d.won_time < %s
+               AND d.won_time > m.primeiro
+             GROUP BY 1""", (a, b))
+        ciclo_por = {n: float(v) for n, v in cur.fetchall() if v is not None}
+
+    time_stats = []
+    for nome, oports, wins, ticket in dados:
+        papel = TC.papel_de(conn, "vendas", nome)
+        if papel is None or TC.eh_desligado(conn, "vendas", nome):
+            continue
+        time_stats.append({"nome": nome, "oports": oports or 0, "bookings": wins or 0,
+                           "taxa_conv": (wins / oports if oports else None),
+                           "ticket": float(ticket) if ticket else None,
+                           "ciclo_dias": ciclo_por.get(nome), "perdas_top": None,
+                           "papel": papel})
+    if not time_stats:
+        return {"ini": ini.isoformat(), "fim": fim.isoformat(), "sem_dados": True,
+                "pessoas": [], "planos_bundle": [], "horas": [], "colunas": [],
+                "acoes_individuais": [], "persona": PERSONA_VENDAS,
+                "coordenacao": COORD_VENDAS}
+
+    with conn.cursor() as cur:
+        cur.execute("""SELECT owner_name, lost_reason, count(*) FROM mkt_deals_attribution
+                        WHERE status='lost' AND lost_time >= %s AND lost_time < %s
+                          AND lost_reason IS NOT NULL AND stage_id IN (6, 5, 7)
+                        GROUP BY 1, 2 ORDER BY 3 DESC""", (a, b))
+        for own, motivo, _n in cur.fetchall():
+            for p in time_stats:
+                if p["nome"] == own and p["perdas_top"] is None:
+                    p["perdas_top"] = motivo
+
+    _LBL = {"coordenacao": "coordenação", "gerencia": "gerência"}
+    # ordem: membros primeiro, depois por conversão desc
+    pessoas = [dict(p, papel_label=_LBL.get(p["papel"]))
+               for p in sorted(time_stats,
+                               key=lambda x: (x["papel"] != "membro", -(x["taxa_conv"] or 0)))]
+    membros = [p for p in time_stats if p["papel"] == "membro"]
+    acoes_individuais = []
+    for p in pessoas:
+        if p["papel"] != "membro":
+            continue
+        pl = plano_closer(p, membros)
+        acoes_individuais.append({"nome": p["nome"], "fortes": pl["fortes"],
+                                  "fracos": pl["fracos"], "acoes": pl["acoes"]})
+
+    cols = [p["nome"] for p in sorted(time_stats,
+                                      key=lambda x: (x["papel"] != "membro", -(x["bookings"] or 0)))][:6]
+
+    def _casa(nome_pd: str, col: str) -> bool:
+        return TC.norm(col) in TC.norm(nome_pd) or TC.norm(nome_pd) in TC.norm(col)
+
+    # (a) fechamentos por bundle × closer
+    with conn.cursor() as cur:
+        cur.execute("""SELECT COALESCE(owner_name, '—'),
+                              COALESCE(substring(produto FROM 'B[1-5]'),
+                                       CASE WHEN produto IS NULL OR produto = '' THEN '(sem plano)' ELSE 'outros' END),
+                              count(*)
+                         FROM mkt_deals_attribution
+                        WHERE status='won' AND won_time >= %s AND won_time < %s GROUP BY 1, 2""",
+                    (a, b))
+        wb: dict = {}
+        for nome, bd, n in cur.fetchall():
+            wb.setdefault(bd, {})[nome] = int(n)
+    ordem_b = [x for x in ("B1", "B2", "B3", "B4", "B5", "outros", "(sem plano)") if x in wb] \
+        + sorted(set(wb) - {"B1", "B2", "B3", "B4", "B5", "outros", "(sem plano)"})
+    planos_bundle = [{"plano": bd,
+                      "celulas": [{"nome": col,
+                                   "n": sum(v for nm, v in wb[bd].items() if _casa(nm, col))}
+                                  for col in cols]}
+                     for bd in ordem_b]
+
+    # (b) reuniões por closer × hora — 1ª entrada em Negociação (proxy da
+    # reunião realizada; o carimbo é a movimentação do card)
+    with conn.cursor() as cur:
+        cur.execute("""
+            WITH primeira AS (
+                SELECT e.deal_id, min(e.entered_at) AS entered_at
+                  FROM mkt_stage_events e
+                 WHERE e.stage_id = 7 AND e.entered_at >= %s AND e.entered_at < %s
+                 GROUP BY e.deal_id)
+            SELECT COALESCE(d.owner_name, '—'),
+                   extract(hour FROM p.entered_at AT TIME ZONE 'America/Sao_Paulo')::int, count(*)
+              FROM primeira p JOIN mkt_deals_attribution d ON d.deal_id = p.deal_id
+             GROUP BY 1, 2""", (a, b))
+        rh: dict = {}
+        for nome, h, n in cur.fetchall():
+            rh.setdefault(nome, {})[int(h)] = int(n)
+    horas_c = list(range(7, 21))
+    horas = []
+    for col in cols:
+        cel: dict = {}
+        for nm, hs in rh.items():
+            if _casa(nm, col):
+                for h, n in hs.items():
+                    cel[h] = cel.get(h, 0) + n
+        if not cel:
+            continue
+        tot_c = sum(cel.values())
+        pico_h = max(cel.items(), key=lambda x: x[1])[0]
+        horas.append({
+            "nome": col, "total": tot_c, "pico_hora": pico_h,
+            # a escala é da PRÓPRIA linha (compara o padrão, não o volume)
+            "celulas": [{"hora": h, "n": cel.get(h, 0),
+                         "intensidade": (cel.get(h, 0) / max(cel.values())) if cel else 0,
+                         "pico": h == pico_h and cel.get(h, 0) > 0}
+                        for h in horas_c],
+            "fora": sum(n for h, n in cel.items() if h < 7 or h > 20),
+            "amostra_pequena": tot_c < 30,
+        })
+
+    return {"ini": ini.isoformat(), "fim": fim.isoformat(), "sem_dados": False,
+            "pessoas": pessoas, "colunas": cols, "planos_bundle": planos_bundle,
+            "horas": horas, "horas_eixo": horas_c,
+            "acoes_individuais": acoes_individuais,
+            "persona": PERSONA_VENDAS, "coordenacao": COORD_VENDAS}
+
+
+def vd_forecast_dados(conn: Any, mes: dt.date) -> dict:
+    """Performance & Meta do mês (Lote 6). Extraído de `_vd_forecast`.
+
+    Meta por plano (qtde e R$) × fechado × pacing × o que FALTA FAZER
+    (bookings → oportunidades → leads, no ritmo de conversão dos últimos 90d).
+    Mês corrente compara contra a fração decorrida; mês passado é meta ×
+    realizado fechado. Nenhuma régua nova."""
+    import calendar
+    hoje = dt.date.today()
+    mes = mes.replace(day=1)
+    corrente = (mes == hoje.replace(day=1))
+    prox = (mes.replace(day=28) + dt.timedelta(days=4)).replace(day=1)
+    fim_mes = min(hoje, prox - dt.timedelta(days=1)) if corrente else (prox - dt.timedelta(days=1))
+    a, b = _brt(mes, fim_mes)
+    a90, _b90 = _brt(hoje - dt.timedelta(days=90), hoje)
+    frac = min(1.0, hoje.day / calendar.monthrange(mes.year, mes.month)[1]) if corrente else 1.0
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT plano, meta_qtde, meta_valor FROM mkt_goals WHERE mes=%s AND plano <> 'total'", (mes,))
+        metas = {p_: (float(q or 0), float(v or 0)) for p_, q, v in cur.fetchall()}
+        cur.execute("""SELECT COALESCE(substring(produto FROM 'B[1-5]'), 'outros'),
+                              count(*), COALESCE(sum(COALESCE(valor_custom, valor)), 0)
+                         FROM mkt_deals_attribution
+                        WHERE status='won' AND won_time >= %s AND won_time < %s GROUP BY 1""", (a, b))
+        feito = {p_: (int(n), float(v)) for p_, n, v in cur.fetchall()}
+        cur.execute("""SELECT COALESCE(substring(produto FROM 'B[1-5]'), 'outros'), count(*)
+                         FROM mkt_deals_attribution WHERE status='open' AND stage_id IN (6, 5, 7)
+                        GROUP BY 1""")
+        pipe = {k: int(v) for k, v in cur.fetchall()}
+        cur.execute("SELECT count(*) FROM mkt_deals_attribution WHERE oport_time >= %s", (a90,))
+        oport90 = cur.fetchone()[0]
+        cur.execute("SELECT count(*) FROM mkt_deals_attribution WHERE status='won' AND won_time >= %s", (a90,))
+        win90 = cur.fetchone()[0]
+        cur.execute("SELECT count(*) FROM mkt_deals_attribution WHERE add_time >= %s", (a90,))
+        leads90 = cur.fetchone()[0]
+        cur.execute("SELECT DISTINCT mes FROM mkt_goals ORDER BY mes")
+        meses_opts = [m.isoformat() for (m,) in cur.fetchall()]
+    conv90 = win90 / oport90 if oport90 else 0
+    conv_lead90 = win90 / leads90 if leads90 else 0
+
+    linhas, faltantes = [], []
+    tot = {"meta_q": 0.0, "meta_v": 0.0, "real_q": 0, "real_v": 0.0,
+           "gap": 0.0, "oport": 0.0, "leads": 0.0}
+    for plano in ("B1", "B2", "B3", "B4", "B5"):
+        meta_q, meta_v = metas.get(plano, (0.0, 0.0))
+        real_q, real_v = feito.get(plano, (0, 0.0))
+        aberto = pipe.get(plano, 0)
+        pct = (real_q / meta_q) if meta_q else None
+        gap = max(0.0, meta_q - real_q)
+        oport_nec = (gap / conv90) if conv90 else None
+        leads_nec = (gap / conv_lead90) if conv_lead90 else None
+        tot["meta_q"] += meta_q; tot["meta_v"] += meta_v
+        tot["real_q"] += real_q; tot["real_v"] += real_v; tot["gap"] += gap
+        if oport_nec:
+            tot["oport"] += oport_nec
+        if leads_nec:
+            tot["leads"] += leads_nec
+        if gap and meta_q:
+            faltantes.append({"plano": plano, "gap": gap, "oport_nec": oport_nec,
+                              "pipeline": aberto,
+                              # o pipeline atual cobre o gap se converter no ritmo?
+                              "suficiente": (aberto >= oport_nec) if oport_nec is not None else None})
+        linhas.append({"plano": plano, "meta_q": meta_q, "meta_v": meta_v,
+                       "real_q": real_q, "real_v": real_v, "pct": pct, "gap": gap,
+                       "pipeline": aberto, "oport_nec": oport_nec,
+                       "no_ritmo": (pct is not None and pct >= frac),
+                       # B3-B5 = prioridade da empresa, destacados na tabela
+                       "prioritario": plano in ("B3", "B4", "B5")})
+    tot["pct"] = (tot["real_q"] / tot["meta_q"]) if tot["meta_q"] else None
+    tot["pipeline"] = sum(pipe.get(p_, 0) for p_ in ("B1", "B2", "B3", "B4", "B5"))
+    tot["no_ritmo"] = (tot["pct"] is not None and tot["pct"] >= frac)
+
+    return {"mes": mes.isoformat(), "corrente": corrente, "frac": frac,
+            "conv90": conv90, "conv_lead90": conv_lead90,
+            "linhas": linhas, "total": tot,
+            "faltantes": sorted(faltantes, key=lambda x: -x["gap"]),
+            "meses_disponiveis": meses_opts}

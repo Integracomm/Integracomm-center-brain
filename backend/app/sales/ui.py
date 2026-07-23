@@ -1619,70 +1619,25 @@ def _vd_ciclo(conn, request: Request) -> str:
 
 
 def _vd_closers(conn, request: Request) -> str:
+    """Desempenho individual de Vendas — HTML. O CÁLCULO vive em
+    `sales.dados.vd_closers_dados` (Lote 6); aqui só formatação."""
     ini, fim, form = _periodo(request)
-    a, b = _brt(ini, fim)
-    with conn.cursor() as cur:
-        # ticket em MRR: B1 é contrato SEMESTRAL pago à vista (regra do Otávio,
-        # reafirmada 14/07) — dividir por 6 p/ comparar com os mensais; sem
-        # isso quem fecha muito B1 aparecia como "ticket alto" indevidamente
-        cur.execute("""
-            SELECT d.owner_name,
-                   count(*) FILTER (WHERE d.oport_time >= %s AND d.oport_time < %s) AS oports,
-                   count(*) FILTER (WHERE d.status='won' AND d.won_time >= %s AND d.won_time < %s) AS wins,
-                   avg(CASE WHEN substring(d.produto FROM 'B[1-5]') = 'B1'
-                            THEN COALESCE(d.valor_custom, d.valor) / 6.0
-                            ELSE COALESCE(d.valor_custom, d.valor) END)
-                       FILTER (WHERE d.status='won' AND d.won_time >= %s AND d.won_time < %s) AS ticket
-              FROM mkt_deals_attribution d
-             WHERE d.owner_name IS NOT NULL
-             GROUP BY 1""", (a, b, a, b, a, b))
-        dados = cur.fetchall()
-        # ciclo mediano por closer (1ª reunião → won, ganhos do período) — era
-        # sempre vazio e as regras de ciclo dos planos nunca disparavam (14/07)
-        cur.execute("""
-            SELECT d.owner_name,
-                   percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(epoch FROM d.won_time - m.primeiro) / 86400)
-              FROM mkt_deals_attribution d
-              JOIN (SELECT deal_id, min(entered_at) AS primeiro FROM mkt_stage_events
-                     WHERE stage_id IN (6, 5, 7) GROUP BY 1) m ON m.deal_id = d.deal_id
-             WHERE d.status='won' AND d.won_time >= %s AND d.won_time < %s
-               AND d.won_time > m.primeiro
-             GROUP BY 1""", (a, b))
-        ciclo_por = {n: float(v) for n, v in cur.fetchall() if v is not None}
-    from .. import team_config as TC
-    time_stats = []
-    for nome, oports, wins, ticket in dados:
-        papel = TC.papel_de(conn, "vendas", nome)
-        # fora da lista OU desligado (detecção automática no Pipedrive) não
-        # aparece — os números seguem intactos nas réguas do funil
-        if papel is None or TC.eh_desligado(conn, "vendas", nome):
-            continue
-        time_stats.append({"nome": nome, "oports": oports or 0, "bookings": wins or 0,
-                           "taxa_conv": (wins / oports if oports else None),
-                           "ticket": float(ticket) if ticket else None,
-                           "ciclo_dias": ciclo_por.get(nome), "perdas_top": None, "papel": papel})
-    if not time_stats:
+    from .dados import vd_closers_dados
+    d = vd_closers_dados(conn, ini, fim)
+    if d["sem_dados"]:
         return (f"<h1>Time de Vendas</h1><div class=sub>coordenação: {ESP.COORD_VENDAS}</div>"
                 f"<section>{_aviso_coleta('dono dos deals (atribuição por closer)')}</section>")
-    # motivo de perda dominante por closer
-    with conn.cursor() as cur:
-        cur.execute("""SELECT owner_name, lost_reason, count(*) FROM mkt_deals_attribution
-                        WHERE status='lost' AND lost_time >= %s AND lost_time < %s
-                          AND lost_reason IS NOT NULL AND stage_id IN (6, 5, 7)
-                        GROUP BY 1, 2 ORDER BY 3 DESC""", (a, b))
-        for own, motivo, _n in cur.fetchall():
-            for p in time_stats:
-                if p["nome"] == own and p["perdas_top"] is None:
-                    p["perdas_top"] = motivo
-    rows, planos = "", ""
-    membros = [p for p in time_stats if p["papel"] == "membro"]
-    _CHIP_PAPEL = {"coordenacao": ("coordenação", "var(--brand)"), "gerencia": ("gerência", "var(--brand)")}
-    for p in sorted(time_stats, key=lambda x: (x["papel"] != "membro", -(x["taxa_conv"] or 0))):
-        if p["papel"] in _CHIP_PAPEL:
-            lbl, cor = _CHIP_PAPEL[p["papel"]]
-            tag = f" <span class=chip style='--c:{cor}'>{lbl}</span>"
-        else:
-            tag = ""
+
+    def _abrev(n: str) -> str:
+        ps = n.split()
+        return n if len(ps) < 2 else f"{ps[0]} {ps[1][0]}."
+
+    _nc = "padding:6px 7px;border-bottom:1px solid var(--border);font-variant-numeric:tabular-nums;font-size:var(--fs-xs)"
+
+    rows = ""
+    for p in d["pessoas"]:
+        lbl = p.get("papel_label")
+        tag = f" <span class=chip style='--c:var(--brand)'>{escape(lbl)}</span>" if lbl else ""
         rows += (f"<tr><td style='{_TD}'><b>{escape(p['nome'][:26])}</b>{tag}</td>"
                  f"<td style='{_TD};text-align:right'>{p['oports']}</td>"
                  f"<td style='{_TD};text-align:right'>{p['bookings']}</td>"
@@ -1690,92 +1645,40 @@ def _vd_closers(conn, request: Request) -> str:
                  f"<td style='{_TD};text-align:right'>{_fmt(p['ticket'], 'brl')}</td>"
                  f"<td style='{_TD};text-align:right'>{_fmt(p['ciclo_dias'], 'dias')}</td>"
                  f"<td style='{_TD}'>{escape((p['perdas_top'] or '—')[:30])}</td></tr>")
-        # plano/mediana: SÓ colaboradores do time (coordenação/gerência ficam fora)
-        if p["papel"] == "membro":
-            pl = ESP.plano_closer(p, membros)
-            itens = ("".join(f"<li style='color:var(--status-baixo)'>{escape(f)}</li>" for f in pl["fortes"])
-                     + "".join(f"<li style='color:var(--status-alto)'>{escape(f)}</li>" for f in pl["fracos"])
-                     + "".join(f"<li>→ {escape(acao)}</li>" for acao in pl["acoes"]))
-            planos += (f"<div style='margin-top:12px'><b>{escape(p['nome'])}</b>"
-                       f"<ul class=note style='margin:4px 0 0;padding-left:18px'>{itens}</ul></div>")
-    # ---- estudos por closer (pedidos 14/07, espelho dos de PV) -------------
-    cols = [p["nome"] for p in sorted(time_stats, key=lambda x: (x["papel"] != "membro",
-                                                                 -(x["bookings"] or 0)))][:6]
-    _nc = "padding:6px 7px;border-bottom:1px solid var(--border);font-variant-numeric:tabular-nums;font-size:var(--fs-xs)"
 
-    def _abrev(n: str) -> str:
-        ps = n.split()
-        return n if len(ps) < 2 else f"{ps[0]} {ps[1][0]}."
+    planos = ""
+    for ai in d["acoes_individuais"]:
+        itens = ("".join(f"<li style='color:var(--status-baixo)'>{escape(f)}</li>" for f in ai["fortes"])
+                 + "".join(f"<li style='color:var(--status-alto)'>{escape(f)}</li>" for f in ai["fracos"])
+                 + "".join(f"<li>→ {escape(acao)}</li>" for acao in ai["acoes"]))
+        planos += (f"<div style='margin-top:12px'><b>{escape(ai['nome'])}</b>"
+                   f"<ul class=note style='margin:4px 0 0;padding-left:18px'>{itens}</ul></div>")
 
-    # (a) FECHAMENTOS por bundle × closer (won no período, por dono atual)
-    with conn.cursor() as cur:
-        cur.execute("""SELECT COALESCE(owner_name, '—'),
-                              COALESCE(substring(produto FROM 'B[1-5]'),
-                                       CASE WHEN produto IS NULL OR produto = '' THEN '(sem plano)' ELSE 'outros' END),
-                              count(*)
-                         FROM mkt_deals_attribution
-                        WHERE status='won' AND won_time >= %s AND won_time < %s GROUP BY 1, 2""", (a, b))
-        wb: dict[str, dict[str, int]] = {}
-        for nome, bd, n in cur.fetchall():
-            wb.setdefault(bd, {})[nome] = n
-
-    def _casa_col(nome_pd: str, col: str) -> bool:
-        return TC.norm(col) in TC.norm(nome_pd) or TC.norm(nome_pd) in TC.norm(col)
-    ordem_b = [x for x in ("B1", "B2", "B3", "B4", "B5", "outros", "(sem plano)") if x in wb] \
-        + sorted(set(wb) - {"B1", "B2", "B3", "B4", "B5", "outros", "(sem plano)"})
+    cols = d["colunas"]
     brws = ""
-    for bd in ordem_b:
-        tds = ""
-        for col in cols:
-            n = sum(v for nm, v in wb[bd].items() if _casa_col(nm, col))
-            tds += f"<td style='{_nc};text-align:center'>{n or '—'}</td>"
-        brws += f"<tr><td style='{_nc}'><b>{escape(bd)}</b></td>{tds}</tr>"
+    for pl in d["planos_bundle"]:
+        tds = "".join(f"<td style='{_nc};text-align:center'>{c['n'] or '—'}</td>" for c in pl["celulas"])
+        brws += f"<tr><td style='{_nc}'><b>{escape(pl['plano'])}</b></td>{tds}</tr>"
     sec_bnd = ("<section><h2>Fechamentos por plano × closer</h2>"
                "<p class=secsub>contratos ganhos no período por bundle — quem fecha o quê; forte em B1 e zerado em B3-B5 = treinar oferta para cima (prioridade da empresa)</p>"
                + _card(_tbl([("Plano", "left")] + [(_abrev(c), "center") for c in cols], brws))
                + "</section>") if brws else ""
 
-    # (b) REUNIÕES por closer × hora (1ª entrada em Negociação, proxy da
-    # reunião realizada) — compacta como a de PV: linha na própria escala
-    with conn.cursor() as cur:
-        cur.execute("""
-            WITH primeira AS (
-                SELECT e.deal_id, min(e.entered_at) AS entered_at
-                  FROM mkt_stage_events e
-                 WHERE e.stage_id = 7 AND e.entered_at >= %s AND e.entered_at < %s
-                 GROUP BY e.deal_id)
-            SELECT COALESCE(d.owner_name, '—'),
-                   extract(hour FROM p.entered_at AT TIME ZONE 'America/Sao_Paulo')::int, count(*)
-              FROM primeira p JOIN mkt_deals_attribution d ON d.deal_id = p.deal_id
-             GROUP BY 1, 2""", (a, b))
-        rh: dict[str, dict[int, int]] = {}
-        for nome, h, n in cur.fetchall():
-            rh.setdefault(nome, {})[h] = n
-    horas_c = list(range(7, 21))
+    horas_c = d["horas_eixo"]
     hrws = ""
-    for col in cols:
-        cel: dict[int, int] = {}
-        for nm, hs in rh.items():
-            if _casa_col(nm, col):
-                for h, n in hs.items():
-                    cel[h] = cel.get(h, 0) + n
-        if not cel:
-            continue
-        tot_c, vmax_c = sum(cel.values()), max(cel.values())
-        pico_h = max(cel.items(), key=lambda x: x[1])[0]
+    for lin in d["horas"]:
         tds = ""
-        for h in horas_c:
-            n = cel.get(h, 0)
-            alpha = int(8 + 62 * (n / vmax_c)) if n else 0
+        for cel in lin["celulas"]:
+            n = cel["n"]
+            alpha = int(8 + 62 * cel["intensidade"]) if n else 0
             bg = f"background:color-mix(in srgb,var(--brand) {alpha}%,transparent);" if n else ""
-            pico = "box-shadow:inset 0 0 0 1.5px var(--brand);border-radius:3px;" if n and h == pico_h else ""
-            tds += (f"<td title='{escape(col)} {h:02d}h — {n} reunião(ões)' "
+            pico = "box-shadow:inset 0 0 0 1.5px var(--brand);border-radius:3px;" if cel["pico"] else ""
+            tds += (f"<td title='{escape(lin['nome'])} {cel['hora']:02d}h — {n} reunião(ões)' "
                     f"style='{_nc};text-align:center;{bg}{pico}'>{n or ''}</td>")
-        fora = sum(n for h, n in cel.items() if h < 7 or h > 20)
-        tds += f"<td style='{_nc};text-align:center;color:var(--text-muted)'>{fora or ''}</td>"
-        aviso = "*" if tot_c < 30 else ""
-        hrws += (f"<tr><td style='{_nc};white-space:nowrap'><b>{escape(_abrev(col))}</b>{aviso}</td>"
-                 f"<td style='{_nc};text-align:right'>{tot_c}</td>{tds}</tr>")
+        tds += f"<td style='{_nc};text-align:center;color:var(--text-muted)'>{lin['fora'] or ''}</td>"
+        aviso = "*" if lin["amostra_pequena"] else ""
+        hrws += (f"<tr><td style='{_nc};white-space:nowrap'><b>{escape(_abrev(lin['nome']))}</b>{aviso}</td>"
+                 f"<td style='{_nc};text-align:right'>{lin['total']}</td>{tds}</tr>")
     _thc = ("<th style='padding:3px 2px;border-bottom:1px solid var(--border-strong);color:var(--text-muted);"
             "font-size:var(--fs-2xs);text-align:{al};font-weight:600'>{h}</th>")
     ths_h = (_thc.format(al="left", h="Closer") + _thc.format(al="right", h="Tot.")
@@ -1797,119 +1700,72 @@ def _vd_closers(conn, request: Request) -> str:
 
 
 def _vd_forecast(conn, request: Request) -> str:
-    """Performance mensal detalhada: meta por plano (qtde e R$) x fechado x
-    pacing x o que FALTA FAZER (bookings -> oportunidades -> leads no ritmo
-    atual). Mes selecionavel (?mes=YYYY-MM); meses passados = meta x realizado."""
+    """Performance & Meta — HTML. O CÁLCULO vive em
+    `sales.dados.vd_forecast_dados` (Lote 6); aqui só formatação."""
     hoje = dt.date.today()
     qp = request.query_params
     try:
         mes = dt.date.fromisoformat((qp.get("mes") or hoje.strftime("%Y-%m")) + "-01")
     except ValueError:
         mes = hoje.replace(day=1)
-    mes_atual = hoje.replace(day=1)
-    corrente = (mes == mes_atual)
-    prox = (mes.replace(day=28) + dt.timedelta(days=4)).replace(day=1)
-    fim_mes = min(hoje, prox - dt.timedelta(days=1)) if corrente else (prox - dt.timedelta(days=1))
-    a, b = _brt(mes, fim_mes)
-    a90, _b90 = _brt(hoje - dt.timedelta(days=90), hoje)
-    import calendar
-    frac = min(1.0, hoje.day / calendar.monthrange(mes.year, mes.month)[1]) if corrente else 1.0
+    from .dados import vd_forecast_dados
+    d = vd_forecast_dados(conn, mes)
+    mes = dt.date.fromisoformat(d["mes"])
+    corrente, frac = d["corrente"], d["frac"]
+    conv90, conv_lead90 = d["conv90"], d["conv_lead90"]
 
-    with conn.cursor() as cur:
-        cur.execute("SELECT plano, meta_qtde, meta_valor FROM mkt_goals WHERE mes=%s AND plano <> 'total'", (mes,))
-        metas = {p_: (float(q or 0), float(v or 0)) for p_, q, v in cur.fetchall()}
-        cur.execute("""SELECT COALESCE(substring(produto FROM 'B[1-5]'), 'outros'),
-                              count(*), COALESCE(sum(COALESCE(valor_custom, valor)), 0)
-                         FROM mkt_deals_attribution
-                        WHERE status='won' AND won_time >= %s AND won_time < %s GROUP BY 1""", (a, b))
-        feito = {p_: (n, float(v)) for p_, n, v in cur.fetchall()}
-        cur.execute("""SELECT COALESCE(substring(produto FROM 'B[1-5]'), 'outros'), count(*)
-                         FROM mkt_deals_attribution WHERE status='open' AND stage_id IN (6, 5, 7)
-                        GROUP BY 1""")
-        pipe = dict(cur.fetchall())
-        cur.execute("SELECT count(*) FROM mkt_deals_attribution WHERE oport_time >= %s", (a90,))
-        oport90 = cur.fetchone()[0]
-        cur.execute("SELECT count(*) FROM mkt_deals_attribution WHERE status='won' AND won_time >= %s", (a90,))
-        win90 = cur.fetchone()[0]
-        cur.execute("SELECT count(*) FROM mkt_deals_attribution WHERE add_time >= %s", (a90,))
-        leads90 = cur.fetchone()[0]
-    conv90 = win90 / oport90 if oport90 else 0
-    conv_lead90 = win90 / leads90 if leads90 else 0
-
-    with conn.cursor() as cur:
-        cur.execute("SELECT DISTINCT mes FROM mkt_goals ORDER BY mes")
-        meses_opts = [m for (m,) in cur.fetchall()]
     opts = "".join(
-        f"<option value='{m.strftime('%Y-%m')}' {'selected' if m == mes else ''}>{m.strftime('%m/%Y')}</option>"
-        for m in meses_opts)
+        f"<option value='{m[:7]}' {'selected' if m == d['mes'] else ''}>"
+        f"{dt.date.fromisoformat(m).strftime('%m/%Y')}</option>"
+        for m in d["meses_disponiveis"])
     form = (f"<form method=get action=/vendas><input type=hidden name=view value=forecast>"
             f"<div class=filters><div><label>mes</label><select name=mes>{opts}</select></div>"
             f"<button type=submit>Ver</button></div></form>")
 
     rows = ""
-    tot = {"meta_q": 0.0, "meta_v": 0.0, "real_q": 0, "real_v": 0.0, "gap": 0.0, "oport": 0.0, "leads": 0.0}
-    faltantes = []
-    for plano in ("B1", "B2", "B3", "B4", "B5"):
-        meta_q, meta_v = metas.get(plano, (0.0, 0.0))
-        real_q, real_v = feito.get(plano, (0, 0.0))
-        aberto = pipe.get(plano, 0)
-        pct = real_q / meta_q if meta_q else None
-        gap = max(0.0, meta_q - real_q)
-        oport_nec = gap / conv90 if conv90 else None
-        leads_nec = gap / conv_lead90 if conv_lead90 else None
-        tot["meta_q"] += meta_q
-        tot["meta_v"] += meta_v
-        tot["real_q"] += real_q
-        tot["real_v"] += real_v
-        tot["gap"] += gap
-        if oport_nec:
-            tot["oport"] += oport_nec
-        if leads_nec:
-            tot["leads"] += leads_nec
-        if gap and meta_q:
-            faltantes.append((plano, gap, oport_nec, aberto))
-        cor = "pos" if pct is not None and pct >= frac else ("neg" if meta_q else "")
+    for l in d["linhas"]:
+        pct = l["pct"]
+        cor = "pos" if l["no_ritmo"] else ("neg" if l["meta_q"] else "")
         marcador = (f"<div style='position:absolute;left:{frac * 100:.0f}%;top:-2px;bottom:-2px;width:2px;background:var(--text-muted)'></div>"
                     if corrente else "")
         cor_barra = "status-baixo" if (pct or 0) >= frac else "status-critico"
         barra = (f"<div style='height:7px;background:var(--surface-3);border-radius:4px;overflow:visible;position:relative'>"
                  f"<div style='height:100%;width:{min(100, (pct or 0) * 100):.0f}%;background:var(--{cor_barra});border-radius:4px'></div>{marcador}</div>")
-        destaque = " style='background:color-mix(in srgb,var(--brand) 5%,transparent)'" if plano in ("B3", "B4", "B5") else ""
-        rows += (f"<tr{destaque}><td style='{_TD}'><b>{plano}</b></td>"
-                 f"<td style='{_TD};text-align:right'>{meta_q:.0f}</td>"
-                 f"<td style='{_TD};text-align:right'>{_fmt(meta_v, 'brl')}</td>"
-                 f"<td style='{_TD};text-align:right'><b>{real_q}</b></td>"
-                 f"<td style='{_TD};text-align:right'>{_fmt(real_v, 'brl')}</td>"
+        destaque = " style='background:color-mix(in srgb,var(--brand) 5%,transparent)'" if l["prioritario"] else ""
+        rows += (f"<tr{destaque}><td style='{_TD}'><b>{l['plano']}</b></td>"
+                 f"<td style='{_TD};text-align:right'>{l['meta_q']:.0f}</td>"
+                 f"<td style='{_TD};text-align:right'>{_fmt(l['meta_v'], 'brl')}</td>"
+                 f"<td style='{_TD};text-align:right'><b>{l['real_q']}</b></td>"
+                 f"<td style='{_TD};text-align:right'>{_fmt(l['real_v'], 'brl')}</td>"
                  f"<td style='{_TD};text-align:right' class='{cor}'>{_fmt(pct, 'pct') if pct is not None else chr(8212)}</td>"
                  f"<td style='{_TD};min-width:110px'>{barra}</td>"
-                 f"<td style='{_TD};text-align:right'>{gap:.0f}</td>"
-                 f"<td style='{_TD};text-align:right'>{aberto}</td>"
-                 f"<td style='{_TD};text-align:right'>{_fmt(oport_nec) if gap else chr(10003)}</td></tr>")
-    pct_t = tot["real_q"] / tot["meta_q"] if tot["meta_q"] else None
-    cor_t = "pos" if pct_t is not None and pct_t >= frac else "neg"
-    pipe_tot = sum(pipe.get(p_, 0) for p_ in ("B1", "B2", "B3", "B4", "B5"))
+                 f"<td style='{_TD};text-align:right'>{l['gap']:.0f}</td>"
+                 f"<td style='{_TD};text-align:right'>{l['pipeline']}</td>"
+                 f"<td style='{_TD};text-align:right'>{_fmt(l['oport_nec']) if l['gap'] else chr(10003)}</td></tr>")
+    tot = d["total"]
+    cor_t = "pos" if tot["no_ritmo"] else "neg"
     rows += (f"<tr style='border-top:2px solid var(--border-strong)'><td style='{_TD}'><b>TOTAL</b></td>"
              f"<td style='{_TD};text-align:right'><b>{tot['meta_q']:.0f}</b></td>"
              f"<td style='{_TD};text-align:right'><b>{_fmt(tot['meta_v'], 'brl')}</b></td>"
              f"<td style='{_TD};text-align:right'><b>{tot['real_q']}</b></td>"
              f"<td style='{_TD};text-align:right'><b>{_fmt(tot['real_v'], 'brl')}</b></td>"
-             f"<td style='{_TD};text-align:right' class='{cor_t}'><b>{_fmt(pct_t, 'pct') if pct_t is not None else chr(8212)}</b></td>"
+             f"<td style='{_TD};text-align:right' class='{cor_t}'><b>{_fmt(tot['pct'], 'pct') if tot['pct'] is not None else chr(8212)}</b></td>"
              f"<td style='{_TD}'></td>"
              f"<td style='{_TD};text-align:right'><b>{tot['gap']:.0f}</b></td>"
-             f"<td style='{_TD};text-align:right'><b>{pipe_tot}</b></td>"
+             f"<td style='{_TD};text-align:right'><b>{tot['pipeline']}</b></td>"
              f"<td style='{_TD};text-align:right'><b>{_fmt(tot['oport']) if tot['gap'] else chr(10003)}</b></td></tr>")
 
     plano_gap = ""
-    if corrente and faltantes:
+    if corrente and d["faltantes"]:
         itens = ""
-        for plano, gap, oport_nec, aberto in sorted(faltantes, key=lambda x: -x[1]):
-            if oport_nec is not None:
-                sufic = " — INSUFICIENTE" if aberto < oport_nec else " — suficiente se converter no ritmo"
-                cobre = f" (pipeline atual: {aberto} abertas{sufic})"
+        for f in d["faltantes"]:
+            if f["oport_nec"] is not None:
+                sufic = " — suficiente se converter no ritmo" if f["suficiente"] else " — INSUFICIENTE"
+                cobre = f" (pipeline atual: {f['pipeline']} abertas{sufic})"
             else:
                 cobre = ""
-            itens += (f"<div class=sug-item><b>{plano}</b>: faltam <b>{gap:.0f} bookings</b> "
-                      f"&rarr; &asymp; <b>{_fmt(oport_nec)} oportunidades</b> no ritmo de conversao 90d ({_fmt(conv90, 'pct')}){cobre}</div>")
+            itens += (f"<div class=sug-item><b>{f['plano']}</b>: faltam <b>{f['gap']:.0f} bookings</b> "
+                      f"&rarr; &asymp; <b>{_fmt(f['oport_nec'])} oportunidades</b> no ritmo de conversao 90d ({_fmt(conv90, 'pct')}){cobre}</div>")
         itens += (f"<div class=sug-item><b>Total</b>: {tot['gap']:.0f} bookings &asymp; {_fmt(tot['oport'])} oportunidades "
                   f"&asymp; <b>{_fmt(tot['leads'])} leads novos</b> (conversao lead&rarr;booking 90d: {_fmt(conv_lead90, 'pct')}) "
                   "&mdash; e o pedido concreto a Pre-vendas e ao Marketing para fechar o mes.</div>")
@@ -2305,6 +2161,33 @@ def api_vd_ponte(request: Request, ini: str = Query(""), fim: str = Query("")):
     i, f = _periodo_api(ini, fim)
     with A._conn() as c:
         return vd_ponte_dados(c, i, f)
+
+
+@router.get("/api/vendas/closers")
+def api_vd_closers(request: Request, ini: str = Query(""), fim: str = Query("")):
+    """Desempenho individual de Vendas em dados — EMBRULHA `vd_closers_dados`."""
+    A = _deps()
+    A._require_api(request)
+    from .dados import vd_closers_dados
+    i, f = _periodo_api(ini, fim)
+    with A._conn() as c:
+        return vd_closers_dados(c, i, f)
+
+
+@router.get("/api/vendas/forecast")
+def api_vd_forecast(request: Request, mes: str = Query("")):
+    """Performance & Meta em dados — EMBRULHA `vd_forecast_dados`.
+    `mes` no formato YYYY-MM; vazio = mês corrente."""
+    import datetime as _dt
+    A = _deps()
+    A._require_api(request)
+    from .dados import vd_forecast_dados
+    try:
+        m = _dt.date.fromisoformat((mes or _dt.date.today().strftime("%Y-%m")) + "-01")
+    except ValueError:
+        m = _dt.date.today().replace(day=1)
+    with A._conn() as c:
+        return vd_forecast_dados(c, m)
 
 
 @router.get("/api/prevendas/sdrs")

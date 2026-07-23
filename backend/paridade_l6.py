@@ -63,4 +63,45 @@ for ai in d["acoes_individuais"]:
     for t in (ai["fortes"] + ai["fracos"] + ai["acoes"])[:2]:
         check(f"   texto “{t[:34]}…”", sem_tags(t)[:34] in html)
 
+
+# --------------------------------------------------------- Vendas · closers
+print("\n== Vendas · Desempenho Individual (closers)")
+from app.sales.dados import vd_closers_dados
+
+with A._conn() as c:
+    dc = vd_closers_dados(c, hoje.replace(day=1), hoje)
+    html_c = sem_tags(U._vd_closers(c, Req()))
+
+if dc["sem_dados"]:
+    check("closers: sem dados no periodo (aviso na tela)", "atribui" in html_c)
+else:
+    for p in dc["pessoas"]:
+        check(f"closer {p['nome'][:22]}: oports {p['oports']} · bookings {p['bookings']}",
+              str(p["oports"]) in html_c and str(p["bookings"]) in html_c)
+        if p["papel_label"]:
+            check(f"   chip “{p['papel_label']}”", p["papel_label"] in html_c)
+    for pl in dc["planos_bundle"][:4]:
+        check(f"plano {pl['plano']} na grade por closer", pl["plano"] in html_c)
+    for lin in dc["horas"][:3]:
+        check(f"reunioes de {lin['nome'][:20]}: total {lin['total']}", str(lin["total"]) in html_c)
+    for ai in dc["acoes_individuais"]:
+        check(f"plano de acao de {ai['nome'][:20]}", ai["nome"] in html_c)
+
+# -------------------------------------------------------- Vendas · forecast
+print("\n== Vendas · Performance & Meta (forecast)")
+from app.sales.dados import vd_forecast_dados
+
+with A._conn() as c:
+    df = vd_forecast_dados(c, hoje.replace(day=1))
+    html_f = sem_tags(U._vd_forecast(c, Req()))
+
+for l in df["linhas"]:
+    check(f"{l['plano']}: meta {l['meta_q']:.0f} × fechado {l['real_q']}",
+          f"{l['meta_q']:.0f}" in html_f and str(l["real_q"]) in html_f)
+check(f"TOTAL fechado {df['total']['real_q']}", str(df["total"]["real_q"]) in html_f)
+check(f"TOTAL gap {df['total']['gap']:.0f}", f"{df['total']['gap']:.0f}" in html_f)
+for f_ in df["faltantes"][:3]:
+    check(f"falta {f_['plano']}: {f_['gap']:.0f} bookings", f"{f_['gap']:.0f}" in html_f)
+check("mes corrente marcado", isinstance(df["corrente"], bool))
+
 print(f"\n=========== LOTE 6 · PARIDADE: {ok} OK · {fail} FALHA(S) ===========")

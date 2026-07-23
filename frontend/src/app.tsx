@@ -11,6 +11,8 @@ import { VendasWinLossPage } from "@/pages/vendas/winloss";
 import { VendasFunilPage } from "@/pages/vendas/funil";
 import { VendasPontePage } from "@/pages/vendas/ponte";
 import { VendasCicloPage } from "@/pages/vendas/ciclo";
+import { VendasClosersPage } from "@/pages/vendas/closers";
+import { VendasForecastPage } from "@/pages/vendas/forecast";
 import { MktCanaisPage } from "@/pages/marketing/canais";
 import { MktOrigensPage } from "@/pages/marketing/origens";
 import { MktVisaoPage } from "@/pages/marketing/visao";
@@ -66,8 +68,8 @@ const NAV: Array<ItemNav> = [
   { href: "/vendas?view=winloss", label: "Win/Loss", spa: true },
   { href: "/vendas?view=ciclo", label: "Ciclo & Empacados", spa: true },
   { href: "/vendas?view=horarios", label: "Melhor Horário", spa: false },
-  { href: "/vendas?view=closers", label: "Desempenho Individual", spa: false },
-  { href: "/vendas?view=forecast", label: "Performance & Meta", spa: false },
+  { href: "/vendas?view=closers", label: "Desempenho Individual", spa: true },
+  { href: "/vendas?view=forecast", label: "Performance & Meta", spa: true },
   { href: "/financeiro?view=visao", label: "Planejamento x Realizado", spa: true, grupo: "Financeiro" },
   { href: "/financeiro?view=receita", label: "Receita Recorrente", spa: false },
   { href: "/app", label: "Biblioteca (vitrine)", spa: true, grupo: "Redesenho" },
@@ -103,6 +105,8 @@ function VendasRouter() {
   if (view === "winloss") return <VendasWinLossPage />;
   if (view === "ponte") return <VendasPontePage />;
   if (view === "ciclo") return <VendasCicloPage />;
+  if (view === "closers") return <VendasClosersPage />;
+  if (view === "forecast") return <VendasForecastPage />;
   return <VendasFunilPage />; // view padrão da área (Lote 3)
 }
 
