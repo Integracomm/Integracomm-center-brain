@@ -512,3 +512,11 @@ def api_fin_visao(request: Request):
     _kick_deals_sync()  # mesmo serve-stale da tela
     with A._conn() as c:
         return fin_visao_dados(c)
+
+
+@router.get("/api/financeiro/receita")
+def api_fin_receita(request: Request):
+    A = _deps()
+    A._require_api(request)
+    from .dados import fin_receita_dados
+    return fin_receita_dados()  # só planilha (parser isolado), sem banco

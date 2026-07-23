@@ -206,3 +206,64 @@ def fin_visao_dados(conn: Any) -> dict:
                              for r, k, kd in METAS],
                   "destaque": ["Meta de bookings (R$)", "Recebimento total projetado"]},
     }
+
+
+def fin_receita_dados() -> dict:
+    """Saúde da Receita Recorrente (ISR + Quick Ratio) — EMBRULHA
+    `receita_recorrente.carrega()` (mesmo parser isolado da tela HTML e da
+    central; migra ao Omie depois). Transcreve as MESMAS decisões de exibição
+    de `api._receita_recorrente_html` para dados: flag por mês (base pequena /
+    projeção), cor do ISR (≥100 verde), ★ no crossover, alerta de 2 meses.
+    """
+    try:
+        from ..sources.receita_recorrente import carrega
+        d = carrega()
+    except Exception:  # noqa: BLE001 — planilha fora não derruba a tela
+        d = None
+    if not d:
+        return {"sem_planilha": True}
+
+    hoje = dt.date.today()
+    # dez/25 = 0 (mesma âncora do HTML); clamp em 12 (dez/26)
+    idx_atual = min(12, (hoje.year - 2025) * 12 + hoje.month - 12)
+    i_kpi = max(0, min(idx_atual, 12))
+
+    linhas = []
+    for i in range(1, 13):
+        base_ant = d["base_b2b5"][i - 1]
+        peq = base_ant is not None and base_ant < 100_000
+        flag = ("base pequena, alta variância" if peq
+                else ("projeção" if i > idx_atual else ""))
+        isr = d["isr_b2b5"][i]
+        isr_ok = None if (isr is None or peq) else (isr >= 100)
+        linhas.append({
+            "mes": d["meses"][i],
+            "base_b2b5": _f(d["base_b2b5"][i]),
+            "isr_b2b5": _f(isr), "isr_ok": isr_ok,
+            "nova": _f(d["novo"][i]), "perdida": _f(d["perdido"][i]),
+            "qr": _f(d["qr"][i]),
+            "isr_consol": _f(d["isr_consol"][i]), "qr_consol": _f(d["qr_consol"][i]),
+            "crossover": d["crossover_idx"] == i,
+            "flag": flag,
+        })
+
+    alerta = None
+    if d["alertas"]:
+        mes_a, txt_a = d["alertas"][-1]
+        alerta = {"mes": mes_a, "texto": txt_a}
+
+    isr_kpi = d["isr_b2b5"][i_kpi]
+    return {
+        "sem_planilha": False,
+        "meses": d["meses"], "idx_atual": idx_atual,
+        "kpi": {
+            "mes": d["meses"][i_kpi],
+            "base_b2b5": _f(d["base_b2b5"][i_kpi]),
+            "isr_b2b5": _f(isr_kpi), "isr_ok": (isr_kpi or 0) >= 100,
+            "qr": _f(d["qr"][i_kpi]), "isr_consol": _f(d["isr_consol"][i_kpi]),
+        },
+        "linhas": linhas,
+        "alerta": alerta,
+        "crossover_idx": d["crossover_idx"],
+        "crossover_mes": d["meses"][d["crossover_idx"]] if d["crossover_idx"] is not None else None,
+    }

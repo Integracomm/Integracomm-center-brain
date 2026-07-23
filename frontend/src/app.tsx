@@ -28,6 +28,11 @@ import { MktPlanejadorPage } from "@/pages/marketing/planejador";
 import { MktCriativosPage } from "@/pages/marketing/criativos";
 import { MktCicloVidaPage } from "@/pages/marketing/ciclo-vida";
 import { FinanceiroVisaoPage } from "@/pages/financeiro/visao";
+import { FinanceiroReceitaPage } from "@/pages/financeiro/receita";
+import { OperacoesVisaoPage } from "@/pages/operacoes/visao";
+import { OperacoesAreaPage } from "@/pages/operacoes/area";
+import { OperacoesConfigPage } from "@/pages/operacoes/config";
+import { SLUGS as OP_SLUGS } from "@/pages/operacoes/comum";
 import { RaioXPage } from "@/pages/raiox";
 import { SemanaPage } from "@/pages/semana";
 import { FocoSemana } from "@/components/blocks/foco-semana";
@@ -76,7 +81,15 @@ const NAV: Array<ItemNav> = [
   { href: "/vendas?view=closers", label: "Desempenho Individual", spa: true },
   { href: "/vendas?view=forecast", label: "Performance & Meta", spa: true },
   { href: "/financeiro?view=visao", label: "Planejamento x Realizado", spa: true, grupo: "Financeiro" },
-  { href: "/financeiro?view=receita", label: "Receita Recorrente", spa: false },
+  { href: "/financeiro?view=receita", label: "Receita Recorrente", spa: true },
+  { href: "/operacoes?view=visao", label: "Visão Geral", spa: true, grupo: "Operações" },
+  { href: "/operacoes?view=financeiro", label: "Financeiro", spa: true },
+  { href: "/operacoes?view=comercial", label: "Comercial", spa: true },
+  { href: "/operacoes?view=assessoria", label: "Assessoria", spa: true },
+  { href: "/operacoes?view=marketing", label: "Marketing", spa: true },
+  { href: "/operacoes?view=rh", label: "RH", spa: true },
+  { href: "/operacoes?view=growth", label: "Growth", spa: true },
+  { href: "/operacoes?view=config", label: "Configurações", spa: true },
   { href: "/app", label: "Biblioteca (vitrine)", spa: true, grupo: "Redesenho" },
 ];
 
@@ -116,6 +129,21 @@ function VendasRouter() {
   if (view === "horarios") return <VendasHorariosPage />;
   if (view === "forecast") return <VendasForecastPage />;
   return <VendasFunilPage />; // view padrão da área (Lote 3)
+}
+
+function FinanceiroRouter() {
+  const [params] = useSearchParams();
+  const view = params.get("view") ?? "visao";
+  if (view === "receita") return <FinanceiroReceitaPage />;
+  return <FinanceiroVisaoPage />; // visao = view padrão da área
+}
+
+function OperacoesRouter() {
+  const [params] = useSearchParams();
+  const view = params.get("view") ?? "visao";
+  if (view === "config") return <OperacoesConfigPage />;
+  if ((OP_SLUGS as readonly string[]).includes(view)) return <OperacoesAreaPage />;
+  return <OperacoesVisaoPage />; // visao = view padrão da área
 }
 
 function GrowthRouter() {
@@ -161,7 +189,7 @@ function Shell({ children }: { children: React.ReactNode }) {
   const itens = comNavGeral ? navHome
     : NAV.filter((n) => (area === "/app" ? n.href === "/app" : n.href.startsWith(`${area}?`)));
   const viewPadrao = area === "/prevendas" || area === "/vendas" ? "funil"
-    : area === "/marketing" || area === "/financeiro" ? "visao" : "contas";
+    : area === "/marketing" || area === "/financeiro" || area === "/operacoes" ? "visao" : "contas";
   const viewAtual = params.get("view") ?? viewPadrao;
   // Marcador de "onde estou" (Otávio 22/07): compara ROTA + view, e vale
   // também para as páginas ainda em HTML — antes só item do SPA acendia, e a
@@ -256,7 +284,8 @@ export function App() {
       <Routes>
         <Route path="/growth" element={<GrowthRouter />} />
         <Route path="/marketing" element={<MarketingRouter />} />
-        <Route path="/financeiro" element={<FinanceiroVisaoPage />} />
+        <Route path="/financeiro" element={<FinanceiroRouter />} />
+        <Route path="/operacoes" element={<OperacoesRouter />} />
         <Route path="/raiox" element={<RaioXPage />} />
         <Route path="/semana" element={<SemanaPage />} />
         <Route path="/" element={<HomePage />} />

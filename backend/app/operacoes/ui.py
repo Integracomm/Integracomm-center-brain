@@ -55,20 +55,24 @@ def _ord_iniciativa(nome: str) -> tuple:
     return (0, int(m.group(1)), "") if m else (1, 0, (nome or "").casefold())
 
 
-def _render_grupos(rows: list[dict], hoje: dt.date) -> str:
-    if not rows:
-        return "<div class=warn>nenhuma iniciativa sincronizada — configure a URL do Notion em Configurações e clique em Sincronizar.</div>"
+def grupos_dados(rows: list[dict], hoje: dt.date) -> dict:
+    """Agrupamento PURO das iniciativas (gestor → iniciativa → escopo → ações),
+    com TODAS as decisões de exibição já resolvidas (cor/rótulo do semáforo, o
+    'aguardando ação anterior atrasada' que depende da ORDEM, progresso normal-
+    izado, subitens). Fonte única do HTML (_render_grupos) e do SPA
+    (/api/operacoes/area) — extraído para não repetir a régua em dois lugares
+    (lição dos Squads no Lote 6: verificar o efeito no caminho real)."""
     gestores: dict[str, list[dict]] = {}
     for r in rows:
         gestores.setdefault(r["gestor"] or "Outros", []).append(r)
     um_gestor = len(gestores) == 1
-    html = ""
+    out_grupos = []
     for gestor in sorted(gestores, key=str.casefold):
         grows = gestores[gestor]
         inics: dict[str, list[dict]] = {}
         for r in grows:
             inics.setdefault(r["iniciativa"] or r["titulo"] or "(sem iniciativa)", []).append(r)
-        bloco = ""
+        inic_out = []
         for inic in sorted(inics, key=_ord_iniciativa):
             irows = inics[inic]
             subs: dict[str, list[dict]] = {}
@@ -78,60 +82,91 @@ def _render_grupos(rows: list[dict], hoje: dt.date) -> str:
             def _min_prazo(rs):
                 ps = [r["prazo"] for r in rs if r["prazo"]]
                 return (0, min(ps)) if ps else (1, dt.date.max)
-            linhas = ""
+            subs_out = []
             for sub in sorted(subs, key=lambda s: _min_prazo(subs[s])):
                 srows = sorted(subs[sub], key=lambda r: ((0, r["prazo"]) if r["prazo"] else (1, dt.date.max),
                                                          (r["acao"] or r["titulo"] or "").casefold()))
                 bloqueia = False
+                acoes = []
                 for r in srows:
-                    if r["status"] == "concluida":
-                        r["_dep"] = False
-                        continue
-                    cor, _ = _semaforo(r["status"], r["prazo"], hoje)
-                    r["_dep"] = bloqueia
-                    if cor == "vermelho" and not bloqueia:
-                        bloqueia = True
-                if sub:
-                    linhas += (f"<div style='margin:10px 0 4px;font-size:var(--fs-2xs);color:var(--text-muted);"
-                               f"text-transform:uppercase;letter-spacing:var(--tracking-label)'>{escape(sub)}</div>")
-                for r in srows:
+                    concluida = r["status"] == "concluida"
                     cor, rotulo = _semaforo(r["status"], r["prazo"], hoje)
-                    var, _lbl = _SEM[cor]
-                    prazo_html = (f"<span class=chip style='--c:var({var})'>{r['prazo'].strftime('%d/%m/%Y')}</span>"
-                                  if r["prazo"] else "")
-                    dep = ("<span class=chip style='--c:var(--status-alto)'>aguardando ação anterior atrasada</span>"
-                           if r.get("_dep") else "")
-                    prog = ""
+                    dep = False
+                    if not concluida:
+                        dep = bloqueia
+                        if cor == "vermelho" and not bloqueia:
+                            bloqueia = True
+                    prog = None
                     if r["progresso"] is not None:
-                        p = max(0, min(100, float(r["progresso"])))
+                        prog = max(0.0, min(100.0, float(r["progresso"])))
+                    acoes.append({
+                        "acao": r["acao"] or r["titulo"] or "(sem ação)",
+                        "cor": cor, "rotulo": rotulo,
+                        "prazo": r["prazo"].isoformat() if r["prazo"] else None,
+                        "dep": dep, "progresso": prog,
+                        "notion_url": r["notion_url"],
+                        "responsaveis": r["responsaveis"] or [],
+                        "subitems": [{"titulo": s.get("titulo") or "",
+                                      "concluida": s.get("status") == "concluida"}
+                                     for s in r["subitems"]],
+                    })
+                subs_out.append({"detalhamento": sub, "acoes": acoes})
+            inic_out.append({"nome": inic, "feitos": sum(1 for r in irows if r["status"] == "concluida"),
+                             "total": len(irows), "subs": subs_out})
+        out_grupos.append({"gestor": gestor, "iniciativas": inic_out})
+    return {"um_gestor": um_gestor, "grupos": out_grupos}
+
+
+def _render_grupos(rows: list[dict], hoje: dt.date) -> str:
+    if not rows:
+        return "<div class=warn>nenhuma iniciativa sincronizada — configure a URL do Notion em Configurações e clique em Sincronizar.</div>"
+    dados = grupos_dados(rows, hoje)
+    um_gestor = dados["um_gestor"]
+    html = ""
+    for g in dados["grupos"]:
+        bloco = ""
+        for inic in g["iniciativas"]:
+            linhas = ""
+            for sub in inic["subs"]:
+                if sub["detalhamento"]:
+                    linhas += (f"<div style='margin:10px 0 4px;font-size:var(--fs-2xs);color:var(--text-muted);"
+                               f"text-transform:uppercase;letter-spacing:var(--tracking-label)'>{escape(sub['detalhamento'])}</div>")
+                for a in sub["acoes"]:
+                    var, _lbl = _SEM[a["cor"]]
+                    prazo_html = (f"<span class=chip style='--c:var({var})'>{dt.date.fromisoformat(a['prazo']).strftime('%d/%m/%Y')}</span>"
+                                  if a["prazo"] else "")
+                    dep = ("<span class=chip style='--c:var(--status-alto)'>aguardando ação anterior atrasada</span>"
+                           if a["dep"] else "")
+                    prog = ""
+                    if a["progresso"] is not None:
+                        p = a["progresso"]
                         prog = (f"<span style='display:inline-block;width:70px;height:6px;background:var(--surface-3);"
                                 f"border-radius:3px;vertical-align:middle;overflow:hidden'>"
                                 f"<span style='display:block;height:100%;width:{p:.0f}%;background:var({var})'></span></span>"
                                 f"<span style='font-size:var(--fs-2xs);color:var(--text-muted)'> {p:.0f}%</span>")
-                    link = (f" <a href='{escape(r['notion_url'])}' target=_blank title='abrir no Notion' "
-                            f"style='color:var(--text-faint)'>↗</a>" if r["notion_url"] else "")
-                    resp = ", ".join(r["responsaveis"]) if r["responsaveis"] else ""
+                    link = (f" <a href='{escape(a['notion_url'])}' target=_blank title='abrir no Notion' "
+                            f"style='color:var(--text-faint)'>↗</a>" if a["notion_url"] else "")
+                    resp = ", ".join(a["responsaveis"]) if a["responsaveis"] else ""
                     resp_html = f"<span style='color:var(--text-muted);font-size:var(--fs-2xs)'> · {escape(resp)}</span>" if resp else ""
                     linhas += (f"<div style='display:flex;gap:9px;align-items:center;flex-wrap:wrap;padding:7px 0;"
                                f"border-top:1px solid var(--border)'>"
                                f"<span class=sdot style='--c:var({var})'></span>"
                                f"<span style='flex:1;min-width:200px;font-size:var(--fs-sm)'>"
-                               f"{escape(r['acao'] or r['titulo'] or '(sem ação)')}{link}{resp_html}</span>"
+                               f"{escape(a['acao'])}{link}{resp_html}</span>"
                                f"{prog}{prazo_html}{dep}"
-                               f"<span class=chip style='--c:var({var})'>{rotulo}</span></div>")
-                    for s in r["subitems"]:
-                        sc = "--status-baixo" if s.get("status") == "concluida" else "--status-semdados"
+                               f"<span class=chip style='--c:var({var})'>{a['rotulo']}</span></div>")
+                    for s in a["subitems"]:
+                        sc = "--status-baixo" if s["concluida"] else "--status-semdados"
                         linhas += (f"<div style='padding:3px 0 3px 28px;font-size:var(--fs-xs);color:var(--text-muted)'>"
-                                   f"<span class=sdot style='--c:var({sc})'></span> {escape(s.get('titulo') or '')}</div>")
-            feitos = sum(1 for r in irows if r["status"] == "concluida")
+                                   f"<span class=sdot style='--c:var({sc})'></span> {escape(s['titulo'])}</div>")
             bloco += (f"<div class=card style='margin-bottom:12px'><div style='display:flex;justify-content:space-between;"
-                      f"align-items:baseline;gap:10px'><b style='font-size:var(--fs-md)'>{escape(inic)}</b>"
+                      f"align-items:baseline;gap:10px'><b style='font-size:var(--fs-md)'>{escape(inic['nome'])}</b>"
                       f"<span style='color:var(--text-muted);font-size:var(--fs-xs);white-space:nowrap'>"
-                      f"{feitos}/{len(irows)} concluídas</span></div>{linhas}</div>")
+                      f"{inic['feitos']}/{inic['total']} concluídas</span></div>{linhas}</div>")
         if um_gestor:
             html += bloco
         else:
-            html += f"<section><h2>{escape(gestor)}</h2>{bloco}</section>"
+            html += f"<section><h2>{escape(g['gestor'])}</h2>{bloco}</section>"
     return html
 
 
@@ -370,6 +405,11 @@ def operacoes(request: Request):
     if view not in {"visao", "config", *slugs}:
         view = "visao"
 
+    from .. import spa as _spa_mod  # redesenho: view migrada entrega o SPA
+    _r = _spa_mod.view_response(request, "operacoes", view)
+    if _r is not None:
+        return _r
+
     with A._conn() as c:
         with c.cursor() as cur:
             cur.execute("INSERT INTO audit_log (actor, action, scope) VALUES (%s,'view',%s)",
@@ -424,6 +464,127 @@ def operacoes(request: Request):
     html = _shell(A, "operacoes", views, view, content, user)
     return HTMLResponse(html.replace("Pré-vendas · Qualificação", "Operações · Metas & Iniciativas")
                         .replace("Vendas · Fechamento", "Operações · Metas & Iniciativas"))
+
+
+# ---------------------------------------------------------------------------
+# Endpoints JSON do redesenho (Lote 6, tela final) — EMBRULHAM os mesmos
+# computes do HTML (_load_rows/_contagem/_semaforo/grupos_dados/MT.load_metas).
+# As mutações (config/sync/metas/realizado) reusam os POST já existentes abaixo.
+# ---------------------------------------------------------------------------
+def _yq(request: Request) -> tuple[int, int]:
+    qp = request.query_params
+    hoje = dt.date.today()
+    q_atual = (hoje.month - 1) // 3 + 1
+    try:
+        return int(qp.get("year") or hoje.year), int(qp.get("quarter") or q_atual)
+    except ValueError:
+        return hoje.year, q_atual
+
+
+@router.get("/api/operacoes/visao")
+def api_op_visao(request: Request):
+    A = _deps()
+    A._require_api(request)
+    year, quarter = _yq(request)
+    hoje = dt.date.today()
+    with A._conn() as c:
+        rows = _load_rows(c, year, quarter)
+    tot = _contagem(rows, hoje)
+    areas, atrasadas = [], []
+    for slug, nome, gestor in _AREAS_OP:
+        arows = [r for r in rows if r["area"] == slug]
+        cc = _contagem(arows, hoje)
+        for r in arows:
+            if _semaforo(r["status"], r["prazo"], hoje)[0] == "vermelho":
+                atrasadas.append((r, nome))
+        areas.append({"slug": slug, "nome": nome, "gestor": gestor,
+                      "total": cc["total"], "ok": cc["ok"], "prog": cc["prog"],
+                      "atras": cc["atras"], "ni": cc["ni"],
+                      "progresso": round(cc["progresso"], 1)})
+    atrasadas.sort(key=lambda x: x[0]["prazo"] or dt.date.max)
+    atr = [{"iniciativa": (r["iniciativa"] or r["titulo"] or "")[:90],
+            "area_nome": nome, "acao": r["acao"] or "",
+            "prazo": r["prazo"].isoformat() if r["prazo"] else None}
+           for r, nome in atrasadas[:12]]
+    return {"year": year, "quarter": quarter,
+            "progresso_total": round(tot["progresso"], 1),
+            "areas": areas, "atrasadas": atr}
+
+
+@router.get("/api/operacoes/area")
+def api_op_area(request: Request):
+    A = _deps()
+    A._require_api(request)
+    year, quarter = _yq(request)
+    hoje = dt.date.today()
+    slug = request.query_params.get("slug") or ""
+    slugs = {s_: (n, g) for s_, n, g in _AREAS_OP}
+    if slug not in slugs:
+        return JSONResponse({"error": "área inválida"}, status_code=404)
+    nome, gestor = slugs[slug]
+    with A._conn() as c:
+        kpis_raw = MT.load_metas(c, slug, year, quarter)
+        rows = _load_rows(c, year, quarter, slug)
+    kpis = []
+    for k in kpis_raw:
+        months = k["months"]
+        kpis.append({
+            "key": k["key"], "label": k["label"], "unit": k["unit"],
+            "direction": k["direction"], "auto": k["auto"],
+            "real_tri": k["real_tri"], "meta_tri": k["meta_tri"],
+            "pct": round(k["pct"], 1) if k["pct"] is not None else None,
+            "ok": k["ok"],
+            "meses_lbl": [_MES_LBL[m] for m in months],
+            "reais": [k["realizado"].get(m) for m in months],
+            "metas": [k["metas_mes"].get(m) for m in months],
+        })
+    return {"slug": slug, "nome": nome, "gestor": gestor,
+            "year": year, "quarter": quarter, "kpis": kpis,
+            "iniciativas": grupos_dados(rows, hoje)}
+
+
+@router.get("/api/operacoes/config")
+def api_op_config(request: Request):
+    A = _deps()
+    _actor, role = A._require_api(request)  # leitura livre a quem tem Operações;
+    year, quarter = _yq(request)            # as MUTAÇÕES (POST abaixo) é que exigem admin
+    is_admin = role == "admin"
+    with A._conn() as c, c.cursor() as cur:
+        cur.execute(MT.DDL)
+        cur.execute("""SELECT area, database_id, database_name, gestor_filter
+                         FROM notion_config WHERE year=%s AND quarter=%s""", (year, quarter))
+        cfg = {a: (d, n, g) for a, d, n, g in cur.fetchall()}
+        cur.execute("SELECT area, kpi_key, meta FROM op_kpi_targets WHERE year=%s AND quarter=%s", (year, quarter))
+        targets = {(a, k): float(v) if v is not None else None for a, k, v in cur.fetchall()}
+        cur.execute("""SELECT area, kpi_key, month, realizado FROM op_kpi_monthly
+                        WHERE year=%s AND month = ANY(%s)""", (year, MT.quarter_months(quarter)))
+        manual: dict[tuple[str, str, int], float | None] = {
+            (a, k, m): (float(v) if v is not None else None) for a, k, m, v in cur.fetchall()}
+        cur.execute("""SELECT area, ok, items_count, message, created_at FROM notion_sync_log
+                        WHERE year=%s AND quarter=%s ORDER BY created_at DESC LIMIT 8""", (year, quarter))
+        synclog = cur.fetchall()
+    areas_cfg, metas = [], []
+    for slug, nome, _g in _AREAS_OP:
+        did, dname, gfil = cfg.get(slug, (None, None, None))
+        areas_cfg.append({"slug": slug, "nome": nome, "database_id": did,
+                          "database_name": dname, "gestor_filter": gfil})
+        defs = MT.AREA_KPIS.get(slug) or []
+        if not defs:
+            continue
+        kdefs = []
+        for key, label, unit, direction, _ir, is_auto in defs:
+            kdefs.append({
+                "key": key, "label": label, "unit": unit, "direction": direction,
+                "is_auto": is_auto, "meta": targets.get((slug, key)),
+                "meses": [{"month": m, "label": _MES_LBL[m],
+                           "realizado": manual.get((slug, key, m))}
+                          for m in MT.quarter_months(quarter)] if not is_auto else [],
+            })
+        metas.append({"slug": slug, "nome": nome, "kpis": kdefs})
+    log = [{"area": a or "", "ok": bool(ok), "message": msg or "",
+            "ts": ts.strftime("%d/%m %H:%M")} for a, ok, _n, msg, ts in synclog]
+    return {"year": year, "quarter": quarter, "is_admin": is_admin,
+            "areas_cfg": areas_cfg, "metas": metas, "synclog": log}
 
 
 @router.post("/api/operacoes/notion-config")

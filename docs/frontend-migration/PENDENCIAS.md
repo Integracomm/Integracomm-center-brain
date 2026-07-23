@@ -3,6 +3,41 @@
 Regra combinada (21/07): discrepância de número ou dúvida de conteúdo NÃO para o
 lote — entra aqui e o Otávio decide tudo junto no fim do lote.
 
+## Lote 6 (cauda) — 2 telas finais: Receita Recorrente + Operações (23/07)
+
+**MIGRAÇÃO DE TELAS COMPLETA.** As duas que faltavam entraram no SPA; só Admin e
+All Hands seguem em HTML (decisão anterior).
+
+**1. Financeiro › Receita Recorrente — PORTADO.** `/api/financeiro/receita`
+embrulha `sources.receita_recorrente.carrega()` (parser isolado da planilha, o
+mesmo da central; migra ao Omie depois). KPIs (base/ISR/QR B2-B5 + ISR
+consolidado), tabela dos 12 meses com flags ('base pequena, alta variância' /
+'projeção'), ★ crossover e alerta de 2 meses — todas as decisões de exibição
+vêm do backend. Paridade contra o HTML: os números do payload aparecem no HTML;
+KPI do mês corrente é `—` nos dois quando a planilha ainda não tem o valor
+(jul/26 hoje). Sem divergência.
+
+**2. Operações — PORTADO (Visão Geral + 6 áreas + Configurações).** O
+agrupamento das iniciativas virou função pura `grupos_dados` (fonte única do
+HTML e do endpoint) — o `_render_grupos` foi refatorado para consumi-la e o
+`paridade_receita_operacoes.py` confirma que o HTML renderizado é **byte a byte
+idêntico** ao anterior (guarda do refactor). Endpoints: `/api/operacoes/visao`
+(cards+atrasadas), `/api/operacoes/area` (KPIs com meta adaptativa + gráficos +
+iniciativas), `/api/operacoes/config`. As mutações (URL do Notion, meta,
+realizado manual, Sincronizar) **reusam os POST que já existiam** — nada novo no
+caminho de escrita.
+   - **Desvio consciente (melhoria):** na tela de Configurações, os campos de
+     'realizado manual' por mês agora **vêm PREENCHIDOS** com o valor já salvo
+     (o HTML deixava sempre em branco e o gestor não via o que estava lançado).
+     O endpoint devolve `op_kpi_monthly`; se preferir manter o comportamento
+     antigo (sempre vazio), é 1 linha.
+   - **Leitura livre da Config:** `/api/operacoes/config` responde a qualquer
+     gestor com acesso a Operações (como o HTML mostrava os campos); só as
+     MUTAÇÕES exigem admin — inputs ficam desabilitados para não-admin, com
+     aviso 'somente leitura'.
+   - Env: `SPA_OPERACOES_VIEWS=visao,config,financeiro,comercial,assessoria,
+     marketing,rh,growth` (local). Produção: ligar quando validar.
+
 ## EM ABERTO — Central: reconstrução (feedback Otávio 22/07)
 
 **Contexto honesto:** a Central entregue no Lote 5 saiu INCOMPLETA — 4 blocos do
