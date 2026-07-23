@@ -27,6 +27,7 @@ interface Payload {
     bookings: number; speed_min: number | null }>;
   total: { leads: number; oport: number; book: number; taxa: number | null };
   ex_colaboradores: { leads: number; oport: number; book: number } | null;
+  fora_do_time: { leads: number; oport: number; book: number } | null;
   colunas: string[];
   desqualificacao: Array<{ nome: string; total: number; leads: number;
     motivos: Array<{ motivo: string; n: number; pct: number; sem_motivo: boolean }> }>;
@@ -80,7 +81,7 @@ export function PrevendasSdrsPage() {
         <>
           <SectionCard hint={<Hint area="prevendas/sdrs" titulo="Leads e oportunidades por colaborador" />}
             title="Leads e oportunidades por colaborador"
-            subtitle="atribuição pelo campo SDR do deal · leads = criados no período · oportunidades = Dia Oportunidade no período · speed = mediana do 1º contato registrado · lead sem SDR entra em “(sem SDR definido)” · desligados ficam agregados em “(ex-colaboradores)”">
+            subtitle="atribuição pelo campo SDR do deal · leads = criados no período · oportunidades = Dia Oportunidade no período · speed = mediana do 1º contato registrado · lead sem SDR entra em “(sem SDR definido)”; desligados em “(ex-colaboradores)” e quem não é do time de PV em “(fora do time de Pré-vendas)” — o Total continua fechando">
             <Table>
               <TableHeader>
                 <TableRow className="bg-muted/40 hover:bg-muted/40">
@@ -116,6 +117,18 @@ export function PrevendasSdrsPage() {
                     <TableCell className="text-right tabular-nums">{fmtSpeed(p.speed_min)}</TableCell>
                   </TableRow>
                 ))}
+                {/* quem não é do time de PV não vira linha própria (Otávio
+                    23/07) — o número fica agregado p/ o Total fechar */}
+                {d.fora_do_time && (
+                  <TableRow className="text-muted-foreground">
+                    <TableCell className="italic">(fora do time de Pré-vendas)</TableCell>
+                    <TableCell className="text-right tabular-nums">{d.fora_do_time.leads || "—"}</TableCell>
+                    <TableCell className="text-right tabular-nums">{d.fora_do_time.oport || "—"}</TableCell>
+                    <TableCell />
+                    <TableCell className="text-right tabular-nums">{d.fora_do_time.book || "—"}</TableCell>
+                    <TableCell />
+                  </TableRow>
+                )}
                 {d.ex_colaboradores && (
                   <TableRow className="text-muted-foreground">
                     <TableCell className="italic">(ex-colaboradores)</TableCell>

@@ -630,6 +630,7 @@ def pv_sdrs_dados(conn: Any, ini: dt.date, fim: dt.date) -> dict:
     pessoas, visiveis = [], []
     total = {"leads": 0, "oport": 0, "book": 0}
     ex = {"leads": 0, "oport": 0, "book": 0}
+    fora = {"leads": 0, "oport": 0, "book": 0}
     for nome in nomes[:15]:
         l, o = leads_por.get(nome, 0), oport_por.get(nome, 0)
         bq, _bv = book_por.get(nome, (0, 0.0))
@@ -637,14 +638,21 @@ def pv_sdrs_dados(conn: Any, ini: dt.date, fim: dt.date) -> dict:
         if nome != SEM and TC.eh_desligado(conn, "prevendas", nome):
             ex["leads"] += l; ex["oport"] += o; ex["book"] += bq
             continue
+        papel = None if nome == SEM else TC.papel_de(conn, "prevendas", nome)
+        # quem NÃO é de Pré-vendas não vira linha nem coluna desta tela (Otávio
+        # 23/07: Giovana F. é do time de VENDAS e aparecia aqui por ter tocado
+        # 1 lead). O número não some — vai para a linha agregada '(fora do time
+        # de Pré-vendas)', para o Total continuar fechando, como já era feito
+        # com os desligados.
+        if nome != SEM and papel is None:
+            fora["leads"] += l; fora["oport"] += o; fora["book"] += bq
+            continue
         if nome != SEM:
             visiveis.append(nome)
-        papel = None if nome == SEM else TC.papel_de(conn, "prevendas", nome)
         pessoas.append({
             "nome": nome, "sem_sdr": nome == SEM, "papel": papel,
             # o rótulo do chip acompanha a cor (regra da biblioteca)
-            "papel_label": {"coordenacao": "coordenação", "gerencia": "gerência",
-                            "membro": None}.get(papel, None if nome == SEM else "fora do time de PV"),
+            "papel_label": {"coordenacao": "coordenação", "gerencia": "gerência"}.get(papel),
             "leads": l, "oport": o, "taxa": (o / l if l else None),
             "bookings": bq, "speed_min": speed_por.get(TC.norm(nome)),
         })
@@ -745,6 +753,7 @@ def pv_sdrs_dados(conn: Any, ini: dt.date, fim: dt.date) -> dict:
     return {"ini": ini.isoformat(), "fim": fim.isoformat(),
             "pessoas": pessoas, "total": total,
             "ex_colaboradores": (ex if any(ex.values()) else None),
+            "fora_do_time": (fora if any(fora.values()) else None),
             "colunas": cols, "desqualificacao": desqualificacao,
             "origens": origens, "planos": planos,
             "acoes_individuais": acoes_individuais,

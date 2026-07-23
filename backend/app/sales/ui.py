@@ -419,6 +419,14 @@ def _pv_sdrs(conn, request: Request) -> str:
                   f"<td style='{_TD};text-align:right'>{_fmt(pes['taxa'], 'pct')}</td>"
                   f"<td style='{_TD};text-align:right'>{pes['bookings'] or ''}</td>"
                   f"<td style='{_TD};text-align:right'>{_fmt(pes['speed_min'], 'min')}</td></tr>")
+    fora = d["fora_do_time"]
+    if fora:
+        orows += (f"<tr><td style='{_TD};color:var(--text-faint)'>(fora do time de Pré-vendas)</td>"
+                  f"<td style='{_TD};text-align:right;color:var(--text-faint)'>{fora['leads'] or ''}</td>"
+                  f"<td style='{_TD};text-align:right;color:var(--text-faint)'>{fora['oport'] or ''}</td>"
+                  f"<td style='{_TD}'></td>"
+                  f"<td style='{_TD};text-align:right;color:var(--text-faint)'>{fora['book'] or ''}</td>"
+                  f"<td style='{_TD}'></td></tr>")
     ex = d["ex_colaboradores"]
     if ex:
         orows += (f"<tr><td style='{_TD};color:var(--text-faint)'>(ex-colaboradores)</td>"
@@ -438,7 +446,7 @@ def _pv_sdrs(conn, request: Request) -> str:
     oficial = ("<section><h2>Leads e oportunidades por colaborador</h2>"
                "<p class=secsub>volumes na régua dos gráficos do Pipedrive (atribuição pelo campo SDR do deal; "
                "leads = criados no período · oportunidades = Dia Oportunidade no período) · Speed = mediana do 1º contato registrado (atividades) · "
-               "lead ainda sem SDR entra em '(sem SDR definido)' · desligados (detectados no Pipedrive) ficam agregados em '(ex-colaboradores)'</p>"
+               "lead ainda sem SDR entra em '(sem SDR definido)' · desligados ficam em '(ex-colaboradores)' e quem não é do time de PV em '(fora do time de Pré-vendas)' — o Total continua fechando</p>"
                + _card(_tbl([("Colaborador", "left"), ("Leads", "right"), ("Oportunidades", "right"),
                              ("Lead→Oport", "right"), ("Bookings", "right"), ("Speed 1º contato", "right")], orows)) + "</section>")
 
