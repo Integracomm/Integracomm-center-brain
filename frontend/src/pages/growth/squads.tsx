@@ -32,7 +32,8 @@ interface Payload {
     contas_pessoa: number | null; estado: string | null;
     tarefas_abertas: number | null; tarefas_pessoa: number | null;
     tom_contas: string | null; tom_tarefas: string | null; mrr_pessoa: number | null;
-    graves_pessoa: number | null; pct_saudavel: number | null }>;
+    graves_pessoa: number | null; pct_saudavel: number | null;
+    novos: number; antigos: number; pct_antigos: number | null }>;
   media_contas_pessoa: number | null;
   leitura_capacidade: string;
   tem_tarefas: boolean;
@@ -260,6 +261,7 @@ export function GrowthSquadsPage() {
                     <TableHead className={`${th} text-right`}>Pessoas</TableHead>
                     <TableHead className={`${th} text-right`}>Contas</TableHead>
                     <TableHead className={`${th} text-right`}>Contas/pessoa</TableHead>
+                    <TableHead className={`${th} text-right`}>Novos × antigos</TableHead>
                     <TableHead className={`${th} text-right`}>Tarefas abertas</TableHead>
                     <TableHead className={`${th} text-right`}>Tarefas/pessoa</TableHead>
                     <TableHead className={`${th} text-right`}>MRR/pessoa</TableHead>
@@ -292,6 +294,18 @@ export function GrowthSquadsPage() {
                         c.tom_contas === "critico" ? "text-destructive"
                           : c.tom_contas === "ok" ? "text-success" : "")}>
                         {c.contas_pessoa != null ? c.contas_pessoa.toFixed(1) : "—"}
+                      </TableCell>
+                      {/* concentração de planos antigos ≥50% em destaque:
+                          carteira majoritariamente em runoff é decisão de
+                          manter/migrar, não de operação (Otávio 24/07) */}
+                      <TableCell className={cn("whitespace-nowrap text-right tabular-nums",
+                        (c.pct_antigos ?? 0) >= 0.5 ? "font-semibold text-warning" : "")}>
+                        {c.novos} × {c.antigos}
+                        {c.pct_antigos != null && c.antigos > 0 && (
+                          <span className="ml-1 text-[10px] text-muted-foreground">
+                            ({formatPct(c.pct_antigos * 100)} antigos)
+                          </span>
+                        )}
                       </TableCell>
                       <TableCell className="text-right tabular-nums">
                         {d.tem_tarefas ? c.tarefas_abertas : "—"}

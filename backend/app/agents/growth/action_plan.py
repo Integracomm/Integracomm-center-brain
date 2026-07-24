@@ -40,10 +40,18 @@ escreva em pt-BR, direto, como quem conhece a conta; formato markdown EXATO com 
 ### Onde a relação está
 ### O que este cliente valoriza (e o que irrita)
 ### Como conduzir a conversa
+### Plano de ação (próximas 2 semanas)
 ### Assuntos a puxar (e os que evitar)
 ### O que observar depois
-Máx. ~350 palavras. Em "Como conduzir a conversa", dê frases de abertura possíveis, não
-tópicos genéricos. Seja específico: cite o que o cliente disse/o que o gestor registrou."""
+Máx. ~450 palavras. Em "Como conduzir a conversa", dê frases de abertura possíveis, não
+tópicos genéricos. Seja específico: cite o que o cliente disse/o que o gestor registrou.
+
+Sobre o "Plano de ação": são de 3 a 5 passos NUMERADOS, cada um com o QUE fazer, QUEM faz
+e ATÉ QUANDO — o guia que o time executa depois da reunião. São ações de RELACIONAMENTO e
+de recuperação da confiança (contato, alinhamento de expectativa, entrega combinada,
+prova de valor), não a fila de tarefas do ClickUp: se um item já está na fila, ele só
+entra aqui quando o cliente cobrou nominalmente — e aí escrito como compromisso com o
+cliente, com data, não como tarefa interna."""
 
 
 def _dossie(data: dict, updates: list[dict]) -> str:
@@ -259,10 +267,15 @@ def _plan_deterministico(data: dict, updates: list[dict], acc: dict) -> str:
                   "atualizações do caso (alimenta o próximo plano).")
 
     # mesmos cabeçalhos do motor Claude — o relatório não pode mudar de forma
-    # conforme o motor que gerou (regra do redesenho: uma régua por conceito)
+    # conforme o motor que gerou (regra do redesenho: uma régua por conceito).
+    # No determinístico as ações por driver JÁ SÃO o plano (contato, alinhamento,
+    # prova de valor); "Como conduzir" fica com a orientação de abertura.
     parts = ["### Onde a relação está", " ".join(diag),
              "", "### O que este cliente valoriza (e o que irrita)", guia,
-             "", "### Como conduzir a conversa"]
+             "", "### Como conduzir a conversa",
+             "Abra pelo que o gestor registrou por último (abaixo) — nunca pela fila de tarefas; "
+             "reconheça o incômodo antes de apresentar qualquer número.",
+             "", "### Plano de ação (próximas 2 semanas)"]
     parts += [f"{i}. {t}" for i, t in enumerate(acoes[:6], 1)]
     parts += ["", "### Assuntos a puxar (e os que evitar)"] + [f"- {c}" for c in conduz]
     parts += ["", "### O que observar depois"] + [f"- {r}" for r in riscos]

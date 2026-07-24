@@ -29,7 +29,15 @@ export function KpisMes({ kpis }: { kpis: Metrica[] }) {
         const hit = ICONE.find(([re]) => re.test(k.rotulo));
         const icone = hit ? hit[1] : Users;
         const tom = k.tom ? TOM[k.tom] : hit ? hit[2] : "muted";
-        return <KpiCard key={k.rotulo} title={k.rotulo} value={valorComMeta(k)} icon={icone} tone={tom} />;
+        const card = <KpiCard title={k.rotulo} value={valorComMeta(k)} icon={icone} tone={tom} />;
+        // card com href vira link (ex.: Contas monitoradas → aba Contas, onde
+        // a distribuição por bundle fica no topo — Otávio 24/07)
+        return k.href ? (
+          <a key={k.rotulo} href={k.href} className="block transition-opacity hover:opacity-80"
+            title="abrir o detalhe">{card}</a>
+        ) : (
+          <span key={k.rotulo}>{card}</span>
+        );
       })}
     </div>
   );

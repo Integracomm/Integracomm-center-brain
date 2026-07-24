@@ -52,10 +52,20 @@ export interface ScoresKpis {
   sem_cobertura: number;
 }
 
+export interface BundlesCarteira {
+  novos: Record<string, number>;    // B1..B5 → contas vivas
+  antigos: Record<string, number>;  // ADS/Master/Configuração/… → contas vivas
+  total_novos: number;
+  total_antigos: number;
+  sem_tag: number;
+}
+
 export interface ScoresEnvelope {
   agents: string[];
   scores: Score[];
   kpis: ScoresKpis;
+  bundles?: BundlesCarteira;
+  encerradas_ocultas?: Record<string, number>;
 }
 
 export interface Alert {

@@ -164,6 +164,43 @@ export function GrowthContasPage() {
               value={kpis.sem_cobertura.toLocaleString("pt-BR")} subtitle="sem dados / não avaliáveis" />
           </div>
 
+          {/* carteira por bundle, INCLUINDO os antigos (Otávio 24/07) — régua
+              pela tag de SERVIÇO do nome, nunca pelo Bx do squad (o mesmo
+              princípio do _canc_bundle: [ADS-B4] é ADS, não B4) */}
+          {q.data.bundles && (
+            <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-card p-4">
+              <span className="mr-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                Carteira por bundle
+              </span>
+              {Object.entries(q.data.bundles.novos).map(([b, n]) => (
+                <span key={b} className="rounded-full border border-primary/40 px-2.5 py-0.5 text-xs">
+                  <b>{b}</b> {n}
+                </span>
+              ))}
+              <span className="rounded-full border border-muted-foreground/40 px-2.5 py-0.5 text-xs text-muted-foreground"
+                title={Object.entries(q.data.bundles.antigos).map(([k, n]) => `${k}: ${n}`).join(" · ")}>
+                <b>Antigos/não-bundle</b> {q.data.bundles.total_antigos}
+              </span>
+              {q.data.bundles.sem_tag > 0 && (
+                <span className="rounded-full border border-border px-2.5 py-0.5 text-xs text-muted-foreground/70">
+                  sem tag {q.data.bundles.sem_tag}
+                </span>
+              )}
+              <details className="w-full">
+                <summary className="cursor-pointer text-xs font-medium text-primary">
+                  detalhe dos antigos ({q.data.bundles.total_antigos})
+                </summary>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {Object.entries(q.data.bundles.antigos).map(([k, n]) => (
+                    <span key={k} className="rounded-full border border-border px-2.5 py-0.5 text-xs text-muted-foreground">
+                      {k} <b>{n}</b>
+                    </span>
+                  ))}
+                </div>
+              </details>
+            </div>
+          )}
+
           <div className="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-card p-4">
             <Hint area="growth/contas" titulo="Contas por risco" />
             <div className="relative min-w-[220px] flex-1">

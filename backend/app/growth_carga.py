@@ -53,9 +53,18 @@ def carga_dados(conn: Any, scores: list[dict], mirror: dict | None) -> dict:
         k = A._resolve_squad(s["name"], mirror) or "(sem squad na planilha)"
         d = por_squad.setdefault(k, {"n": 0, "mrr": 0.0, "mrr_risco": 0.0, "crit": 0,
                                      "alto": 0, "atencao": 0, "exec_atr": 0,
+                                     "novos": 0, "antigos": 0,
                                      "bandas": {"baixo": 0, "medio": 0, "alto": 0,
                                                 "critico": 0, "sem": 0}})
         d["n"] += 1
+        # novos (B1-B5) × antigos/não-bundle pela tag de SERVIÇO (Otávio 24/07:
+        # "saber se um squad está com mais concentração de planos antigos que
+        # novos, e se valeria a pena manter esses antigos")
+        grupo_b, _rot_b = A.bundle_conta(s["name"])
+        if grupo_b == "novo":
+            d["novos"] += 1
+        elif grupo_b == "antigo":
+            d["antigos"] += 1
         mrr = max(0.0, A._mrr_val(s))
         d["mrr"] += mrr
         band = s["risk_band"] if s["evaluable"] else "sem"
@@ -186,6 +195,10 @@ def carga_dados(conn: Any, scores: list[dict], mirror: dict | None) -> dict:
             "mrr_pessoa": (d["mrr"] / p) if p else None,
             "graves_pessoa": (graves / p) if p else None,
             "pct_saudavel": (d["bandas"]["baixo"] / avaliadas) if avaliadas else None,
+            # concentração de planos antigos (Otávio 24/07): decidir se vale
+            # manter os antigos passa por ver ONDE eles pesam
+            "novos": d["novos"], "antigos": d["antigos"],
+            "pct_antigos": (d["antigos"] / d["n"]) if d["n"] else None,
         })
 
     leitura_cap = ("Cargas relativamente equilibradas entre os squads — sem caso claro de "

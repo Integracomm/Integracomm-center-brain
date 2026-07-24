@@ -672,7 +672,9 @@ def api_scores(request: Request):
     }
     return {"agents": _visible_agents(role), "scores": _serialize(scores), "kpis": kpis,
             # transparência do corte (nunca sumir com conta em silêncio)
-            "encerradas_ocultas": fora_contas}
+            "encerradas_ocultas": fora_contas,
+            # carteira por bundle, incluindo os antigos (Otávio 24/07)
+            "bundles": _bundles_da_carteira(scores)}
 
 
 @app.get("/api/alerts")
@@ -1524,35 +1526,45 @@ def api_report_summary(request: Request, format: str = Query("json")):
 
 
 def _hub_stats(conn: Any) -> dict:
-    """Agregados da empresa para o hub (hoje = Growth; cross-área quando houver +áreas)."""
+    """Agregados da empresa para o hub (hoje = Growth; cross-área quando houver +áreas).
+
+    Conta SÓ carteira viva, pela MESMA régua da aba Contas (`estado_encerrado`).
+    Antes contava direto no SQL e a Central dizia 269 enquanto Growth dizia 227
+    (Otávio 24/07) — mesmo conceito, dois números. Os ids vivos são resolvidos
+    em Python (a régua depende de ClickUp + grw_cancelamentos, que não dá para
+    reproduzir em SQL sem duplicar a regra) e entram nas consultas."""
+    vivas, _fora = _sem_encerradas(_latest_scores(conn))
+    ids_vivos = [str(s["account_id"]) for s in vivas if s.get("account_id")]
+    monitored = len(vivas)
+    evaluable = sum(1 for s in vivas if s.get("evaluable"))
+    non_eval = monitored - evaluable
     with conn.cursor() as cur:
-        cur.execute("SELECT count(*) FROM (SELECT DISTINCT ON (account_id) evaluable FROM scores ORDER BY account_id, computed_at DESC) t")
-        monitored = cur.fetchone()[0]
-        cur.execute("SELECT count(*) FROM (SELECT DISTINCT ON (account_id) evaluable FROM scores ORDER BY account_id, computed_at DESC) t WHERE evaluable")
-        evaluable = cur.fetchone()[0]
-        cur.execute("SELECT severity, count(*) FROM alerts WHERE status='aberto' GROUP BY 1")
+        cur.execute("""SELECT severity, count(*) FROM alerts
+                        WHERE status='aberto' AND account_id::text = ANY(%s) GROUP BY 1""",
+                    (ids_vivos,))
         sev = dict(cur.fetchall())
         cur.execute("""SELECT COALESCE(sum(a.recurring_revenue),0) FROM accounts a
-                       WHERE a.recurring_revenue IS NOT NULL
-                         AND EXISTS (SELECT 1 FROM alerts al WHERE al.account_id=a.id AND al.status='aberto')""")
+                       WHERE a.recurring_revenue IS NOT NULL AND a.id::text = ANY(%s)
+                         AND EXISTS (SELECT 1 FROM alerts al WHERE al.account_id=a.id AND al.status='aberto')""",
+                    (ids_vivos,))
         mrr_risk = float(cur.fetchone()[0] or 0)
         cur.execute("""SELECT COALESCE(sum(a.recurring_revenue),0) FROM accounts a
-                       WHERE a.recurring_revenue IS NOT NULL
+                       WHERE a.recurring_revenue IS NOT NULL AND a.id::text = ANY(%s)
                          AND EXISTS (SELECT 1 FROM alerts al WHERE al.account_id=a.id
-                                     AND al.status='aberto' AND al.severity='critico')""")
+                                     AND al.status='aberto' AND al.severity='critico')""",
+                    (ids_vivos,))
         mrr_crit = float(cur.fetchone()[0] or 0)
-        cur.execute("""SELECT count(*) FROM (SELECT DISTINCT ON (account_id) evaluable FROM scores
-                       ORDER BY account_id, computed_at DESC) t WHERE NOT evaluable""")
-        non_eval = cur.fetchone()[0]
         # sem cobertura HÁ MAIS DE 30 DIAS na base = problema real; conta nova
         # ainda em rampa de dados é esperado e não vira iniciativa (Otávio 16/07)
         cur.execute("""SELECT count(*) FROM (SELECT DISTINCT ON (account_id) account_id, evaluable
                          FROM scores ORDER BY account_id, computed_at DESC) t
                         JOIN accounts a ON a.id = t.account_id
-                       WHERE NOT t.evaluable AND a.created_at < now() - interval '30 days'""")
+                       WHERE NOT t.evaluable AND a.created_at < now() - interval '30 days'
+                         AND a.id::text = ANY(%s)""", (ids_vivos,))
         non_eval_antigas = cur.fetchone()[0]
         cur.execute("""SELECT count(DISTINCT s.account_id) FROM signal_snapshots s
-                       WHERE s.signal_key='exec_score' AND s.value_num < 70""")
+                       WHERE s.signal_key='exec_score' AND s.value_num < 70
+                         AND s.account_id::text = ANY(%s)""", (ids_vivos,))
         exec_late = cur.fetchone()[0]
     return {"monitored": monitored, "evaluable": evaluable, "sev": sev,
             "mrr_risk": mrr_risk, "mrr_crit": mrr_crit, "non_eval": non_eval,
@@ -2651,12 +2663,13 @@ def _hub_defasagem_linhas(lags: dict | None) -> list[tuple[str, str]]:
     return lag_rows
 
 
-def _m(rotulo: str, valor, formato: str = "num", meta=None, tom=None, texto=None) -> dict:
+def _m(rotulo: str, valor, formato: str = "num", meta=None, tom=None, texto=None,
+       href=None) -> dict:
     """Uma métrica de card de área — VALOR CRU + como formatar e colorir.
     O HTML e o SPA renderizam a partir daqui (nenhum dos dois decide o que
-    entra em qual card)."""
+    entra em qual card). `href` (24/07): o card vira link p/ o detalhe."""
     return {"rotulo": rotulo, "valor": valor, "formato": formato,
-            "meta": meta, "tom": tom, "texto": texto}
+            "meta": meta, "tom": tom, "texto": texto, "href": href}
 
 
 def _tom_ritmo(real, meta_v, frac) -> str | None:
@@ -2809,7 +2822,9 @@ def _hub_kpis(st: dict, mkt: dict | None, sales: dict | None) -> list[dict]:
     (Marketing/Vendas). Extraído do `_render_hub` — faltava no SPA."""
     n_alerts = sum(st["sev"].values())
     kpis = [
-        _m("Contas monitoradas", st["monitored"]),
+        # clicar leva à aba Contas, onde a distribuição por bundle (incluindo
+        # antigos) fica logo no topo (Otávio 24/07)
+        _m("Contas monitoradas", st["monitored"], href="/growth?view=contas"),
         _m("Alertas abertos", n_alerts, tom="critico" if n_alerts else None),
         # rótulo decidido em 21/07 (Lote 1): a régua É contas com alerta aberto
         # — a definição vai no RÓTULO, não numa nota de rodapé
@@ -4422,6 +4437,57 @@ def _cancel_rows(conn: Any) -> list[dict]:
 
 
 _PLANOS_LEGADO = ("ASS", "ADS", "ESTRAT", "CONSULT", "ANTIGO", "MASTER + ADS")
+
+
+# prefixo de SERVIÇO da tag do nome → categoria. Mesmo princípio do
+# _canc_bundle (o serviço manda, NUNCA o Bx da tag do squad): [ADS-B4-S1] é
+# cliente ADS atendido por squad B4 — não é B4. `plan_category` do banco herda
+# o Bx da tag (coletor usa _BUNDLE.search no nome), por isso NÃO serve aqui.
+_SERV_NOVOS = {"ST": "B1", "T": "B2", "S": "B3", "P": "B4", "E": "B5"}
+_SERV_ANTIGOS = {"CONF": "Configuração", "ADS": "ADS", "M": "Master",
+                 "SMART": "Smart", "A": "Assessoria", "PBP": "PBP", "MKP": "MKP"}
+_SERV_ESTADO = {"PAUSADO", "PRORROGADO", "FINALIZADO", "FINALZADO"}  # prefixo de estado, pula
+
+
+def bundle_conta(nome: str) -> tuple[str, str]:
+    """(grupo, rotulo) da conta VIVA pela tag de serviço do nome.
+    grupo: 'novo' | 'antigo' | 'sem_tag'; rotulo: B1..B5 | nome do plano antigo.
+    """
+    resto = nome or ""
+    for _ in range(2):  # [PAUSADO ST-B1-S2] → pula o estado e lê o serviço
+        m = re.match(r"\s*\[?([A-Za-zÀ-ú]+)", resto)
+        if not m:
+            return "sem_tag", "sem tag"
+        pref = m.group(1).upper()
+        if pref in _SERV_ESTADO:
+            resto = resto[m.end():]
+            continue
+        if pref in _SERV_NOVOS:
+            return "novo", _SERV_NOVOS[pref]
+        if pref in _SERV_ANTIGOS:
+            return "antigo", _SERV_ANTIGOS[pref]
+        return "sem_tag", "sem tag"
+    return "sem_tag", "sem tag"
+
+
+def _bundles_da_carteira(scores: list[dict]) -> dict:
+    """Distribuição da carteira VIVA por bundle (pedido Otávio 24/07: 'quantos
+    clientes temos de cada bundle, incluindo os antigos')."""
+    novos: dict[str, int] = {}
+    antigos: dict[str, int] = {}
+    sem_tag = 0
+    for s in scores:
+        grupo, rot = bundle_conta(s["name"])
+        if grupo == "novo":
+            novos[rot] = novos.get(rot, 0) + 1
+        elif grupo == "antigo":
+            antigos[rot] = antigos.get(rot, 0) + 1
+        else:
+            sem_tag += 1
+    return {"novos": dict(sorted(novos.items())),
+            "antigos": dict(sorted(antigos.items(), key=lambda x: -x[1])),
+            "total_novos": sum(novos.values()), "total_antigos": sum(antigos.values()),
+            "sem_tag": sem_tag}
 
 
 def _canc_bundle(r: dict) -> str | None:

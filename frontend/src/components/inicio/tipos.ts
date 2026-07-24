@@ -7,6 +7,7 @@
 export interface Metrica {
   rotulo: string; valor: number | null; formato: string;
   meta: number | null; tom: string | null; texto: string | null;
+  href?: string | null; // card clicável → detalhe (ex.: Contas monitoradas)
 }
 export interface Impacto { faixa: [number, number] | null; janela: string | null; premissa: string }
 export interface Prioridade {
