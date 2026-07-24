@@ -37,6 +37,12 @@ NEGATIVOS = [
     "Ja utiliza o bling porem nao esta integrado. Contratou uma funcionaria",
     "Amazon não esta conseguindo entrar. -time : ela e duas irmas",
     "não está conseguindo emitir notas fiscais nem expandir a operação",
+    # 2ª varredura: sobraram estes dois. Falam de "plano" mas NÃO são o cliente
+    # questionando cobertura — um é o time se organizando, o outro é pedido
+    # operacional interno.
+    "agendar um meeting com o cliente para apresentar o plano de ação, alinhar "
+    "expectativas e conduzir a retomada das atividades de forma próxima",
+    "Por gentileza, consegue trocar o plano do cliente?",
 ]
 
 

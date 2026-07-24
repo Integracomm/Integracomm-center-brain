@@ -136,10 +136,14 @@ _ESCOPO_AUTOSSUFICIENTE = re.compile(r"fora do escopo", re.I)
 _ESCOPO_GATILHOS = re.compile(
     r"n[ãa]o (?:contempla|cobre|inclui|prev[êe]|faz parte|entra)"
     r"|n[ãa]o (?:est[áa]|é) (?:n?o|d[oa]) "
-    r"|alinhar (?:o |a |as |os )?"
-    r"|(?:questiona|questionou|reclama|reclamou|cobra|cobrou)"
-    r"|(?:aumentar|rever|revisar|mudar|trocar) (?:o |de )?",
+    r"|(?:questiona|questionou|reclama|reclamou|cobra|cobrou)",
     re.I)
+# Ficaram de FORA de propósito (2ª varredura, 24/07): "alinhar …" pegava
+# "apresentar o PLANO de ação, ALINHAR expectativas" (SELARIA — o time já
+# fazendo a coisa certa) e "trocar/mudar o plano" pegava "consegue TROCAR O
+# PLANO do cliente?" (PRIMAVERA — pedido operacional interno). Nenhum dos dois
+# é o cliente questionando cobertura. O PP Sports segue detectado pelos
+# gatilhos que sobraram ("questiona" e "não contempla").
 _ESCOPO_ANCORA = re.compile(r"plano|contrato|escopo|pacote", re.I)
 _JANELA_ANCORA = 60
 
