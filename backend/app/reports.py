@@ -124,25 +124,42 @@ def _case_history(conn: Any, account_id: str, updates: list[dict]) -> list[dict]
 # veredito sozinha — ~40% dos alertas por regex eram falso positivo. Aqui o
 # "confirmador" é o próprio gestor: devolvemos a FRASE encontrada, com data e
 # autor, para ele julgar. É evidência, não classificação.
-_ESCOPO_PADROES = (
-    r"fora do escopo",
-    r"n[ãa]o (?:est[áa] |faz parte|contempla|cobre|inclui)",
-    r"n[ãa]o (?:est[áa]|é) (?:no|do) (?:plano|contrato|escopo)",
-    r"alinhar o (?:plano|escopo|contrato)",
-    r"(?:questiona|reclama|cobra).{0,40}(?:plano|escopo|contrato)",
-    r"antes (?:era|fazia|faziam|se fazia).{0,60}(?:agora|hoje)",
-)
-_ESCOPO_RE = re.compile("|".join(_ESCOPO_PADROES), re.I)
+# A 1ª versão deste detector (24/07) usava `não (está|faz parte|contempla)` solto
+# e deu 9 falsos positivos em 10 contas: casava "Bling NÃO ESTÁ bem configurado",
+# "NÃO ESTÁ conseguindo emitir notas", "a pessoa responsável NÃO ESTÁ mais na
+# empresa" — português genérico de anotação de onboarding. É a mesma armadilha
+# de regex que já custou caro nos alertas de cancelamento.
+# Regra agora: gatilho + ÂNCORA. Só conta se a frase falar de plano/contrato/
+# escopo/pacote PERTO do gatilho (janela de 60 caracteres). "fora do escopo" é
+# a única expressão auto-suficiente.
+_ESCOPO_AUTOSSUFICIENTE = re.compile(r"fora do escopo", re.I)
+_ESCOPO_GATILHOS = re.compile(
+    r"n[ãa]o (?:contempla|cobre|inclui|prev[êe]|faz parte|entra)"
+    r"|n[ãa]o (?:est[áa]|é) (?:n?o|d[oa]) "
+    r"|alinhar (?:o |a |as |os )?"
+    r"|(?:questiona|questionou|reclama|reclamou|cobra|cobrou)"
+    r"|(?:aumentar|rever|revisar|mudar|trocar) (?:o |de )?",
+    re.I)
+_ESCOPO_ANCORA = re.compile(r"plano|contrato|escopo|pacote", re.I)
+_JANELA_ANCORA = 60
 
 
 def sinal_escopo(comentarios: list[dict]) -> dict | None:
     """Evidências de desalinhamento de ESCOPO nos comentários dos gestores.
-    → {ocorrencias: [{data, autor, trecho}], n} ou None. Não classifica risco:
-    entrega a frase para o gestor decidir."""
+    → {ocorrencias: [{data, autor, trecho}], n} ou None.
+
+    NÃO classifica risco: devolve a FRASE (com data e autor) para o gestor
+    julgar — o confirmador é ele. Ver o caso PP Sports no cabeçalho acima."""
     achados = []
     for c in comentarios or []:
         texto = " ".join((c.get("texto") or "").split())
-        m = _ESCOPO_RE.search(texto)
+        m = _ESCOPO_AUTOSSUFICIENTE.search(texto)
+        if not m:
+            for g in _ESCOPO_GATILHOS.finditer(texto):
+                ini = max(0, g.start() - _JANELA_ANCORA)
+                if _ESCOPO_ANCORA.search(texto[ini:g.end() + _JANELA_ANCORA]):
+                    m = g
+                    break
         if not m:
             continue
         ini = max(0, m.start() - 70)
