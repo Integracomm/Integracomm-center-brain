@@ -49,17 +49,20 @@ nota fiscal, reunião ou visita; frases operacionais ("vou sair para almoçar", 
 Responda EXATAMENTE uma palavra: SIM ou NAO."""
 
 
-def _judge_uncached(cli: Any, texto: str) -> tuple[bool, int, int]:
-    """(veredito, tokens_in, tokens_out) de UMA mensagem, sem cache."""
+def _judge_uncached(cli: Any, texto: str) -> tuple[bool, int, int, int, int]:
+    """(veredito, tokens_in, tokens_out, cache_read, cache_creation) de UMA
+    mensagem. O system prompt é cacheado (idêntico entre mensagens), então a
+    quebra importa para o custo sair certo."""
     msg = cli.messages.create(
         model=_MODEL, max_tokens=4, temperature=0.0,
         system=[{"type": "text", "text": _SYSTEM, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": texto[:1500]}],
     )
-    tin = (msg.usage.input_tokens + (msg.usage.cache_read_input_tokens or 0)
-           + (msg.usage.cache_creation_input_tokens or 0))
+    cr = msg.usage.cache_read_input_tokens or 0
+    cc = msg.usage.cache_creation_input_tokens or 0
+    tin = msg.usage.input_tokens + cr + cc
     resp = next((b.text for b in msg.content if b.type == "text"), "").strip().upper()
-    return resp.startswith("SIM"), tin, msg.usage.output_tokens
+    return resp.startswith("SIM"), tin, msg.usage.output_tokens, cr, cc
 
 
 def build_confirmer(conn_factory: Any) -> Callable[[list[tuple[str, str]]], dict[str, bool]] | None:
@@ -94,7 +97,7 @@ def build_confirmer(conn_factory: Any) -> Callable[[list[tuple[str, str]]], dict
                 cli = anthropic.Anthropic(api_key=s.anthropic_api_key, max_retries=1, timeout=30.0)
                 for mid, txt in novos:
                     try:
-                        verdict, tin, tout = _judge_uncached(cli, txt)
+                        verdict, tin, tout, cr, cc = _judge_uncached(cli, txt)
                     except LlmBudgetExceeded:
                         raise
                     except Exception as e:  # noqa: BLE001 — 1 msg não derruba o lote
@@ -102,7 +105,8 @@ def build_confirmer(conn_factory: Any) -> Callable[[list[tuple[str, str]]], dict
                               file=sys.stderr)
                         out[mid] = True
                         continue
-                    record_usage(conn, "growth:cancel_confirm", _MODEL, tin, tout)
+                    record_usage(conn, "growth:cancel_confirm", _MODEL, tin, tout,
+                                 cache_read=cr, cache_creation=cc)
                     out[mid] = verdict
                     with conn.cursor() as cur:
                         cur.execute("""INSERT INTO grw_cancel_llm (msg_id, is_cancel, model)

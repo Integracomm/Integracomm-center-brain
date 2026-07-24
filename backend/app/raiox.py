@@ -438,9 +438,11 @@ def _leitura_llm(conn, b: str, fatos: list[str]) -> str | None:
                        "content": (("ESCOPO: EMPRESA TODA (todos os planos)" if b == "TODOS" else f"BUNDLE {b}")
                                    + "\n" + "\n".join(f"- {x}" for x in fatos))}],
         )
-        tin = (msg.usage.input_tokens + (msg.usage.cache_read_input_tokens or 0)
-               + (msg.usage.cache_creation_input_tokens or 0))
-        record_usage(conn, "central:raiox", _MODEL, tin, msg.usage.output_tokens)
+        cr = msg.usage.cache_read_input_tokens or 0
+        cc = msg.usage.cache_creation_input_tokens or 0
+        tin = msg.usage.input_tokens + cr + cc
+        record_usage(conn, "central:raiox", _MODEL, tin, msg.usage.output_tokens,
+                     cache_read=cr, cache_creation=cc)
         texto = next(bk.text for bk in msg.content if bk.type == "text").strip()
         if texto:
             with conn.cursor() as cur:

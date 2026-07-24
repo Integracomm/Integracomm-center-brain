@@ -134,6 +134,27 @@ def find_master_row(account_name: str) -> tuple[dict | None, str]:
         if contains:
             with_link = [r for r in contains if r["sheet_id"]] or contains
             return with_link[0], f"match parcial (contém) com “{with_link[0]['clickup_name']}”"
+    # ÚLTIMO recurso: ERRO DE DIGITAÇÃO na mestre (planilha manual, ~480 linhas).
+    # Caso real 23/07 (Casa do Bicicleteiro): a mestre dizia "CASA DO BICICLETERO"
+    # (sem o I) e NENHUMA das réguas acima casa — nem igualdade nem inclusão,
+    # porque a letra a mais quebra o substring. O relatório saía sem NPS e sem
+    # faturamento em silêncio; o Otávio só descobriu abrindo a conta.
+    # Trava DUPLA para não casar cliente errado (número errado é pior que número
+    # ausente): similaridade alta E um único candidato DISTINTO acima do corte —
+    # se dois nomes parecidos existirem na mestre (ex.: "goes" e "gomes"), os
+    # dois passam do corte, viram 2 candidatos e a função desiste.
+    if len(base) >= 8:
+        import difflib
+        por_nome: dict[str, dict] = {}
+        for r in rows:
+            nb = norm_account(r["clickup_name"])
+            if nb and difflib.SequenceMatcher(None, base, nb).ratio() >= 0.93:
+                if nb not in por_nome or (r["sheet_id"] and not por_nome[nb]["sheet_id"]):
+                    por_nome[nb] = r
+        if len(por_nome) == 1:
+            r = next(iter(por_nome.values()))
+            return r, (f"match APROXIMADO com “{r['clickup_name']}” — provável erro de "
+                       "digitação na planilha mestre; confira o nome lá")
     return None, "conta não encontrada na planilha mestre"
 
 

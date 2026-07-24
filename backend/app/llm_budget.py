@@ -10,9 +10,16 @@ Contrato — toda chamada ao Claude, em qualquer área, deve:
   2. chamar record_usage(conn, feature, model, in, out) DEPOIS -> grava tokens
      e custo REAL na tabela llm_usage (fonte do medidor no Painel Administrativo).
 
-Preço por MTok: Sonnet 5 promocional US$2/US$10 até 31/08/2026 (depois 3/15);
-Haiku 4.5 US$1/US$5. Tokens de cache são contados ao preço cheio de input —
-superestima de leve (leitura de cache custa 10%), a favor da margem.
+Preço por MTok (conferido na referência oficial 23/07/26): Sonnet 5 promocional
+US$2/US$10 até 31/08/2026 (depois 3/15); Haiku 4.5 US$1/US$5; Opus 4.8 US$5/US$25.
+
+CACHE (corrigido 23/07/26): até então TODO token de input era cobrado a preço
+cheio, inclusive os de cache — e o docstring dizia "superestima de leve". Não
+era de leve: `growth:tom_claude` usa system prompt cacheado e respondia por 83%
+do gasto (US$4,65 de US$5,62), com 2,0M tokens de input em 231 chamadas, a maior
+parte deles LEITURA de cache. Preços reais: leitura de cache = 0,1× do input
+(estávamos cobrando 10× a mais) e escrita de cache = 1,25× (cobrávamos a menos).
+Agora os três componentes são gravados e precificados separadamente.
 """
 from __future__ import annotations
 
@@ -44,7 +51,9 @@ def price_per_mtok(model: str, when: dt.date | None = None) -> tuple[float, floa
         return 1.0, 5.0
     if "sonnet" in m:
         return (2.0, 10.0) if when <= _SONNET_INTRO_ATE else (3.0, 15.0)
-    return 15.0, 75.0  # opus / desconhecido — conservador
+    if "opus" in m:
+        return 5.0, 25.0  # Opus 4.8/4.7 (o fallback antigo dizia 15/75 — 3x a mais)
+    return 15.0, 75.0  # modelo desconhecido: mantém o teto conservador
 
 
 def budget_cap() -> float:
@@ -71,15 +80,38 @@ def ensure_budget(conn) -> float:
     return spent
 
 
-def record_usage(conn, feature: str, model: str, tokens_in: int, tokens_out: int) -> float:
-    """Grava o uso e devolve o custo (US$) desta chamada."""
+_MIG = """
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS cache_read_tokens     bigint NOT NULL DEFAULT 0;
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS cache_creation_tokens bigint NOT NULL DEFAULT 0;
+"""
+
+# multiplicadores sobre o preço de INPUT (referência oficial da API)
+_MULT_CACHE_READ = 0.1     # leitura de cache custa 10% do input
+_MULT_CACHE_WRITE = 1.25   # escrita de cache (TTL 5 min) custa 125%
+
+
+def record_usage(conn, feature: str, model: str, tokens_in: int, tokens_out: int,
+                 cache_read: int = 0, cache_creation: int = 0) -> float:
+    """Grava o uso e devolve o custo (US$) real desta chamada.
+
+    `tokens_in` = TOTAL de tokens de entrada (inclui os de cache) — mantido
+    assim para não quebrar a série histórica já gravada. `cache_read` e
+    `cache_creation` são as PARTES desse total que têm preço diferente; o que
+    sobra é input não-cacheado, a preço cheio."""
     pin, pout = price_per_mtok(model)
-    cost = tokens_in / 1e6 * pin + tokens_out / 1e6 * pout
+    cache_read = max(0, int(cache_read or 0))
+    cache_creation = max(0, int(cache_creation or 0))
+    puro = max(0, int(tokens_in) - cache_read - cache_creation)
+    cost = ((puro
+             + cache_read * _MULT_CACHE_READ
+             + cache_creation * _MULT_CACHE_WRITE) / 1e6 * pin
+            + tokens_out / 1e6 * pout)
     with conn.cursor() as cur:
         cur.execute(_DDL)
-        cur.execute("INSERT INTO llm_usage (feature, model, tokens_in, tokens_out, cost_usd) "
-                    "VALUES (%s, %s, %s, %s, %s)",
-                    (feature, model, tokens_in, tokens_out, cost))
+        cur.execute(_MIG)
+        cur.execute("INSERT INTO llm_usage (feature, model, tokens_in, tokens_out, cost_usd,"
+                    " cache_read_tokens, cache_creation_tokens) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                    (feature, model, tokens_in, tokens_out, cost, cache_read, cache_creation))
     conn.commit()
     return cost
 

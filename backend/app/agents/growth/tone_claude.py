@@ -85,6 +85,11 @@ class ToneAnalysis:
     temas: list[str]
     tokens_in: int
     tokens_out: int
+    # partes do tokens_in com preço próprio (leitura 0,1x · escrita 1,25x do
+    # input). O system prompt aqui é cacheado e IDÊNTICO entre contas, então a
+    # leitura de cache domina — cobrá-la a preço cheio inflava o medidor.
+    cache_read: int = 0
+    cache_creation: int = 0
     window_start: dt.date
     window_end: dt.date
     n_msgs: int
@@ -171,6 +176,8 @@ def analyze_tone(client: anthropic.Anthropic, transcript: str, weeks: list[dt.da
         tokens_in=resp.usage.input_tokens + (resp.usage.cache_read_input_tokens or 0)
         + (resp.usage.cache_creation_input_tokens or 0),
         tokens_out=resp.usage.output_tokens,
+        cache_read=resp.usage.cache_read_input_tokens or 0,
+        cache_creation=resp.usage.cache_creation_input_tokens or 0,
         window_start=window_start, window_end=window_end, n_msgs=n_msgs,
         raw=data,
     )

@@ -20,19 +20,30 @@ from .scoring import action_guideline
 
 _SYSTEM = """Você é um gestor de Customer Success SÊNIOR, especialista em clientes B2B
 de assessoria de marketplaces (Mercado Livre, Shopee, Amazon). Você recebe o dossiê de UM
-cliente e escreve o plano de ação que VOCÊ executaria para reter/expandir a conta — direto,
-específico e acionável, servindo de norte para o gestor da conta antes da reunião.
+cliente e escreve o preparo que o gestor lê MINUTOS ANTES de entrar na reunião com ele.
 
-Regras: use SOMENTE os dados do dossiê (não invente números nem fatos); incorpore as
-atualizações do gestor (são o estado mais recente do caso); escreva em pt-BR; formato
-markdown EXATO com estas seções:
-### Diagnóstico
-### Objetivo da próxima reunião
-### Plano de ação (próximas 2 semanas)
-### Condução da reunião
-### Riscos e sinais para acompanhar
-Máx. ~350 palavras. Numere as ações. Seja específico (cite marketplaces, valores e nomes
-do dossiê quando relevantes)."""
+O QUE ESTE DOCUMENTO É — e o que ele NÃO é (regra do Otávio, 23/07):
+O gestor JÁ SABE quais tarefas o time tem para fazer; a fila do ClickUp é óbvia para ele e
+NÃO é plano de ação. O que ele não tem — e é o que você deve entregar — é como CONDUZIR
+ESTA conta: como está a relação, o que esse cliente específico valoriza, o que já irritou,
+que assunto abrir e qual evitar, o que funcionou antes com ele. Escreva sobre a RELAÇÃO e
+a CONVERSA, não sobre o backlog. Só cite uma tarefa do ClickUp quando ela for o assunto da
+conversa (ex.: uma entrega atrasada que o cliente cobrou nominalmente).
+
+Hierarquia das fontes (a mais recente manda): 1) atualizações dos gestores (ClickUp e
+painel) — é o estado REAL do caso, escrito por quem falou com o cliente; 2) o que o cliente
+disse nas conversas (tom, temas, reclamações); 3) NPS; 4) números (faturamento, execução).
+
+Regras: use SOMENTE os dados do dossiê (não invente fatos, números, nomes nem falas); se
+faltar base para uma seção, diga o que precisa ser descoberto na reunião em vez de inventar;
+escreva em pt-BR, direto, como quem conhece a conta; formato markdown EXATO com estas seções:
+### Onde a relação está
+### O que este cliente valoriza (e o que irrita)
+### Como conduzir a conversa
+### Assuntos a puxar (e os que evitar)
+### O que observar depois
+Máx. ~350 palavras. Em "Como conduzir a conversa", dê frases de abertura possíveis, não
+tópicos genéricos. Seja específico: cite o que o cliente disse/o que o gestor registrou."""
 
 
 def _dossie(data: dict, updates: list[dict]) -> str:
@@ -64,14 +75,29 @@ def _dossie(data: dict, updates: list[dict]) -> str:
                          + (f"R$ {b['total_ref']:,.0f}" if b.get("ref_lancado") else "(não lançado)"))
     elif f.get("aviso"):
         lines.append(f"FATURAMENTO: {f['aviso']}")
-    lines.append(f"ATIVIDADES CONCLUÍDAS NO MÊS: {a['total']}")
-    px = (a.get("proximas") or {}).get("tasks") or []
-    if px:
-        lines.append("PRÓXIMAS PREVISTAS: " + "; ".join(f"{t['nome']} (vence {t['vence_em']})" for t in px[:6]))
+    # --- RELACIONAMENTO primeiro: é o que o gestor não tem em lugar nenhum ---
+    # Comentários que os gestores escrevem no card do cliente (lista Clientes
+    # Ativos). Fonte MAIS ATUAL do estado do caso — quem escreveu falou com o
+    # cliente. Até 23/07 o sistema não lia nada disso (pedido do Otávio).
+    if data.get("comentarios_clickup"):
+        lines.append("ATUALIZAÇÕES DOS GESTORES NO CLICKUP (mais recentes primeiro — "
+                     "estado REAL do caso, prevalece sobre os números):")
+        for c in data["comentarios_clickup"][:6]:
+            quando = (c.get("data") or "")[:10]
+            texto = " ".join((c.get("texto") or "").split())[:400]
+            lines.append(f"  [{quando} {c.get('autor') or '?'}] {texto}")
     if updates:
-        lines.append("ATUALIZAÇÕES DO GESTOR (mais recentes primeiro):")
+        lines.append("ATUALIZAÇÕES DO GESTOR NO PAINEL (mais recentes primeiro):")
         for u in updates[:6]:
             lines.append(f"  [{str(u['created_at'])[:10]} {u.get('author') or ''}] {u['text']}")
+    if data.get("nps"):
+        lines.append(f"NPS: {data['nps']}")
+    # --- contexto de entrega: NÃO é o plano, serve só para citar se virar assunto ---
+    lines.append(f"ENTREGAS CONCLUÍDAS NO MÊS: {a['total']} (contexto — o gestor já conhece a fila)")
+    px = (a.get("proximas") or {}).get("tasks") or []
+    if px:
+        lines.append("FILA DO CLICKUP (contexto; só citar se o cliente cobrou nominalmente): "
+                     + "; ".join(f"{t['nome']} (vence {t['vence_em']})" for t in px[:6]))
     return "\n".join(lines)
 
 
@@ -121,9 +147,11 @@ def _via_claude(dossie: str, cache_key: tuple[str, str] | None = None) -> str | 
                 system=[{"type": "text", "text": _SYSTEM, "cache_control": {"type": "ephemeral"}}],
                 messages=[{"role": "user", "content": dossie}],
             )
-            tin = (msg.usage.input_tokens + (msg.usage.cache_read_input_tokens or 0)
-                   + (msg.usage.cache_creation_input_tokens or 0))
-            record_usage(bconn, "growth:plano_acao", _MODEL, tin, msg.usage.output_tokens)
+            cr = msg.usage.cache_read_input_tokens or 0
+            cc = msg.usage.cache_creation_input_tokens or 0
+            tin = msg.usage.input_tokens + cr + cc
+            record_usage(bconn, "growth:plano_acao", _MODEL, tin, msg.usage.output_tokens,
+                         cache_read=cr, cache_creation=cc)
             texto = next(b.text for b in msg.content if b.type == "text").strip()
             if cache_key and texto:
                 with bconn.cursor() as cur:
@@ -221,15 +249,25 @@ def _plan_deterministico(data: dict, updates: list[dict], acc: dict) -> str:
     riscos.append("Acompanhar: tom das próximas conversas e resposta do cliente ao plano — registrar TUDO nas "
                   "atualizações do caso (alimenta o próximo plano).")
 
-    parts = ["### Diagnóstico", " ".join(diag),
-             "", "### Objetivo da próxima reunião", guia,
-             "", "### Plano de ação (próximas 2 semanas)"]
+    # mesmos cabeçalhos do motor Claude — o relatório não pode mudar de forma
+    # conforme o motor que gerou (regra do redesenho: uma régua por conceito)
+    parts = ["### Onde a relação está", " ".join(diag),
+             "", "### O que este cliente valoriza (e o que irrita)", guia,
+             "", "### Como conduzir a conversa"]
     parts += [f"{i}. {t}" for i, t in enumerate(acoes[:6], 1)]
-    parts += ["", "### Condução da reunião"] + [f"- {c}" for c in conduz]
-    parts += ["", "### Riscos e sinais para acompanhar"] + [f"- {r}" for r in riscos]
+    parts += ["", "### Assuntos a puxar (e os que evitar)"] + [f"- {c}" for c in conduz]
+    parts += ["", "### O que observar depois"] + [f"- {r}" for r in riscos]
+    # o que o gestor registrou tem prioridade sobre qualquer número — mostrar
+    # explicitamente as duas fontes (ClickUp e painel), a mais recente primeiro
+    coment = (data.get("comentarios_clickup") or [])
+    if coment:
+        c0 = coment[0]
+        parts += ["", f"*Última atualização do gestor no ClickUp "
+                      f"({(c0.get('data') or '')[:10]}, {c0.get('autor') or '?'}): "
+                      f"“{' '.join((c0.get('texto') or '').split())[:200]}”*"]
     if updates:
         u = updates[0]
-        parts += ["", f"*Plano considera a última atualização do gestor "
+        parts += ["", f"*Última atualização no painel "
                       f"({str(u['created_at'])[:10]}): “{u['text'][:160]}”*"]
     return "\n".join(parts)
 

@@ -555,6 +555,79 @@ def inactive_clients() -> dict[str, str]:
     return _cached("cu-inativos", build, ttl=_LIST_TTL)
 
 
+def _limpa_comentario(bruto: str | None) -> str:
+    """Tira o ruído dos comentários do ClickUp: só-menções (@fulano), anexos sem
+    texto (image.png) e o literal 'undefined' que o app grava às vezes. Devolve
+    '' quando não sobra conteúdo — o comentário é descartado."""
+    txt = (bruto or "").strip()
+    if not txt:
+        return ""
+    # remove as linhas que são apenas menções e/ou nome de arquivo de anexo
+    linhas = []
+    for ln in txt.splitlines():
+        s = ln.strip()
+        if not s or s.lower() == "undefined":
+            continue
+        sem_mencao = re.sub(r"@[\w.\-]+(\s+[A-ZÀ-Ú][\w.\-]*)*", "", s).strip(" ,;:-")
+        if not sem_mencao:
+            continue  # linha só de menções
+        if re.fullmatch(r"[\w .\-]+\.(png|jpe?g|gif|pdf|docx?|xlsx?)", sem_mencao, re.I):
+            continue  # só o nome do anexo
+        linhas.append(s)
+    return "\n".join(linhas).strip()
+
+
+def client_comments(account_name: str, limite: int = 8) -> list[dict]:
+    """Comentários do card do cliente na lista Clientes Ativos — [{autor, data,
+    texto}], mais recentes primeiro.
+
+    Pedido do Otávio (23/07): "os gestores colocam várias atualizações sobre os
+    casos dos clientes [nos comentários] que poderíamos trazer para o nosso
+    sistema". É a fonte MAIS ATUAL do estado do caso — mais que qualquer score —
+    e até então o sistema não lia nada disso.
+
+    Cacheado 10 min (o relatório é sob demanda); falha de rede devolve [] em vez
+    de derrubar o relatório."""
+    s = get_settings()
+    tok, lst = s.clickup_api_token, s.clickup_list_clientes_ativos
+    if not (tok and lst):
+        return []
+    n = norm_account(account_name)
+    if not n:
+        return []
+
+    def build():
+        try:
+            roots = _roots_lookup(tok, lst, n)
+        except Exception:  # noqa: BLE001
+            return []
+        out: list[dict] = []
+        for rid in sorted(roots)[:2]:  # cliente com 2 cards (ex.: bundle + ADS)
+            try:
+                r = httpx.get(f"{_CLICKUP_BASE}/task/{rid}/comment",
+                              headers={"Authorization": tok}, timeout=30.0)
+                if r.status_code != 200:
+                    continue
+                for c in (r.json().get("comments") or []):
+                    txt = _limpa_comentario(c.get("comment_text"))
+                    if not txt:
+                        continue
+                    out.append({
+                        "autor": ((c.get("user") or {}).get("username") or "").strip() or "?",
+                        "data": _epoch_iso(c.get("date")),
+                        "texto": txt,
+                    })
+            except Exception:  # noqa: BLE001 — um card sem comentário não para o resto
+                continue
+        out.sort(key=lambda x: x["data"] or "", reverse=True)
+        return out
+
+    try:
+        return _cached(f"cu-coment:{n}", build)[:limite]
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def client_inactive_status(account_name: str) -> str | None:
     """Status ('pausada por inatividade' | 'concluído') se o cliente está
     inativo; None = ativo/desconhecido. Match EXATO do nome-base — sem o

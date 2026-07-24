@@ -114,9 +114,14 @@ def check_whatsapp(conn: Any, contas: list[dict], dry: bool = False) -> int:
             conta = por_chave.get((a.group_id or "").lower())
             if not conta:
                 continue
-            # dedup por conta em blocos de 7 dias: crítico contínuo avisa 1x/semana
-            bloco = dt.date.fromisoformat(a.analysis_date[:10]).toordinal() // 7
-            k = f"wa:{a.group_id}:{bloco}"
+            # dedup por conta e DIA da análise (Otávio 23/07: "avisar sempre que
+            # encontrarmos algum cliente em crítico ou com reclamação realmente
+            # séria, que mereceria intervenção imediata"). Era 1x/SEMANA, e um
+            # caso crítico NOVO na mesma semana ficava silenciado — justamente o
+            # que exige ação. Não vira spam porque as análises sem evento novo
+            # ("sem novas mensagens" / "status mantido") já saem no filtro acima:
+            # só dispara em dia com conteúdo crítico novo.
+            k = f"wa:{a.group_id}:{a.analysis_date[:10]}"
             if _visto(conn, k, dry):
                 continue
             resumo = (a.summary or "").strip()[:220]

@@ -425,6 +425,15 @@ def build_report(conn: Any, account_id: str, ref_month: str, generated_by: str |
             "saude": saude,
             "observacoes": _observacoes(acc, fat, atv, tone, ref_month)}
 
+    # --- comentários que os gestores escrevem no card do ClickUp (Otávio 23/07:
+    # "lá os gestores colocam várias atualizações sobre os casos") — é a fonte
+    # mais atual do estado do caso e alimenta o plano de RELACIONAMENTO ---
+    try:
+        from .sources.clickup_activities import client_comments
+        data["comentarios_clickup"] = client_comments(acc["name"])
+    except Exception:  # noqa: BLE001 — ClickUp fora não derruba o relatório
+        data["comentarios_clickup"] = []
+
     # --- plano de ação individual (gestor de CS sênior) + histórico do caso ---
     from .agents.growth.action_plan import generate_plan
     updates = list_case_updates(conn, str(acc["id"]), limit=50)

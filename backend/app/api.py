@@ -3922,8 +3922,43 @@ def _playbooks_content(practices: dict, interventions: list) -> str:
     return h
 
 
+def _sem_inativos(scores: list[dict]) -> tuple[list[dict], int, int]:
+    """Tira do relatório os clientes INATIVOS no ClickUp — concluídos e pausados
+    por inadimplência (Otávio 23/07: 'esses casos não são mais tratados pelos
+    gestores que recebem esse relatório, seria para o time financeiro').
+
+    O filtro existia só no endpoint da tela de Contas; o relatório do Slack lia
+    `_latest_scores` cru e contava conta encerrada como carteira viva — em
+    23/07 eram 21 das 269 (6 concluídas + 15 pausadas), sendo 15 COM ALERTA
+    ABERTO, inflando o 'MRR em risco'. Devolve (vivos, n_concluidos, n_pausados);
+    ClickUp fora do ar não filtra nada (degrada, não derruba)."""
+    try:
+        from .sources.clickup_activities import client_inactive_status as _inat
+    except Exception:  # noqa: BLE001
+        return scores, 0, 0
+    vivos, conc, paus = [], 0, 0
+    for s in scores:
+        try:
+            st = _inat(s["name"]) or ""
+        except Exception:  # noqa: BLE001 — conta sem match segue viva
+            st = ""
+        if "conclu" in st:
+            conc += 1
+        elif "pausada" in st:
+            paus += 1
+        else:
+            vivos.append(s)
+    return vivos, conc, paus
+
+
 def _report_from(scores: list[dict], alerts: list[dict]) -> dict:
-    """Relatório do estado atual — mesmo dado que alimentará o envio ao Slack."""
+    """Relatório do estado atual — mesmo dado que alimentará o envio ao Slack.
+    Clientes encerrados/pausados no ClickUp ficam FORA (ver _sem_inativos)."""
+    scores, n_conc, n_paus = _sem_inativos(scores)
+    # `alerts` NÃO traz account_id (só o id do alerta e o nome da conta) — casar
+    # por NOME é o único jeito correto aqui; por id o filtro descartaria tudo.
+    nomes_vivos = {s["name"] for s in scores}
+    alerts = [a for a in alerts if a.get("name") in nomes_vivos]
     ev = [s for s in scores if s["evaluable"]]
     nev = [s for s in scores if not s["evaluable"]]
     sev: dict[str, int] = {}
@@ -3955,6 +3990,8 @@ def _report_from(scores: list[dict], alerts: list[dict]) -> dict:
         "nao_avaliaveis": [s["name"] for s in nev],
         "alertas_por_squad": dict(sorted(squad_alerts.items(), key=lambda x: -x[1])),
         "exec_atrasada": sum(1 for s in scores if (s.get("exec_score") or 100) < 40),
+        # transparência: quem saiu da conta e por quê (nunca cortar em silêncio)
+        "excluidos_concluidos": n_conc, "excluidos_pausados": n_paus,
     }
 
 
@@ -3987,6 +4024,12 @@ def _report_text(rep: dict) -> str:
             lines.append(f"{i}. {c['nome'][:48]}{mrr}")
     if rep["nao_avaliaveis"]:
         lines += ["", f"*Sem dados (revisar manualmente):* {len(rep['nao_avaliaveis'])} contas"]
+    # o que ficou de fora, e por quê — corte silencioso vira "número errado"
+    fora = rep.get("excluidos_concluidos", 0) + rep.get("excluidos_pausados", 0)
+    if fora:
+        lines += ["", f"_Fora deste resumo: {rep.get('excluidos_concluidos', 0)} conta(s) concluída(s) e "
+                      f"{rep.get('excluidos_pausados', 0)} pausada(s) por inadimplência no ClickUp "
+                      f"(inadimplência é pauta do Financeiro, não da gestão de contas)._"]
     lines += ["", "_o agente só sinaliza — a decisão é do gestor_"]
     return "\n".join(lines)
 

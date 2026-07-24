@@ -228,11 +228,15 @@ def main():
             analysis = analyze_tone(claude, transcript, weeks, wstart, asof, n_msgs)
             try:
                 custo_lote += record_usage(budget_conn, "growth:tom_claude", MODEL,
-                                           analysis.tokens_in, analysis.tokens_out)
+                                           analysis.tokens_in, analysis.tokens_out,
+                                           cache_read=analysis.cache_read,
+                                           cache_creation=analysis.cache_creation)
             except psycopg.OperationalError:
                 budget_conn = _fresh()
                 custo_lote += record_usage(budget_conn, "growth:tom_claude", MODEL,
-                                           analysis.tokens_in, analysis.tokens_out)
+                                           analysis.tokens_in, analysis.tokens_out,
+                                           cache_read=analysis.cache_read,
+                                           cache_creation=analysis.cache_creation)
             _print_result(label, g.name, analysis)
             tot_in += analysis.tokens_in
             tot_out += analysis.tokens_out
