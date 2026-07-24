@@ -38,6 +38,7 @@ import { SemanaPage } from "@/pages/semana";
 import { FocoSemana } from "@/components/blocks/foco-semana";
 import { RodapeFonte, UsuarioRail } from "@/components/blocks/rodape-fonte";
 import { CentralPage } from "@/pages/central";
+import { AdminPage } from "@/pages/admin";
 import { HomePage, type HomePayload } from "@/pages/home";
 import { useApi } from "@/hooks/use-api";
 
@@ -50,47 +51,49 @@ const SPA_GROWTH_VIEWS = ["contas", "alertas", "cancelamentos", "playbooks",
 
 // itens SEM o prefixo da área (Otávio 21/07: já estamos dentro dela) —
 // o cabeçalho do grupo diz onde o usuário está
-type ItemNav = { href: string; label: string; spa: boolean; grupo?: string; selo?: number };
+// (o marcador "(HTML)" saiu 23/07: a migração de telas terminou — o que segue
+// em HTML é decisão, não pendência, e não precisa de aviso na nav)
+type ItemNav = { href: string; label: string; grupo?: string; selo?: number };
 
 const NAV: Array<ItemNav> = [
-  { href: "/growth?view=contas", label: "Contas", spa: true, grupo: "Growth / Assessoria" },
-  { href: "/growth?view=alertas", label: "Alertas", spa: true },
-  { href: "/growth?view=cancelamentos", label: "Cancelamentos", spa: true },
-  { href: "/growth?view=carga", label: "Análise dos Squads", spa: true },
-  { href: "/growth?view=playbooks", label: "Playbooks", spa: true },
-  { href: "/growth?view=relatorios", label: "Relatórios", spa: true },
-  { href: "/marketing?view=visao", label: "Visão Geral", spa: true, grupo: "Marketing" },
-  { href: "/marketing?view=metas", label: "Metas do Semestre", spa: true },
-  { href: "/marketing?view=funil", label: "Funil de Prospecção", spa: true },
-  { href: "/marketing?view=canais", label: "Ranking de Canais", spa: true },
-  { href: "/marketing?view=origens", label: "Origem de Leads", spa: true },
-  { href: "/marketing?view=midia", label: "Mídia Paga", spa: true },
-  { href: "/marketing?view=lag", label: "Tempo até Resultado", spa: true },
-  { href: "/marketing?view=planejador", label: "Planejador", spa: true },
-  { href: "/marketing?view=criativos", label: "Criativos e Públicos", spa: true },
-  { href: "/marketing?view=ciclo", label: "Ciclo de Vida", spa: true },
-  { href: "/prevendas?view=funil", label: "Qualificação & Speed", spa: true, grupo: "Pré-vendas" },
-  { href: "/prevendas?view=horarios", label: "Melhor Horário", spa: true },
-  { href: "/prevendas?view=ponte", label: "Ponte PV → Vendas", spa: true },
-  { href: "/prevendas?view=sdrs", label: "Desempenho Individual", spa: true },
-  { href: "/vendas?view=funil", label: "Funil de Fechamento", spa: true, grupo: "Vendas" },
-  { href: "/vendas?view=ponte", label: "Ponte PV → Vendas", spa: true },
-  { href: "/vendas?view=winloss", label: "Win/Loss", spa: true },
-  { href: "/vendas?view=ciclo", label: "Ciclo & Empacados", spa: true },
-  { href: "/vendas?view=horarios", label: "Melhor Horário", spa: true },
-  { href: "/vendas?view=closers", label: "Desempenho Individual", spa: true },
-  { href: "/vendas?view=forecast", label: "Performance & Meta", spa: true },
-  { href: "/financeiro?view=visao", label: "Planejamento x Realizado", spa: true, grupo: "Financeiro" },
-  { href: "/financeiro?view=receita", label: "Receita Recorrente", spa: true },
-  { href: "/operacoes?view=visao", label: "Visão Geral", spa: true, grupo: "Operações" },
-  { href: "/operacoes?view=financeiro", label: "Financeiro", spa: true },
-  { href: "/operacoes?view=comercial", label: "Comercial", spa: true },
-  { href: "/operacoes?view=assessoria", label: "Assessoria", spa: true },
-  { href: "/operacoes?view=marketing", label: "Marketing", spa: true },
-  { href: "/operacoes?view=rh", label: "RH", spa: true },
-  { href: "/operacoes?view=growth", label: "Growth", spa: true },
-  { href: "/operacoes?view=config", label: "Configurações", spa: true },
-  { href: "/app", label: "Biblioteca (vitrine)", spa: true, grupo: "Redesenho" },
+  { href: "/growth?view=contas", label: "Contas", grupo: "Growth / Assessoria" },
+  { href: "/growth?view=alertas", label: "Alertas" },
+  { href: "/growth?view=cancelamentos", label: "Cancelamentos" },
+  { href: "/growth?view=carga", label: "Análise dos Squads" },
+  { href: "/growth?view=playbooks", label: "Playbooks" },
+  { href: "/growth?view=relatorios", label: "Relatórios" },
+  { href: "/marketing?view=visao", label: "Visão Geral", grupo: "Marketing" },
+  { href: "/marketing?view=metas", label: "Metas do Semestre" },
+  { href: "/marketing?view=funil", label: "Funil de Prospecção" },
+  { href: "/marketing?view=canais", label: "Ranking de Canais" },
+  { href: "/marketing?view=origens", label: "Origem de Leads" },
+  { href: "/marketing?view=midia", label: "Mídia Paga" },
+  { href: "/marketing?view=lag", label: "Tempo até Resultado" },
+  { href: "/marketing?view=planejador", label: "Planejador" },
+  { href: "/marketing?view=criativos", label: "Criativos e Públicos" },
+  { href: "/marketing?view=ciclo", label: "Ciclo de Vida" },
+  { href: "/prevendas?view=funil", label: "Qualificação & Speed", grupo: "Pré-vendas" },
+  { href: "/prevendas?view=horarios", label: "Melhor Horário" },
+  { href: "/prevendas?view=ponte", label: "Ponte PV → Vendas" },
+  { href: "/prevendas?view=sdrs", label: "Desempenho Individual" },
+  { href: "/vendas?view=funil", label: "Funil de Fechamento", grupo: "Vendas" },
+  { href: "/vendas?view=ponte", label: "Ponte PV → Vendas" },
+  { href: "/vendas?view=winloss", label: "Win/Loss" },
+  { href: "/vendas?view=ciclo", label: "Ciclo & Empacados" },
+  { href: "/vendas?view=horarios", label: "Melhor Horário" },
+  { href: "/vendas?view=closers", label: "Desempenho Individual" },
+  { href: "/vendas?view=forecast", label: "Performance & Meta" },
+  { href: "/financeiro?view=visao", label: "Planejamento x Realizado", grupo: "Financeiro" },
+  { href: "/financeiro?view=receita", label: "Receita Recorrente" },
+  { href: "/operacoes?view=visao", label: "Visão Geral", grupo: "Operações" },
+  { href: "/operacoes?view=financeiro", label: "Financeiro" },
+  { href: "/operacoes?view=comercial", label: "Comercial" },
+  { href: "/operacoes?view=assessoria", label: "Assessoria" },
+  { href: "/operacoes?view=marketing", label: "Marketing" },
+  { href: "/operacoes?view=rh", label: "RH" },
+  { href: "/operacoes?view=growth", label: "Growth" },
+  { href: "/operacoes?view=config", label: "Configurações" },
+  { href: "/app", label: "Biblioteca (vitrine)", grupo: "Redesenho" },
 ];
 
 function PrevendasRouter() {
@@ -174,16 +177,18 @@ function Shell({ children }: { children: React.ReactNode }) {
   // Central: elas não são áreas e não têm ?view=, então o filtro por
   // `href.startsWith("/semana?")` devolvia lista vazia e o sidebar sumia
   // (Otávio 23/07).
-  const comNavGeral = ["/", "/central", "/semana", "/raiox"].includes(area);
+  // /admin entrou aqui ao ser migrado (23/07): sem isso a tela abria com o
+  // sidebar vazio, como aconteceu com /semana e /raiox
+  const comNavGeral = ["/", "/central", "/semana", "/raiox", "/admin"].includes(area);
   const home = useApi<HomePayload>(comNavGeral ? "/api/home" : "");
   const navHome: Array<ItemNav> = [
-    { href: "/", label: "Início", spa: true },
+    { href: "/", label: "Início" },
     ...(home.data?.areas ?? []).map((a, i) => ({
-      href: a.href, label: a.nome, spa: true, grupo: i === 0 ? "Áreas" : undefined })),
+      href: a.href, label: a.nome, grupo: i === 0 ? "Áreas" : undefined })),
     ...(home.data?.visoes ?? []).map((v, i) => ({
-      href: v.href, label: v.nome, spa: true, grupo: i === 0 ? "Visões da empresa" : undefined })),
+      href: v.href, label: v.nome, grupo: i === 0 ? "Visões da empresa" : undefined })),
     ...(home.data?.admin ?? []).map((a, i) => ({
-      href: a.href, label: a.nome, spa: a.slug === "central" || a.slug === "semana",
+      href: a.href, label: a.nome,
       grupo: i === 0 ? "Admin" : undefined, selo: a.pendencias })),
   ];
   const itens = comNavGeral ? navHome
@@ -240,7 +245,7 @@ function Shell({ children }: { children: React.ReactNode }) {
                     ? "border-l-2 border-primary bg-primary/10 pl-[10px] text-primary"
                     : "text-muted-foreground hover:bg-muted hover:text-foreground"
                 }`}>
-                {n.label}{!n.spa && <span className="ml-1 text-[10px] text-muted-foreground/60">(HTML)</span>}
+                {n.label}
                 {/* pendências do admin (pedido de senha, cadastro a aprovar):
                     sem aviso no grupo do Slack, é aqui que ele fica sabendo */}
                 {!!n.selo && (
@@ -290,6 +295,7 @@ export function App() {
         <Route path="/semana" element={<SemanaPage />} />
         <Route path="/" element={<HomePage />} />
         <Route path="/central" element={<CentralPage />} />
+        <Route path="/admin" element={<AdminPage />} />
         <Route path="/prevendas" element={<PrevendasRouter />} />
         <Route path="/vendas" element={<VendasRouter />} />
         <Route path="/app" element={<BibliotecaPage />} />

@@ -843,6 +843,10 @@ def admin_panel(request: Request):
     user, role = s
     if role != "admin":
         return RedirectResponse("/growth", status_code=302)
+    from . import spa as _spa_mod  # redesenho: tela migrada entrega o SPA
+    _r = _spa_mod.view_response(request, "admin", "visao")
+    if _r is not None:
+        return _r
     with _conn() as c:
         _audit_view(c, user, scope="admin")
         stats = _hub_stats(c)
@@ -854,23 +858,91 @@ def admin_panel(request: Request):
             pedidos = pedidos_reset_abertos(c)
         except Exception:  # noqa: BLE001
             pedidos = []
-        with c.cursor() as cur:
-            # ACESSOS = telas abertas; ÚLTIMO LOGIN = entrada de fato. A coluna
-            # "Último login" lia o max de VIEW (22/07): quem entrava e navegava
-            # só em telas migradas aparecia como se nunca tivesse usado — foi o
-            # caso do Eduardo, com 5 logins e a coluna vazia. `regexp_replace`
-            # tira o prefixo "painel:" do histórico gravado antes da correção.
-            cur.execute("""SELECT regexp_replace(actor, '^painel:', '') AS quem,
-                                  count(*) FILTER (WHERE action='view')  AS views,
-                                  max(at)  FILTER (WHERE action='login') AS ult_login
-                             FROM audit_log WHERE action IN ('view', 'login')
-                            GROUP BY 1""")
-            acessos = {a: (n, ult) for a, n, ult in cur.fetchall()}
+        acessos = _admin_acessos(c)
     for u in users:
         n, ult = acessos.get(u["email"], (0, None))
         u["views"], u["last_seen"] = n, (ult.strftime("%d/%m/%Y às %H:%M") if ult else None)
     return HTMLResponse(_render_hub(user, stats, users, None, page="admin", llm=llm,
                                     teams_html=teams, pedidos_senha=pedidos))
+
+
+def _admin_acessos(conn) -> dict:
+    """ACESSOS = telas abertas · ÚLTIMO LOGIN = entrada de fato (a coluna lia o
+    max de VIEW até 22/07 e quem só navegava em tela migrada parecia nunca ter
+    entrado). `regexp_replace` tira o prefixo 'painel:' gravado antes do fix."""
+    with conn.cursor() as cur:
+        cur.execute("""SELECT regexp_replace(actor, '^painel:', '') AS quem,
+                              count(*) FILTER (WHERE action='view')  AS views,
+                              max(at)  FILTER (WHERE action='login') AS ult_login
+                         FROM audit_log WHERE action IN ('view', 'login')
+                        GROUP BY 1""")
+        return {a: (n, ult) for a, n, ult in cur.fetchall()}
+
+
+def admin_dados(conn, atual: str) -> dict:
+    """Payload do Painel Administrativo — EMBRULHA as mesmas fontes da tela
+    HTML: list_users + audit_log (acessos), llm_budget.month_summary,
+    _teams_dados, _integracoes_status e pedidos_reset_abertos. `atual` = e-mail
+    da sessão (ninguém se auto-rebaixa)."""
+    from .llm_budget import month_summary
+    users = list_users(conn)
+    acessos = _admin_acessos(conn)
+    try:
+        pedidos = pedidos_reset_abertos(conn)
+    except Exception:  # noqa: BLE001 — idem HTML: sem pedidos não derruba a tela
+        pedidos = []
+    usuarios = []
+    for u in users:
+        n, ult = acessos.get(u["email"], (0, None))
+        usuarios.append({
+            "id": str(u["id"]), "name": u["name"], "email": u["email"],
+            "status": u["status"], "is_admin": bool(u.get("is_admin")),
+            "areas": list(u.get("areas") or []),
+            "views": n,
+            "last_seen": ult.strftime("%d/%m/%Y às %H:%M") if ult else None,
+            "eu": u["email"] == atual,
+        })
+    llm = month_summary(conn)
+    if llm:
+        llm = {"spent_usd": llm["spent_usd"], "cap_usd": llm["cap_usd"],
+               "pct": min(1.0, llm["pct"]),
+               "por_funcao": [{"feature": f["feature"],
+                               "label": _LLM_FEATURE_LABEL.get(f["feature"], f["feature"]),
+                               "chamadas": f["chamadas"], "cost_usd": f["cost_usd"]}
+                              for f in llm["por_funcao"]]}
+    # integrações: _integracoes_status já devolve dados; só o "quando" é formatado
+    # aqui com a MESMA régua do HTML (48h vira dias)
+    fontes, cobertura = [], ""
+    for r in _integracoes_status(conn):
+        if r["fonte"] == "_cobertura":
+            cobertura = r["detalhe"]
+            continue
+        ts, quando, ha = r["ultima"], "—", ""
+        if ts is not None:
+            quando = ts.strftime("%d/%m %H:%M") if hasattr(ts, "hour") else ts.strftime("%d/%m/%Y")
+            if r["h"] is not None:
+                ha = f"há {r['h'] / 24:.1f} d" if r["h"] >= 48 else f"há {r['h']:.0f} h"
+        fontes.append({"fonte": r["fonte"], "status": r["status"],
+                       "quando": quando, "ha": ha, "detalhe": r["detalhe"]})
+    return {
+        "eu": atual,
+        "areas": dict(AREAS),
+        "papeis": dict(_PAPEL_LBL),
+        "usuarios": usuarios,
+        "pedidos": [{"email": p["email"], "em": p["em"]} for p in pedidos],
+        "llm": llm,
+        "times": _teams_dados(conn),
+        "integracoes": {"cobertura": cobertura, "fontes": fontes},
+    }
+
+
+@app.get("/api/admin/painel")
+def api_admin_painel(request: Request):
+    actor, role = _require_api(request)
+    if role != "admin":
+        return JSONResponse({"error": "só o administrador acessa o painel"}, status_code=403)
+    with _conn() as c:
+        return admin_dados(c, actor)
 
 
 @app.post("/api/admin/times")
@@ -1781,19 +1853,36 @@ def _integracoes_html(rows: list[dict]) -> str:
             + "</div></section>")
 
 
+def _teams_dados(conn) -> list[dict]:
+    """Times por área — dados PUROS (fonte única do HTML e do SPA). Desligados
+    ficam de fora da exibição (detecção automática via Pipedrive; manuais idem)
+    mas seguem valendo na régua histórica do funil."""
+    from .team_config import eh_desligado, listas, status_pipedrive
+    out = []
+    for area, titulo, nota in _TEAM_AREAS:
+        membros = []
+        for nome, _ativo, papel in listas(conn, area):
+            if eh_desligado(conn, area, nome):
+                continue
+            membros.append({"nome": nome, "papel": papel,
+                            "papel_label": _PAPEL_LBL[papel],
+                            "pipedrive": status_pipedrive(conn, nome)})
+        out.append({"area": area, "titulo": titulo, "nota": nota, "membros": membros})
+    return out
+
+
 def _teams_html(conn) -> str:
     """Times por área (tabela area_team): visualização com nome + função e
     modo de edição (adicionar, trocar função, desligar com confirmação — que
     avisa se a pessoa ainda está ATIVA no Pipedrive). Desligados não aparecem
-    (detecção automática via Pipedrive; manuais idem) mas ficam na régua."""
-    from .team_config import eh_desligado, listas, status_pipedrive
+    (detecção automática via Pipedrive; manuais idem) mas ficam na régua.
+    O CÁLCULO vive em _teams_dados; aqui é só formatação."""
     blocos = ""
-    for area, titulo, nota in _TEAM_AREAS:
+    for bloco in _teams_dados(conn):
+        area, titulo, nota = bloco["area"], bloco["titulo"], bloco["nota"]
         linhas = ""
-        for nome, _ativo, papel in listas(conn, area):
-            if eh_desligado(conn, area, nome):
-                continue
-            pd = status_pipedrive(conn, nome)
+        for m in bloco["membros"]:
+            nome, papel, pd = m["nome"], m["papel"], m["pipedrive"]
             pd_dot = {"ativo": ("var(--status-baixo)", "ativo no Pipedrive"),
                       "desativado": ("var(--status-critico)", "desativado no Pipedrive"),
                       "sem dados": ("var(--text-faint)", "sem deals no nome ainda")}[pd]
