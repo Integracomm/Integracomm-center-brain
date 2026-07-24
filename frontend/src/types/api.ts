@@ -40,6 +40,10 @@ export interface Score {
   atrasadas: number | null;
   clickup_inativo: string | null;
   clickup_url: string | null;
+  // MESMA régua dos chips "Carteira por bundle" (bundle_conta no backend) —
+  // o filtro da tabela usava regex local e os números não batiam
+  bundle_grupo: "novo" | "antigo" | "sem_tag";
+  bundle_rotulo: string;
 }
 
 export interface ScoresKpis {

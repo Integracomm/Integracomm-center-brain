@@ -645,6 +645,10 @@ def api_scores(request: Request):
         s["squad"] = _resolve_squad(s["name"], _mirror)
         gc = ((_mirror or {}).get(_norm(s["name"])) or {}).get("gerente_de_contas")
         s["responsavel"] = (gc or "").strip() or None  # lacuna conhecida: GC vazio no espelho
+        # bundle POR CONTA com a MESMA régua dos chips "Carteira por bundle"
+        # (Otávio 24/07: o filtro da tabela usava regex cru no frontend e
+        # classificava [ADS-B4-S1] como B4 — os números não batiam)
+        s["bundle_grupo"], s["bundle_rotulo"] = bundle_conta(s["name"])
         s["clickup_inativo"] = None
         s["atrasadas"] = None
         s["clickup_url"] = None

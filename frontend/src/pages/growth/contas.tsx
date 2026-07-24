@@ -70,7 +70,6 @@ export function GrowthContasPage() {
 
   const scores = q.data?.scores ?? [];
 
-  const bundleDe = (nome: string) => nome.match(/B[1-5]/)?.[0] ?? "outros";
   const squads = useMemo(
     () => Array.from(new Set(scores.map((s) => s.squad).filter(Boolean))).sort() as string[],
     [scores]);
@@ -94,7 +93,13 @@ export function GrowthContasPage() {
       if (alerta === "sem" && sc.alert_sev) return false;
       if (["critico", "alto", "atencao"].includes(alerta) && sc.alert_sev !== alerta) return false;
       if (squad !== "todos" && sc.squad !== squad) return false;
-      if (plano !== "todos" && bundleDe(sc.name) !== plano) return false;
+      // MESMA régua dos chips (bundle_conta, no backend). O regex local
+      // classificava [ADS-B4-S1] como B4 e os números não batiam (Otávio 24/07)
+      if (plano !== "todos") {
+        if (plano === "antigos" && sc.bundle_grupo !== "antigo") return false;
+        if (plano === "sem_tag" && sc.bundle_grupo !== "sem_tag") return false;
+        if (plano !== "antigos" && plano !== "sem_tag" && sc.bundle_rotulo !== plano) return false;
+      }
       if (execf === "atrasos" && !(sc.atrasadas ?? 0)) return false;
       if (execf === "em_dia" && !(sc.exec_score != null && sc.exec_score >= 70)) return false;
       if (execf === "atencao" && !(sc.exec_score != null && sc.exec_score >= 40 && sc.exec_score < 70)) return false;
@@ -242,7 +247,8 @@ export function GrowthContasPage() {
               <SelectContent>
                 <SelectItem value="todos">Todos os planos</SelectItem>
                 {["B1", "B2", "B3", "B4", "B5"].map((b) => <SelectItem key={b} value={b}>{b}</SelectItem>)}
-                <SelectItem value="outros">antigos/ADS</SelectItem>
+                <SelectItem value="antigos">Antigos/não-bundle</SelectItem>
+                <SelectItem value="sem_tag">sem tag</SelectItem>
               </SelectContent>
             </Select>
             <Select value={execf} onValueChange={(v) => { setExecf(v as typeof execf); setPage(1); }}>

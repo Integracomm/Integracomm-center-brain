@@ -26,10 +26,11 @@ from __future__ import annotations
 
 import base64
 import datetime as dt
+import re
 from html import escape
 from pathlib import Path
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 router = APIRouter()
@@ -387,12 +388,157 @@ baixa o PPTX editável ou volta para ajustar o conteúdo sem perder nada.</p>
 </form><script>{js}</script></body></html>"""
 
 
+def _landing_page() -> str:
+    """Porta de entrada do All Hands (Otávio 24/07): a apresentação vira UMA
+    das opções; a outra é o fechamento do mês com os dados de todas as áreas
+    juntos — o que os coordenadores hoje montam à mão todo mês."""
+    card = ("display:block;background:#161616;border:1px solid #2b2b2b;border-radius:14px;"
+            "padding:26px 28px;color:#fff;text-decoration:none;max-width:560px")
+    return f"""<!doctype html><html lang=pt-br><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1"><title>All Hands</title>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;600;700;800&display=swap" rel=stylesheet>
+<style>body{{margin:0;background:#0d0d0d;color:#fff;font-family:'Montserrat',sans-serif;padding:34px}}
+a.top{{color:#9a9a9a;text-decoration:none;font-size:13px}}</style></head><body>
+<a class=top href="/central">← voltar à central</a>
+<h1 style="font-weight:800;letter-spacing:.01em">ALL <span style="color:#ffc107">HANDS</span></h1>
+<div style="display:grid;gap:14px;margin-top:18px">
+<a style="{card}" href="/allhands?view=dados">
+  <div style="font-weight:700;font-size:17px">📊 Dados do mês (fechamento por área)</div>
+  <div style="color:#9a9a9a;font-size:13px;margin-top:6px">Marketing, Pré-vendas, Vendas, Assessoria e
+  Estratégia num relatório só, nas mesmas réguas do painel — o consolidado que os coordenadores
+  montam à mão todo mês. O que não tem fonte automática aparece marcado.</div></a>
+<a style="{card}" href="/allhands?view=apresentacao">
+  <div style="font-weight:700;font-size:17px">🎤 Apresentação do All Hands</div>
+  <div style="color:#9a9a9a;font-size:13px;margin-top:6px">Gera os slides no design do deck: dados
+  automáticos + destaques, novos colaboradores, orientações e slides extras. Exporta em PDF ou PPTX.</div></a>
+</div></body></html>"""
+
+
+def _dados_page(conn, mes: dt.date) -> str:
+    """Fechamento do mês por área — o relatório que os coordenadores enviam
+    manualmente, agora ao vivo nas réguas oficiais do painel (_dados_mes: o
+    MESMO cálculo dos slides). Sem fonte automática ≠ zero: lacuna é marcada."""
+    d = _dados_mes(conn, mes)
+    lead, _mql, _sal, _sql, oport = (list(d["funil"]) + [0] * 5)[:5]
+    mes_lbl = f"{_MESES[mes.month - 1].title()} / {mes.year}"
+
+    hoje = dt.date.today()
+    meses_opts = []
+    m = hoje.replace(day=1)
+    for _ in range(6):
+        m = (m - dt.timedelta(days=1)).replace(day=1)
+        meses_opts.append(m)
+    if mes not in meses_opts:
+        meses_opts.insert(0, mes)
+    opcoes = "".join(f"<option value='{x.isoformat()}'{' selected' if x == mes else ''}>"
+                     f"{_MESES[x.month - 1].title()} / {x.year}</option>" for x in meses_opts)
+
+    def num(v):
+        return f"{v:,.0f}".replace(",", ".")
+
+    def linha(rot, val, sub="", esc=True):
+        s = f"<div style='color:#9a9a9a;font-size:12px'>{sub}</div>" if sub else ""
+        rot_html = escape(str(rot)) if esc else str(rot)
+        return (f"<div style='display:flex;justify-content:space-between;gap:14px;padding:7px 0;"
+                f"border-bottom:1px solid #262626'><div>{rot_html}{s}</div>"
+                f"<div style='font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap'>{val}</div></div>")
+
+    def lacuna(txt):
+        return (f"<div style='color:#8a7a4a;font-size:12px;padding:7px 0;border-bottom:1px solid #262626'>"
+                f"⚠ {escape(txt)} — sem fonte automática ainda; segue com o coordenador</div>")
+
+    def sec(titulo, corpo):
+        return (f"<div style='background:#161616;border:1px solid #2b2b2b;border-radius:14px;padding:20px 22px'>"
+                f"<div style='font-weight:800;color:#ffc107;letter-spacing:.04em;font-size:14px;"
+                f"text-transform:uppercase;margin-bottom:8px'>{titulo}</div>{corpo}</div>")
+
+    # --- Vendas por plano na ORDEM do deck (B1-START..B5-ELITE, depois o resto)
+    ordem = {"B1": 0, "B2": 1, "B3": 2, "B4": 3, "B5": 4}
+    def _key_venda(item):
+        m2 = re.search(r"B([1-5])", item[0].upper())
+        return (ordem.get(f"B{m2.group(1)}", 9) if m2 else 9, -item[1])
+    vendas = sorted(d["vendas_plano"], key=_key_venda)
+    corpo_v = "".join(linha(p, f"{n}" + (f" · R$ {num(v)}" if v else "")) for p, n, v in vendas)
+    corpo_v += linha("<b>Total</b>", f"<b>{d['bookings']}</b>", esc=False)
+
+    corpo_mkt = (linha("Leads gerados", num(lead))
+                 + linha("Oportunidades geradas", num(oport),
+                         sub="régua retroativa — o número se move enquanto a fila é qualificada")
+                 + linha("Vendas", num(d["bookings"]))
+                 + lacuna("resultado de evento (leads/oportunidades/vendas do evento)"))
+    corpo_pv = (linha("Leads totais", num(lead)) + linha("Oportunidades", num(oport))
+                + "<div style='color:#9a9a9a;font-size:12px;margin-top:8px'>mesma régua do funil "
+                  "oficial de Marketing — os dois fecham com os mesmos números por definição</div>")
+
+    corpo_ass = "".join(linha(p, num(n)) for p, n in d["clientes_plano"])
+    corpo_ass += linha("<b>Total</b>", f"<b>{num(d['base_ativa'])}</b>", esc=False)
+    # a contagem as-of DEGRADA retroativamente: cliente cancelado depois do
+    # fechamento sai da lista Clientes Ativos e some da foto do mês antigo
+    # (jun no deck oficial = 245; jun lido em 24/07 = 207). O número oficial é
+    # o gerado logo após o fechamento — avisar sempre que a leitura for tardia.
+    import calendar as _cal
+    fim_mes = mes.replace(day=_cal.monthrange(mes.year, mes.month)[1])
+    if (dt.date.today() - fim_mes).days > 7:
+        corpo_ass += lacuna("leitura tardia: a contagem retroativa SUBCONTA (cancelados desde o "
+                            "fechamento saem da lista) — o número oficial é o do deck gerado logo após o mês virar")
+    corpo_ass += lacuna("reuniões realizadas por gerente de contas")
+    corpo_ass += lacuna("NPS por gerente de contas")
+
+    n_estrategia = next((n for p, n in d["clientes_plano"] if "ESTRAT" in p.upper()), 0)
+    corpo_est = (linha("Clientes ativos", num(n_estrategia),
+                       sub="da lista Clientes Ativos do ClickUp (as-of fim do mês)")
+                 + lacuna("faturamento dos clientes de estratégia"))
+
+    saidas = "".join(linha(p, n) for p, n in d["saidas_plano"][:8])
+    if d["saidas_sem_plano"]:
+        saidas += lacuna(f"{d['saidas_sem_plano']} saída(s) sem plano lançado na planilha")
+    tx = f"{d['taxa_mes'] * 100:.1f}%" if d["taxa_mes"] is not None else "—"
+    corpo_sai = (saidas + linha("<b>Total de saídas</b>", f"<b>{d['saidas_total']}</b>", esc=False)
+                 + linha("Taxa de cancelamento (recorrentes)", tx,
+                         sub=f"saídas recorrentes {d['saidas_rec']} ÷ base recorrente {num(d['base_rec'])} — B1/Start fora (semestral)"))
+
+    return f"""<!doctype html><html lang=pt-br><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1"><title>All Hands — dados do mês</title>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;600;700;800&display=swap" rel=stylesheet>
+<style>body{{margin:0;background:#0d0d0d;color:#fff;font-family:'Montserrat',sans-serif;padding:34px}}
+a{{color:#9a9a9a;text-decoration:none;font-size:13px}} select{{background:#161616;color:#fff;border:1px solid #2b2b2b;border-radius:8px;padding:8px 10px;font-family:inherit}}</style></head><body>
+<a href="/allhands">← All Hands</a>
+<h1 style="font-weight:800">DADOS DO MÊS <span style="color:#ffc107">· {mes_lbl}</span></h1>
+<p style="color:#9a9a9a;max-width:820px;font-size:13.5px">O fechamento que os coordenadores montam à mão,
+nas mesmas réguas do painel (funil oficial, vendas por produto, clientes ativos as-of no fim do mês,
+cancelamentos da planilha oficial). Itens marcados com ⚠ ainda não têm fonte automática.</p>
+<form method=get action=/allhands style="margin:10px 0 18px"><input type=hidden name=view value=dados>
+mês: <select name=mes onchange="this.form.submit()">{opcoes}</select></form>
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:14px;max-width:1180px">
+{sec("Marketing", corpo_mkt)}
+{sec("Pré-vendas", corpo_pv)}
+{sec("Vendas — bookings por plano", corpo_v)}
+{sec(f"Assessoria — clientes ativos por plano ({num(d['base_ativa'])})", corpo_ass)}
+{sec("Estratégia", corpo_est)}
+{sec("Saídas do mês", corpo_sai)}
+</div>
+<p style="color:#777;font-size:12px;margin-top:16px">Fonte: espelho do Pipedrive (funil/vendas) ·
+lista Clientes Ativos do ClickUp (clientes por plano, as-of {mes_lbl}) · planilha oficial de
+cancelamentos. Os mesmos números alimentam os slides da apresentação.</p>
+</body></html>"""
+
+
 @router.get("/allhands", response_class=HTMLResponse)
-def allhands_form(request: Request):
+def allhands_form(request: Request, view: str = Query("menu"), mes: str = Query(None)):
     s, redir = _require_admin(request)
     if redir:
         return redir
-    return HTMLResponse(_form_page())
+    if view == "apresentacao":
+        return HTMLResponse(_form_page())
+    if view == "dados":
+        try:
+            alvo = dt.date.fromisoformat(mes) if mes else _mes_fechado_default()
+        except ValueError:
+            alvo = _mes_fechado_default()
+        A = _deps()
+        with A._conn() as c:
+            return HTMLResponse(_dados_page(c, alvo))
+    return HTMLResponse(_landing_page())
 
 
 @router.post("/allhands/editar", response_class=HTMLResponse)
