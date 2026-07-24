@@ -97,13 +97,16 @@ def _clientes_ativos_por_plano(fim_mes: dt.date) -> tuple[list[tuple[str, int]],
     'pausada por inatividade' fica fora (inadimplente); serviços acessórios
     (Implantação, Consultoria, CNPJ Adicional...) não são linhas do deck."""
     from .config import get_settings
-    from .sources.clickup_activities import _download_list
+    # versão CACHEADA da lista (30min, renovada pelo prewarm) — o download
+    # direto era a causa dos "Dados do mês" levarem minutos (Otávio 24/07):
+    # ~460 tasks paginadas com rate-limit A CADA abertura da tela
+    from .sources.clickup_activities import _clickup_list_tasks
     s = get_settings()
     lista = s.clickup_list_clientes_ativos or _LISTA_CLIENTES_ATIVOS
     try:
-        tasks = _download_list(s.clickup_api_token, lista)
+        tasks = _clickup_list_tasks(s.clickup_api_token, lista)
     except Exception:  # noqa: BLE001 — ClickUp fora não derruba a geração
-        return []
+        return [], {}  # (era `return []` — quebrava o unpack de quem consome)
     corte = dt.datetime.combine(fim_mes + dt.timedelta(days=1), dt.time(3, 0),
                                 tzinfo=dt.timezone.utc)  # fim do dia BRT
 
@@ -388,6 +391,57 @@ baixa o PPTX editável ou volta para ajustar o conteúdo sem perder nada.</p>
 </form><script>{js}</script></body></html>"""
 
 
+def _nps_por_gc() -> dict:
+    """NPS por gerente de contas — campos `NPS` (number) × `Gerente de contas`
+    (users) dos cards RAIZ da lista Assessoria (a fonte por trás do dashboard
+    de GCs do ClickUp que o Otávio apontou em 24/07). Lista vem do cache de
+    30min (prewarm); vazio = {} e a tela mantém a lacuna ⚠.
+    Nota: cobre o NPS; as REUNIÕES por GC não estão em lista acessível pela
+    API (seguem como lacuna até acharmos a fonte)."""
+    from .config import get_settings
+    from .sources.clickup_activities import _clickup_list_tasks
+    s = get_settings()
+    if not (s.clickup_api_token and s.clickup_list_assessoria):
+        return {}
+    try:
+        tasks = _clickup_list_tasks(s.clickup_api_token, s.clickup_list_assessoria)
+    except Exception:  # noqa: BLE001
+        return {}
+    soma: dict[str, float] = {}
+    n: dict[str, int] = {}
+    tot_s = tot_n = 0.0
+    for t in tasks:
+        if t.get("parent"):
+            continue
+        cf = {c.get("name"): c for c in (t.get("custom_fields") or [])}
+        v = (cf.get("NPS") or {}).get("value")
+        if v in (None, ""):
+            continue
+        try:
+            nota = float(v)
+        except (TypeError, ValueError):
+            continue
+        gcs = (cf.get("Gerente de contas") or {}).get("value") or []
+        nomes = [((g or {}).get("username") or "").strip() for g in gcs] if isinstance(gcs, list) else []
+        for nome in (nomes or ["(sem GC)"]):
+            if not nome:
+                nome = "(sem GC)"
+            soma[nome] = soma.get(nome, 0.0) + nota
+            n[nome] = n.get(nome, 0) + 1
+        tot_s += nota
+        tot_n += 1
+    if not tot_n:
+        return {}
+    por_gc = sorted(((g, soma[g] / n[g], n[g]) for g in soma), key=lambda x: -x[2])
+    return {"por_gc": [{"gc": g, "nps": round(m, 2), "contas": c} for g, m, c in por_gc],
+            "geral": round(tot_s / tot_n, 2), "contas_com_nota": int(tot_n)}
+
+
+_DADOS_CACHE: dict = {}  # mes_iso -> (monotonic, payload)
+_DADOS_TTL = 300.0
+_DADOS_LOCK = __import__("threading").Lock()
+
+
 @router.get("/api/allhands/dados")
 def api_allhands_dados(request: Request, mes: str = Query(None)):
     """Fechamento do mês por área (JSON p/ o SPA) — EMBRULHA `_dados_mes`, o
@@ -401,8 +455,33 @@ def api_allhands_dados(request: Request, mes: str = Query(None)):
     except ValueError:
         alvo = _mes_fechado_default()
     alvo = alvo.replace(day=1)
+    # SERVE-STALE por mês (24/07: a tela demorava minutos — a lista do ClickUp
+    # era baixada sem cache a cada abertura): fresco → serve; velho → serve o
+    # velho e reconstrói em thread; só a 1ª chamada do mês constrói inline.
+    import time as _t
+    hit = _DADOS_CACHE.get(alvo.isoformat())
+    if hit is not None:
+        if _t.monotonic() - hit[0] > _DADOS_TTL and _DADOS_LOCK.acquire(blocking=False):
+            def _rebuild(iso=alvo.isoformat(), d_alvo=alvo):
+                try:
+                    with A._conn() as c2:
+                        _DADOS_CACHE[iso] = (_t.monotonic(), _monta_dados(c2, d_alvo))
+                except Exception:  # noqa: BLE001 — segue o stale
+                    pass
+                finally:
+                    _DADOS_LOCK.release()
+            __import__("threading").Thread(target=_rebuild, daemon=True,
+                                           name="allhands-dados-rebuild").start()
+        return hit[1]
     with A._conn() as c:
-        d = _dados_mes(c, alvo)
+        payload = _monta_dados(c, alvo)
+    _DADOS_CACHE[alvo.isoformat()] = (_t.monotonic(), payload)
+    return payload
+
+
+def _monta_dados(c, alvo: dt.date) -> dict:
+    d = _dados_mes(c, alvo)
+    nps = _nps_por_gc()
     lead, mql, sal, sql, oport = (list(d["funil"]) + [0] * 5)[:5]
 
     hoje = dt.date.today()
@@ -434,7 +513,10 @@ def api_allhands_dados(request: Request, mes: str = Query(None)):
         "vendas": {"por_plano": vendas, "total": d["bookings"],
                    "receita": d["receita"]},
         "assessoria": {"clientes_plano": [{"plano": p, "qtde": n} for p, n in d["clientes_plano"]],
-                       "total": d["base_ativa"], "leitura_tardia": leitura_tardia},
+                       "total": d["base_ativa"], "leitura_tardia": leitura_tardia,
+                       # NPS por GC (fonte achada 24/07: campos NPS × Gerente de
+                       # contas dos cards da lista Assessoria); {} = lacuna ⚠
+                       "nps": nps or None},
         "estrategia": {"clientes": next((n for p, n in d["clientes_plano"]
                                          if "ESTRAT" in p.upper()), 0)},
         "saidas": {"por_plano": [{"plano": p, "qtde": n} for p, n in d["saidas_plano"]],
@@ -443,8 +525,8 @@ def api_allhands_dados(request: Request, mes: str = Query(None)):
                    "base_rec": d["base_rec"]},
         # sem fonte automática — o SPA marca como lacuna, nunca zero inventado
         "lacunas": {"marketing": ["resultado de evento (leads/oportunidades/vendas do evento)"],
-                    "assessoria": ["reuniões realizadas por gerente de contas",
-                                   "NPS por gerente de contas"],
+                    "assessoria": ["reuniões realizadas por gerente de contas"]
+                    + ([] if nps else ["NPS por gerente de contas"]),
                     "estrategia": ["faturamento dos clientes de estratégia"]},
     }
 

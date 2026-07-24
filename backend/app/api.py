@@ -1347,6 +1347,11 @@ def api_growth_carga(request: Request):
     from .growth_carga import carga_dados
     with _conn() as c:
         scores = _latest_scores(c)
+        # RÉGUA ÚNICA de encerradas (Otávio 24/07: "alguns bundles ainda contam
+        # clientes pausados por inadimplência e isso interfere em vários
+        # cálculos daquela página") — pausado/cancelado/concluído fora de
+        # contas, MRR, alertas e capacidade por squad
+        scores, _fora = _sem_encerradas(scores)
         # MESMO espelho da tela HTML. Eu tinha importado de `sources.mirror`,
         # que não existe: o try/except engolia o ImportError, mandava None e os
         # squads resolviam SÓ pelo nome — números diferentes da tela antiga
@@ -3851,7 +3856,9 @@ __SCRIPT__
             "</section>" + foot)
         script = _ALERTS_JS
     elif view == "carga":
-        content = _carga_content(ordered, _mirror) + foot
+        # mesma régua do endpoint (paridade): encerradas fora dos números
+        _vivas_carga, _ = _sem_encerradas(ordered)
+        content = _carga_content(_vivas_carga, _mirror) + foot
     elif view == "playbooks":
         content = _playbooks_content(practices or {}, interventions or []) + foot
     elif view == "cancelamentos":

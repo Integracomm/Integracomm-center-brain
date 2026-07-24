@@ -39,7 +39,6 @@ import { FocoSemana } from "@/components/blocks/foco-semana";
 import { RodapeFonte, UsuarioRail } from "@/components/blocks/rodape-fonte";
 import { CentralPage } from "@/pages/central";
 import { AdminPage } from "@/pages/admin";
-import { AllHandsMenuPage } from "@/pages/allhands/menu";
 import { AllHandsDadosPage } from "@/pages/allhands/dados";
 import { HomePage, type HomePayload } from "@/pages/home";
 import { useApi } from "@/hooks/use-api";
@@ -144,11 +143,10 @@ function FinanceiroRouter() {
 }
 
 function AllHandsRouter() {
-  const [params] = useSearchParams();
-  // "apresentacao" nunca chega aqui (o backend serve o HTML do gerador de
-  // slides direto — decisão: apresentação fica em HTML)
-  if (params.get("view") === "dados") return <AllHandsDadosPage />;
-  return <AllHandsMenuPage />;
+  // All Hands abre DIRETO nos Dados do mês (Otávio 24/07) — o botão de gerar
+  // a apresentação fica ao final da página. "apresentacao" nunca chega aqui
+  // (o backend serve o HTML do gerador de slides direto, por decisão).
+  return <AllHandsDadosPage />;
 }
 
 function OperacoesRouter() {
