@@ -6,6 +6,8 @@ import { SectionCard } from "@/components/blocks/section-card";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
+import { TimeSeries } from "@/components/charts/time-series";
+import { formatBRL } from "@/lib/format";
 
 // Financeiro · Saúde da Receita Recorrente (ISR + Quick Ratio) — /api/financeiro/receita
 // EMBRULHA `receita_recorrente.carrega()` (parser isolado da planilha, migra ao
@@ -23,7 +25,11 @@ interface Payload {
   sem_planilha: boolean;
   kpi: { mes: string; base_b2b5: number | null; isr_b2b5: number | null;
     isr_ok: boolean; qr: number | null; isr_consol: number | null };
+  kpi_defasado: boolean;
+  mes_corrente: string;
   linhas: Linha[];
+  serie: Array<{ mes: string; base_b2b5: number | null; antigos: number | null;
+    consolidado: number | null }>;
   alerta: { mes: string; texto: string } | null;
   crossover_idx: number | null; crossover_mes: string | null;
 }
@@ -80,8 +86,22 @@ export function FinanceiroReceitaPage() {
           title="Saúde da Receita Recorrente"
           subtitle="ISR = base recorrente ÷ mês anterior ×100 (≥100 = crescendo) · Quick Ratio = nova ÷ perdida (≥1 = ganha mais do que perde) · duas visões que NÃO se misturam: B2-B5 = o sinal do modelo novo · Consolidado = caixa com antigos em runoff">
 
+          {/* a planilha só é preenchida depois da virada do mês — sem este
+              aviso os 4 KPIs ficavam "—" e a tela parecia quebrada (Otávio 24/07) */}
+          {d.kpi_defasado && (
+            <div className="mb-4 flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/5 p-3 text-sm">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+              <span>
+                <b>{d.mes_corrente} ainda não preenchido</b> na planilha de planejamento —
+                os indicadores abaixo são de <b>{d.kpi.mes}</b>, o último mês com dado.
+                A tabela e o gráfico mostram a série completa.
+              </span>
+            </div>
+          )}
+
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            <Kpi valor={dec(d.kpi.base_b2b5)} rotulo={`base recorrente B2-B5 (${d.kpi.mes})`} />
+            <Kpi valor={dec(d.kpi.base_b2b5)}
+              rotulo={`base recorrente B2-B5 (${d.kpi.mes}${d.kpi_defasado ? " · último com dado" : ""})`} />
             <Kpi valor={dec(d.kpi.isr_b2b5)} rotulo="ISR B2-B5" sub="≥100 = base crescendo"
               cor={d.kpi.isr_ok ? "text-success" : "text-destructive"} />
             <Kpi valor={dec(d.kpi.qr, 1)} rotulo="Quick Ratio B2-B5" sub="nova ÷ perdida" />
@@ -100,6 +120,26 @@ export function FinanceiroReceitaPage() {
               </span>
             </div>
           )}
+
+          {/* O bloco nunca teve gráfico (nem no HTML antigo, nem na migração) —
+              o "recharts: 0" da varredura era esta lacuna, não o furo de julho.
+              Mês sem dado fica como BURACO na linha: `connectNulls` off é o
+              padrão do Recharts, então jul/26 não vira uma reta inventada. */}
+          <div className="mt-5">
+            <p className="mb-1 text-xs text-muted-foreground">
+              Base recorrente <b>B2-B5</b> × <b>planos antigos</b> (em runoff) — o cruzamento das duas
+              linhas é o mês em que o modelo novo passa a sustentar a receita sozinho.
+            </p>
+            <TimeSeries data={d.serie} xKey="mes" height={260}
+              series={[
+                { key: "base_b2b5", label: "Base B2-B5", color: "var(--chart-1)",
+                  valueFormatter: (v) => formatBRL(v) },
+                { key: "antigos", label: "Planos antigos", color: "var(--muted-foreground)",
+                  dashed: true, valueFormatter: (v) => formatBRL(v) },
+              ]}
+              annotations={d.crossover_mes ? [{ x: d.crossover_mes, seriesKey: "base_b2b5",
+                label: "★ crossover" }] : undefined} />
+          </div>
 
           <div className="mt-4 overflow-x-auto">
             <Table>

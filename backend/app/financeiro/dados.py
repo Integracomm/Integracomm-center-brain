@@ -226,7 +226,19 @@ def fin_receita_dados() -> dict:
     hoje = dt.date.today()
     # dez/25 = 0 (mesma âncora do HTML); clamp em 12 (dez/26)
     idx_atual = min(12, (hoje.year - 2025) * 12 + hoje.month - 12)
-    i_kpi = max(0, min(idx_atual, 12))
+    i_corrente = max(0, min(idx_atual, 12))
+
+    # FALLBACK p/ o último mês COM DADO (Otávio 24/07): a planilha só é
+    # preenchida depois da virada do mês, então todo dia 1º os 4 KPIs do topo
+    # ficavam "—" e a tela parecia quebrada. Em 24/07 jul/26 estava inteiro
+    # vazio (jun/26 com dado real, ago/26 em diante com projeção).
+    # KPI vazio parece sistema com defeito; KPI rotulado é informação.
+    def _tem_dado(i: int) -> bool:
+        return d["base_b2b5"][i] is not None or d["isr_b2b5"][i] is not None
+    i_kpi = i_corrente
+    while i_kpi > 0 and not _tem_dado(i_kpi):
+        i_kpi -= 1
+    kpi_defasado = i_kpi != i_corrente and _tem_dado(i_kpi)
 
     linhas = []
     for i in range(1, 13):
@@ -253,6 +265,14 @@ def fin_receita_dados() -> dict:
         alerta = {"mes": mes_a, "texto": txt_a}
 
     isr_kpi = d["isr_b2b5"][i_kpi]
+    # série p/ o gráfico: base B2-B5 × planos antigos, com o crossover anotado.
+    # Mês sem dado vai como None de propósito — o TimeSeries desenha o BURACO
+    # (connectNulls off) em vez de fingir uma linha contínua que não existe.
+    serie = [{"mes": d["meses"][i],
+              "base_b2b5": _f(d["base_b2b5"][i]),
+              "antigos": _f(d["antigos"][i]),
+              "consolidado": _f(d["consol"][i])}
+             for i in range(len(d["meses"]))]
     return {
         "sem_planilha": False,
         "meses": d["meses"], "idx_atual": idx_atual,
@@ -262,7 +282,12 @@ def fin_receita_dados() -> dict:
             "isr_b2b5": _f(isr_kpi), "isr_ok": (isr_kpi or 0) >= 100,
             "qr": _f(d["qr"][i_kpi]), "isr_consol": _f(d["isr_consol"][i_kpi]),
         },
+        # avisa que os KPIs NÃO são do mês corrente (planilha ainda não
+        # preenchida) — sem isto o gestor lê número velho achando que é de hoje
+        "kpi_defasado": kpi_defasado,
+        "mes_corrente": d["meses"][i_corrente],
         "linhas": linhas,
+        "serie": serie,
         "alerta": alerta,
         "crossover_idx": d["crossover_idx"],
         "crossover_mes": d["meses"][d["crossover_idx"]] if d["crossover_idx"] is not None else None,

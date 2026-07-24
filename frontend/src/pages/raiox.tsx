@@ -64,7 +64,10 @@ export function RaioXPage() {
       <header>
         <h1 className="font-display inline-flex items-center gap-2 text-2xl font-bold tracking-tight">Raio-X por Bundle<Hint area="raiox" titulo="_intro" /></h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          A cadeia completa {d?.rotulo ?? ""} na ordem do ciclo: aquisição → fechamento → meta ×
+          {/* o backend devolve rotulo="o B2" / "a empresa (todos os bundles)" e
+              forma a contração com d+rótulo ("do B2" / "da empresa") — aqui o
+              "d" tinha ficado de fora e saía "A cadeia completa o B2" */}
+          A cadeia completa {d?.rotulo ? `d${d.rotulo}` : ""} na ordem do ciclo: aquisição → fechamento → meta ×
           realizado → retenção → carga operacional → resultado recorrente.
         </p>
       </header>

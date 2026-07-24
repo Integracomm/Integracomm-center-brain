@@ -87,6 +87,28 @@ def main() -> None:
                AND ({_SEV_SQL}) IS NOT NULL AND al.severity <> ({_SEV_SQL})""")
         resev = cur.rowcount
 
+        # 4) CONTAS ENCERRADAS (24/07): cancelamento formalizado / conta
+        # concluída ou pausada fecha o alerta. Esconder na tela resolve a
+        # leitura, mas o alerta seguia aberto no banco e voltaria em qualquer
+        # consumidor novo. Eram 15 abertos (3 críticos) apontando para clientes
+        # que já tinham ido embora.
+        # Usa a MESMA régua da tela (`api.estado_encerrado`) de propósito: uma
+        # versão em SQL fechava 13 dos 15 — normalização de nome mais pobre, e
+        # duas réguas para o mesmo conceito é o que a casa não aceita.
+        from app.api import estado_encerrado
+        cur.execute("""SELECT al.id, a.name FROM alerts al
+                         JOIN accounts a ON a.id = al.account_id
+                        WHERE al.status='aberto'""")
+        encerrados = [(aid, nome) for aid, nome in cur.fetchall()
+                      if estado_encerrado(nome or "")]
+        canc = 0
+        if encerrados and not args.dry:
+            cur.executemany(
+                """UPDATE alerts SET status='resolvido',
+                          notes = COALESCE(notes || ' · ', '') || 'auto: conta encerrada'
+                    WHERE id=%s""", [(aid,) for aid, _ in encerrados])
+        canc = len(encerrados)
+
         cur.execute("SELECT count(*) FROM alerts WHERE status='aberto'")
         depois = cur.fetchone()[0]
         cur.execute("""SELECT severity, count(*) FROM alerts WHERE status='aberto'
@@ -96,6 +118,7 @@ def main() -> None:
     print(f"  fechados por dedup:          {dedup}")
     print(f"  fechados por normalização:   {norm}")
     print(f"  severidade reclassificada:   {resev}")
+    print(f"  fechados por cancelamento:   {canc}")
     print(f"abertos depois: {depois}  {dict(dist)}")
     if args.dry:
         conn.rollback()

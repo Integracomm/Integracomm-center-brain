@@ -619,6 +619,12 @@ def api_scores(request: Request):
     with _conn() as c:
         scores = _latest_scores(c)
         alerts = _open_alerts(c)
+    # conta ENCERRADA (cancelada/concluída/pausada) sai da aba Contas: mandar o
+    # gestor atuar em cliente que já foi embora é pior que não mostrar nada
+    # (Otávio 24/07 — eram 22 canceladas ainda listadas, 15 com alerta aberto)
+    scores, fora_contas = _sem_encerradas(scores)
+    nomes_vivos = {s["name"] for s in scores}
+    alerts = [a for a in alerts if a.get("name") in nomes_vivos]
     rep = _report_from(scores, alerts)
     try:
         from .sources.clickup_activities import _mirror_clientes
@@ -664,7 +670,9 @@ def api_scores(request: Request):
         "mrr_em_risco_sem_dados": sum(1 for s in em_risco if _mrr_val(s) <= 0),
         "sem_cobertura": rep["sem_dados"],
     }
-    return {"agents": _visible_agents(role), "scores": _serialize(scores), "kpis": kpis}
+    return {"agents": _visible_agents(role), "scores": _serialize(scores), "kpis": kpis,
+            # transparência do corte (nunca sumir com conta em silêncio)
+            "encerradas_ocultas": fora_contas}
 
 
 @app.get("/api/alerts")
@@ -672,11 +680,17 @@ def api_alerts(request: Request):
     _require_api(request)
     with _conn() as c:
         alerts = _open_alerts(c)
+    # MESMA régua da aba Contas: alerta de conta encerrada não é fila de ação.
+    # Eram 15 (3 críticos) apontando para clientes já cancelados.
+    n_antes = len(alerts)
+    alerts = [a for a in alerts if not estado_encerrado(a.get("name") or "")]
+    encerrados = n_antes - len(alerts)
     # kpis prontos (redesenho 21/07): frontend não conta severidade
     sev: dict[str, int] = {}
     for a in alerts:
         sev[a["severity"]] = sev.get(a["severity"], 0) + 1
     return {"alerts": _serialize(alerts),
+            "encerrados_ocultos": encerrados,
             "kpis": {"total": len(alerts), "critico": sev.get("critico", 0),
                      "alto": sev.get("alto", 0), "atencao": sev.get("atencao", 0)}}
 
@@ -3922,39 +3936,74 @@ def _playbooks_content(practices: dict, interventions: list) -> str:
     return h
 
 
-def _sem_inativos(scores: list[dict]) -> tuple[list[dict], int, int]:
-    """Tira do relatório os clientes INATIVOS no ClickUp — concluídos e pausados
-    por inadimplência (Otávio 23/07: 'esses casos não são mais tratados pelos
-    gestores que recebem esse relatório, seria para o time financeiro').
+_CANC_CACHE: dict = {"t": 0.0, "nomes": None}
 
-    O filtro existia só no endpoint da tela de Contas; o relatório do Slack lia
-    `_latest_scores` cru e contava conta encerrada como carteira viva — em
-    23/07 eram 21 das 269 (6 concluídas + 15 pausadas), sendo 15 COM ALERTA
-    ABERTO, inflando o 'MRR em risco'. Devolve (vivos, n_concluidos, n_pausados);
-    ClickUp fora do ar não filtra nada (degrada, não derruba)."""
+
+def _nomes_cancelados() -> set[str]:
+    """Nomes normalizados das contas com cancelamento FORMALIZADO
+    (grw_cancelamentos). Cache 10 min; abre conexão própria para poder ser
+    chamada de qualquer ponto sem passar `conn` adiante."""
+    import time as _t
+    if _CANC_CACHE["nomes"] is not None and _t.monotonic() - _CANC_CACHE["t"] < 600:
+        return _CANC_CACHE["nomes"]
+    from .sources.nps_sheets import norm_account
+    nomes: set[str] = set()
     try:
-        from .sources.clickup_activities import client_inactive_status as _inat
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("SELECT DISTINCT cliente FROM grw_cancelamentos WHERE tipo='cancelamento'")
+            nomes = {norm_account(r[0]) for r in cur.fetchall() if r[0]}
+    except Exception:  # noqa: BLE001 — sem a tabela, não filtra nada
+        return _CANC_CACHE["nomes"] or set()
+    _CANC_CACHE.update(t=_t.monotonic(), nomes=nomes)
+    return nomes
+
+
+def estado_encerrado(account_name: str) -> str | None:
+    """RÉGUA ÚNICA de 'conta encerrada' (Otávio 23-24/07). Devolve
+    'cancelado' | 'concluído' | 'pausada por inatividade' | None (viva).
+
+    Duas fontes, porque nenhuma sozinha cobre o caso:
+      - grw_cancelamentos: cancelamento FORMALIZADO (o que mais importa — o
+        cliente foi embora);
+      - ClickUp: concluído (serviço entregue) e pausada por inadimplência
+        (pauta do Financeiro, não da gestão de contas).
+
+    Existe porque a 1ª correção (23/07) filtrou só o ClickUp e deixou passar as
+    canceladas: 22 contas canceladas seguiam na aba Contas, 15 com alerta
+    ABERTO e 3 deles CRÍTICOS — o gestor sendo mandado agir com urgência em
+    cliente que já saiu."""
+    from .sources.nps_sheets import norm_account
+    try:
+        if norm_account(account_name) in _nomes_cancelados():
+            return "cancelado"
     except Exception:  # noqa: BLE001
-        return scores, 0, 0
-    vivos, conc, paus = [], 0, 0
+        pass
+    try:
+        from .sources.clickup_activities import client_inactive_status
+        return client_inactive_status(account_name)
+    except Exception:  # noqa: BLE001 — ClickUp fora não derruba a tela
+        return None
+
+
+def _sem_encerradas(scores: list[dict]) -> tuple[list[dict], dict[str, int]]:
+    """Separa as contas VIVAS das encerradas. Devolve (vivas, contagem_por_estado).
+    Fonte fora do ar não filtra nada (degrada, não derruba)."""
+    vivas: list[dict] = []
+    fora: dict[str, int] = {}
     for s in scores:
-        try:
-            st = _inat(s["name"]) or ""
-        except Exception:  # noqa: BLE001 — conta sem match segue viva
-            st = ""
-        if "conclu" in st:
-            conc += 1
-        elif "pausada" in st:
-            paus += 1
+        st = estado_encerrado(s["name"])
+        if st:
+            chave = "cancelado" if st == "cancelado" else ("concluido" if "conclu" in st else "pausado")
+            fora[chave] = fora.get(chave, 0) + 1
         else:
-            vivos.append(s)
-    return vivos, conc, paus
+            vivas.append(s)
+    return vivas, fora
 
 
 def _report_from(scores: list[dict], alerts: list[dict]) -> dict:
     """Relatório do estado atual — mesmo dado que alimentará o envio ao Slack.
     Clientes encerrados/pausados no ClickUp ficam FORA (ver _sem_inativos)."""
-    scores, n_conc, n_paus = _sem_inativos(scores)
+    scores, _fora = _sem_encerradas(scores)
     # `alerts` NÃO traz account_id (só o id do alerta e o nome da conta) — casar
     # por NOME é o único jeito correto aqui; por id o filtro descartaria tudo.
     nomes_vivos = {s["name"] for s in scores}
@@ -3991,7 +4040,9 @@ def _report_from(scores: list[dict], alerts: list[dict]) -> dict:
         "alertas_por_squad": dict(sorted(squad_alerts.items(), key=lambda x: -x[1])),
         "exec_atrasada": sum(1 for s in scores if (s.get("exec_score") or 100) < 40),
         # transparência: quem saiu da conta e por quê (nunca cortar em silêncio)
-        "excluidos_concluidos": n_conc, "excluidos_pausados": n_paus,
+        "excluidos_cancelados": _fora.get("cancelado", 0),
+        "excluidos_concluidos": _fora.get("concluido", 0),
+        "excluidos_pausados": _fora.get("pausado", 0),
     }
 
 
@@ -4025,11 +4076,16 @@ def _report_text(rep: dict) -> str:
     if rep["nao_avaliaveis"]:
         lines += ["", f"*Sem dados (revisar manualmente):* {len(rep['nao_avaliaveis'])} contas"]
     # o que ficou de fora, e por quê — corte silencioso vira "número errado"
-    fora = rep.get("excluidos_concluidos", 0) + rep.get("excluidos_pausados", 0)
-    if fora:
-        lines += ["", f"_Fora deste resumo: {rep.get('excluidos_concluidos', 0)} conta(s) concluída(s) e "
-                      f"{rep.get('excluidos_pausados', 0)} pausada(s) por inadimplência no ClickUp "
-                      f"(inadimplência é pauta do Financeiro, não da gestão de contas)._"]
+    partes_fora = []
+    if rep.get("excluidos_cancelados"):
+        partes_fora.append(f"{rep['excluidos_cancelados']} cancelada(s)")
+    if rep.get("excluidos_concluidos"):
+        partes_fora.append(f"{rep['excluidos_concluidos']} concluída(s)")
+    if rep.get("excluidos_pausados"):
+        partes_fora.append(f"{rep['excluidos_pausados']} pausada(s) por inadimplência")
+    if partes_fora:
+        lines += ["", f"_Fora deste resumo: {' · '.join(partes_fora)} — contas encerradas não são "
+                      "carteira viva (inadimplência é pauta do Financeiro)._"]
     lines += ["", "_o agente só sinaliza — a decisão é do gestor_"]
     return "\n".join(lines)
 
