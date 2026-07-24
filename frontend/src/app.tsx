@@ -39,6 +39,8 @@ import { FocoSemana } from "@/components/blocks/foco-semana";
 import { RodapeFonte, UsuarioRail } from "@/components/blocks/rodape-fonte";
 import { CentralPage } from "@/pages/central";
 import { AdminPage } from "@/pages/admin";
+import { AllHandsMenuPage } from "@/pages/allhands/menu";
+import { AllHandsDadosPage } from "@/pages/allhands/dados";
 import { HomePage, type HomePayload } from "@/pages/home";
 import { useApi } from "@/hooks/use-api";
 
@@ -141,6 +143,14 @@ function FinanceiroRouter() {
   return <FinanceiroVisaoPage />; // visao = view padrão da área
 }
 
+function AllHandsRouter() {
+  const [params] = useSearchParams();
+  // "apresentacao" nunca chega aqui (o backend serve o HTML do gerador de
+  // slides direto — decisão: apresentação fica em HTML)
+  if (params.get("view") === "dados") return <AllHandsDadosPage />;
+  return <AllHandsMenuPage />;
+}
+
 function OperacoesRouter() {
   const [params] = useSearchParams();
   const view = params.get("view") ?? "visao";
@@ -179,7 +189,7 @@ function Shell({ children }: { children: React.ReactNode }) {
   // (Otávio 23/07).
   // /admin entrou aqui ao ser migrado (23/07): sem isso a tela abria com o
   // sidebar vazio, como aconteceu com /semana e /raiox
-  const comNavGeral = ["/", "/central", "/semana", "/raiox", "/admin"].includes(area);
+  const comNavGeral = ["/", "/central", "/semana", "/raiox", "/admin", "/allhands"].includes(area);
   const home = useApi<HomePayload>(comNavGeral ? "/api/home" : "");
   const navHome: Array<ItemNav> = [
     { href: "/", label: "Início" },
@@ -296,6 +306,7 @@ export function App() {
         <Route path="/" element={<HomePage />} />
         <Route path="/central" element={<CentralPage />} />
         <Route path="/admin" element={<AdminPage />} />
+        <Route path="/allhands" element={<AllHandsRouter />} />
         <Route path="/prevendas" element={<PrevendasRouter />} />
         <Route path="/vendas" element={<VendasRouter />} />
         <Route path="/app" element={<BibliotecaPage />} />

@@ -70,6 +70,9 @@ export interface ScoresEnvelope {
   kpis: ScoresKpis;
   bundles?: BundlesCarteira;
   encerradas_ocultas?: Record<string, number>;
+  // estágio 1 do serve-stale: veio SEM os dados do ClickUp (atrasadas/inativo/
+  // url) — a tela re-busca sozinha até o build completo substituir o cache
+  parcial?: boolean;
 }
 
 export interface Alert {

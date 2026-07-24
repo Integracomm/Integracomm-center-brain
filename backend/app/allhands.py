@@ -388,6 +388,67 @@ baixa o PPTX editável ou volta para ajustar o conteúdo sem perder nada.</p>
 </form><script>{js}</script></body></html>"""
 
 
+@router.get("/api/allhands/dados")
+def api_allhands_dados(request: Request, mes: str = Query(None)):
+    """Fechamento do mês por área (JSON p/ o SPA) — EMBRULHA `_dados_mes`, o
+    MESMO cálculo dos slides. Regra nova do Otávio (24/07): tudo que nasce
+    agora vai no frontend novo; só relatórios imprimíveis e a APRESENTAÇÃO do
+    All Hands ficam em HTML. Sem fonte automática ≠ zero: vira lacuna marcada."""
+    A = _deps()
+    A._require_api(request)
+    try:
+        alvo = dt.date.fromisoformat(mes) if mes else _mes_fechado_default()
+    except ValueError:
+        alvo = _mes_fechado_default()
+    alvo = alvo.replace(day=1)
+    with A._conn() as c:
+        d = _dados_mes(c, alvo)
+    lead, mql, sal, sql, oport = (list(d["funil"]) + [0] * 5)[:5]
+
+    hoje = dt.date.today()
+    meses_opts, m = [], hoje.replace(day=1)
+    for _ in range(6):
+        m = (m - dt.timedelta(days=1)).replace(day=1)
+        meses_opts.append(m.isoformat())
+    if alvo.isoformat() not in meses_opts:
+        meses_opts.insert(0, alvo.isoformat())
+
+    # ordem do deck nas vendas (B1-START..B5-ELITE, depois o resto por volume)
+    ordem = {"B1": 0, "B2": 1, "B3": 2, "B4": 3, "B5": 4}
+    def _key_venda(item):
+        m2 = re.search(r"B([1-5])", item[0].upper())
+        return (ordem.get(f"B{m2.group(1)}", 9) if m2 else 9, -item[1])
+    vendas = [{"plano": p, "qtde": n, "receita": v}
+              for p, n, v in sorted(d["vendas_plano"], key=_key_venda)]
+
+    import calendar as _cal
+    fim_mes = alvo.replace(day=_cal.monthrange(alvo.year, alvo.month)[1])
+    leitura_tardia = (hoje - fim_mes).days > 7
+
+    return {
+        "mes": alvo.isoformat(),
+        "mes_label": f"{_MESES[alvo.month - 1].title()} / {alvo.year}",
+        "meses": meses_opts,
+        "marketing": {"leads": lead, "mqls": mql, "sals": sal, "sqls": sql,
+                      "oportunidades": oport, "vendas": d["bookings"]},
+        "vendas": {"por_plano": vendas, "total": d["bookings"],
+                   "receita": d["receita"]},
+        "assessoria": {"clientes_plano": [{"plano": p, "qtde": n} for p, n in d["clientes_plano"]],
+                       "total": d["base_ativa"], "leitura_tardia": leitura_tardia},
+        "estrategia": {"clientes": next((n for p, n in d["clientes_plano"]
+                                         if "ESTRAT" in p.upper()), 0)},
+        "saidas": {"por_plano": [{"plano": p, "qtde": n} for p, n in d["saidas_plano"]],
+                   "total": d["saidas_total"], "sem_plano": d["saidas_sem_plano"],
+                   "taxa_recorrentes": d["taxa_mes"], "saidas_rec": d["saidas_rec"],
+                   "base_rec": d["base_rec"]},
+        # sem fonte automática — o SPA marca como lacuna, nunca zero inventado
+        "lacunas": {"marketing": ["resultado de evento (leads/oportunidades/vendas do evento)"],
+                    "assessoria": ["reuniões realizadas por gerente de contas",
+                                   "NPS por gerente de contas"],
+                    "estrategia": ["faturamento dos clientes de estratégia"]},
+    }
+
+
 def _landing_page() -> str:
     """Porta de entrada do All Hands (Otávio 24/07): a apresentação vira UMA
     das opções; a outra é o fechamento do mês com os dados de todas as áreas
@@ -528,8 +589,15 @@ def allhands_form(request: Request, view: str = Query("menu"), mes: str = Query(
     s, redir = _require_admin(request)
     if redir:
         return redir
+    # a APRESENTAÇÃO fica em HTML por decisão (gerador de slides/PPTX);
+    # menu e "Dados do mês" são SPA (regra 24/07: tudo novo nasce no frontend
+    # novo) — o HTML abaixo é só fallback/escotilha `?legado=1`
     if view == "apresentacao":
         return HTMLResponse(_form_page())
+    from . import spa as _spa_mod
+    _r = _spa_mod.view_response(request, "allhands", view)
+    if _r is not None:
+        return _r
     if view == "dados":
         try:
             alvo = dt.date.fromisoformat(mes) if mes else _mes_fechado_default()

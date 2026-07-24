@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   AlertOctagon, ArrowDown, ArrowUp, ArrowUpDown, DollarSign, ExternalLink,
   EyeOff, Search, Users,
@@ -69,6 +69,15 @@ export function GrowthContasPage() {
   const PAGE_SIZE = 25;
 
   const scores = q.data?.scores ?? [];
+
+  // payload PARCIAL (estágio 1 do serve-stale, sem os dados do ClickUp):
+  // re-busca sozinho até o build completo substituir o cache no backend —
+  // a tela abre em segundos e os atrasos/status chegam quando prontos
+  useEffect(() => {
+    if (!q.data?.parcial) return;
+    const t = setTimeout(q.refetch, 45_000);
+    return () => clearTimeout(t);
+  }, [q.data, q.refetch]);
 
   const squads = useMemo(
     () => Array.from(new Set(scores.map((s) => s.squad).filter(Boolean))).sort() as string[],
@@ -168,6 +177,13 @@ export function GrowthContasPage() {
             <KpiCard icon={EyeOff} tone="muted" title="Sem cobertura"
               value={kpis.sem_cobertura.toLocaleString("pt-BR")} subtitle="sem dados / não avaliáveis" />
           </div>
+
+          {q.data.parcial && (
+            <p className="rounded-lg border border-warning/40 bg-warning/5 px-3 py-2 text-xs text-warning">
+              Dados do ClickUp (atrasos e status por conta) ainda carregando em segundo plano —
+              a tela atualiza sozinha em instantes; o resto já é o número oficial.
+            </p>
+          )}
 
           {/* carteira por bundle, INCLUINDO os antigos (Otávio 24/07) — régua
               pela tag de SERVIÇO do nome, nunca pelo Bx do squad (o mesmo

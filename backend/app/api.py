@@ -14,6 +14,7 @@ from __future__ import annotations
 import datetime as dt
 import os
 import re
+import threading
 from html import escape
 from pathlib import Path
 from typing import Any
@@ -65,6 +66,17 @@ def _prewarm() -> None:
         start_sentinel(_conn)  # avisos imediatos de cancelamento (30 em 30 min)
     except Exception:  # noqa: BLE001
         pass
+    # pré-computa o payload da aba Contas (24/07): a 1ª carga fria era ~2min e
+    # cada deploy zerava o cache — o usuário pagava a espera. Agora quem paga é
+    # esta thread, logo após o boot; o serve-stale mantém dali em diante.
+    def _warm_scores():
+        import time as _t
+        _t.sleep(15)  # deixa o prewarm das listas do ClickUp largar primeiro
+        try:
+            _scores_payload_cached()
+        except Exception:  # noqa: BLE001 — melhor sem prewarm do que sem boot
+            pass
+    threading.Thread(target=_warm_scores, name="scores-prewarm", daemon=True).start()
 
 _ROLES = {"admin", "gestor_growth"}
 _ROOT = Path(__file__).resolve().parents[1].parent  # raiz do projeto (onde vive o .env)
@@ -614,18 +626,78 @@ def api_scores(request: Request):
     """Contas monitoradas + KPIs prontos (redesenho 21/07: agregado NUNCA é
     calculado no frontend — os KPIs saem do MESMO _report_from do cockpit/
     Slack, então as telas não divergem). `squad`/`responsavel` por conta:
-    mesma resolução da Análise dos Squads (espelho quando o nome não traz)."""
+    mesma resolução da Análise dos Squads (espelho quando o nome não traz).
+
+    SERVE-STALE (24/07 — 'a aba Contas não está carregando'): o build é pesado
+    a frio (índice do ClickUp, ~2min pós-restart) e cada deploy do dia zerava o
+    cache — a tela ficava no skeleton até o navegador desistir. Agora o payload
+    é cacheado (TTL 5min): fresco → serve; velho → serve o VELHO e reconstrói
+    em thread (mesmo padrão do espelho de deals); só a primeiríssima chamada
+    pós-boot constrói inline — e o prewarm do startup já faz essa 1ª chamada."""
     _user, role = _require_api(request)
+    payload = _scores_payload_cached()
+    return {"agents": _visible_agents(role), **payload}
+
+
+_SCORES_CACHE: dict = {"t": 0.0, "payload": None}
+_SCORES_TTL = 300.0
+_SCORES_BUILDING = threading.Lock()
+
+
+def _scores_rebuild_bg() -> None:
+    """Reconstrói o payload COMPLETO em thread (1 por vez)."""
+    if not _SCORES_BUILDING.acquire(blocking=False):
+        return
+    def _rebuild():
+        import time as _t
+        try:
+            _SCORES_CACHE.update(t=_t.monotonic(), payload=_scores_payload(completo=True))
+        except Exception:  # noqa: BLE001 — rebuild falhou: segue o stale
+            pass
+        finally:
+            _SCORES_BUILDING.release()
+    threading.Thread(target=_rebuild, name="scores-rebuild", daemon=True).start()
+
+
+def _scores_payload_cached() -> dict:
+    """Cache do payload da aba Contas em DOIS estágios (medição 24/07: o build
+    completo FRIO leva ~25min — 4,6min só nas listas do ClickUp e ~6,5s POR
+    CONTA nas atrasadas, com rate-limit; 'não está carregando' era literal).
+
+    Estágio 1 (~5s): tudo menos o enriquecimento do ClickUp (atrasadas/inativo/
+    url ficam None; encerradas filtradas só pelos CANCELAMENTOS, que vêm do
+    RDS). Servido na hora, marcado `parcial`. Estágio 2 (background): build
+    completo substitui o cache; o frontend re-busca sozinho enquanto `parcial`.
+    Depois disso, serve-stale com TTL de 5min."""
+    import time as _t
+    hit = _SCORES_CACHE["payload"]
+    if hit is not None:
+        if hit.get("parcial") or _t.monotonic() - _SCORES_CACHE["t"] > _SCORES_TTL:
+            _scores_rebuild_bg()
+        return hit
+    # 1ª chamada pós-boot: build RÁPIDO inline + completo em background
+    with _SCORES_BUILDING:
+        if _SCORES_CACHE["payload"] is None:
+            _SCORES_CACHE.update(t=_t.monotonic(), payload=_scores_payload(completo=False))
+    _scores_rebuild_bg()
+    return _SCORES_CACHE["payload"]
+
+
+def _scores_payload(completo: bool = True) -> dict:
+    """A parte PESADA do /api/scores (tudo menos o `agents`, que é por papel).
+    `completo=False` pula o que depende do ClickUp (o gargalo dos ~25min)."""
     with _conn() as c:
         scores = _latest_scores(c)
         alerts = _open_alerts(c)
     # conta ENCERRADA (cancelada/concluída/pausada) sai da aba Contas: mandar o
     # gestor atuar em cliente que já foi embora é pior que não mostrar nada
     # (Otávio 24/07 — eram 22 canceladas ainda listadas, 15 com alerta aberto)
-    scores, fora_contas = _sem_encerradas(scores)
+    # (rapido = estágio 1: só cancelamentos do RDS; concluído/pausado dependem
+    # do ClickUp e entram quando o build completo substituir o cache)
+    scores, fora_contas = _sem_encerradas(scores, rapido=not completo)
     nomes_vivos = {s["name"] for s in scores}
     alerts = [a for a in alerts if a.get("name") in nomes_vivos]
-    rep = _report_from(scores, alerts)
+    rep = _report_from(scores, alerts, rapido=not completo)
     try:
         from .sources.clickup_activities import _mirror_clientes
         _mirror = _mirror_clientes()
@@ -641,6 +713,8 @@ def api_scores(request: Request):
         _agora = dt.datetime.now(dt.timezone.utc)
     except Exception:  # noqa: BLE001
         _atr = None
+    if not completo:
+        _atr = None  # estágio rápido: atrasadas/inativo/url chegam no build completo
     for s in scores:
         s["squad"] = _resolve_squad(s["name"], _mirror)
         gc = ((_mirror or {}).get(_norm(s["name"])) or {}).get("gerente_de_contas")
@@ -674,11 +748,13 @@ def api_scores(request: Request):
         "mrr_em_risco_sem_dados": sum(1 for s in em_risco if _mrr_val(s) <= 0),
         "sem_cobertura": rep["sem_dados"],
     }
-    return {"agents": _visible_agents(role), "scores": _serialize(scores), "kpis": kpis,
+    return {"scores": _serialize(scores), "kpis": kpis,
             # transparência do corte (nunca sumir com conta em silêncio)
             "encerradas_ocultas": fora_contas,
             # carteira por bundle, incluindo os antigos (Otávio 24/07)
-            "bundles": _bundles_da_carteira(scores)}
+            "bundles": _bundles_da_carteira(scores),
+            # estágio 1 (sem os dados do ClickUp) — o frontend re-busca sozinho
+            "parcial": not completo}
 
 
 @app.get("/api/alerts")
@@ -4004,9 +4080,16 @@ def estado_encerrado(account_name: str) -> str | None:
         return None
 
 
-def _sem_encerradas(scores: list[dict]) -> tuple[list[dict], dict[str, int]]:
+def _sem_encerradas(scores: list[dict], rapido: bool = False) -> tuple[list[dict], dict[str, int]]:
     """Separa as contas VIVAS das encerradas. Devolve (vivas, contagem_por_estado).
-    Fonte fora do ar não filtra nada (degrada, não derruba)."""
+    Fonte fora do ar não filtra nada (degrada, não derruba).
+    `rapido=True` = só cancelamentos (RDS); pula o status do ClickUp — usado no
+    estágio 1 do payload de Contas (o ClickUp frio levava 4,6min)."""
+    if rapido:
+        from .sources.nps_sheets import norm_account as _na
+        canc = _nomes_cancelados()
+        vivas = [s for s in scores if _na(s["name"]) not in canc]
+        return vivas, {"cancelado": len(scores) - len(vivas)}
     vivas: list[dict] = []
     fora: dict[str, int] = {}
     for s in scores:
@@ -4019,10 +4102,10 @@ def _sem_encerradas(scores: list[dict]) -> tuple[list[dict], dict[str, int]]:
     return vivas, fora
 
 
-def _report_from(scores: list[dict], alerts: list[dict]) -> dict:
+def _report_from(scores: list[dict], alerts: list[dict], rapido: bool = False) -> dict:
     """Relatório do estado atual — mesmo dado que alimentará o envio ao Slack.
-    Clientes encerrados/pausados no ClickUp ficam FORA (ver _sem_inativos)."""
-    scores, _fora = _sem_encerradas(scores)
+    Clientes encerrados/pausados no ClickUp ficam FORA (ver _sem_encerradas)."""
+    scores, _fora = _sem_encerradas(scores, rapido=rapido)
     # `alerts` NÃO traz account_id (só o id do alerta e o nome da conta) — casar
     # por NOME é o único jeito correto aqui; por id o filtro descartaria tudo.
     nomes_vivos = {s["name"] for s in scores}
