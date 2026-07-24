@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 import uuid
 from typing import Any
 
@@ -108,6 +109,50 @@ def _case_history(conn: Any, account_id: str, updates: list[dict]) -> list[dict]
                      "resultado": (res if res and res != "pendente" else None)}
                     for t, por, txt, res in cur.fetchall()]
     return sorted(eventos, key=lambda e: e["quando"])
+
+
+# Sinal de DESALINHAMENTO DE ESCOPO — caso-escola PP SPORTS (Otávio 23-24/07).
+# Aquele cancelamento não foi por faturamento: foi expectativa. Em 17/06 o
+# gestor registrou "ele questiona que antes era feito vários pontos que o plano
+# dele não contempla, precisa alinhar!"; em 22/07 "recebe como resposta que está
+# fora do escopo do contrato... pretende contratar outras pessoas"; em 20/07
+# pediu cancelamento. Um mês de aviso, em texto claro, que nenhum score via.
+# Otávio: "usar como alerta para os gestores alinharem a expectativa do cliente
+# ANTES de gerar um cancelamento."
+#
+# Regra da casa (ver confiabilidade dos alertas): detecção textual NÃO dá
+# veredito sozinha — ~40% dos alertas por regex eram falso positivo. Aqui o
+# "confirmador" é o próprio gestor: devolvemos a FRASE encontrada, com data e
+# autor, para ele julgar. É evidência, não classificação.
+_ESCOPO_PADROES = (
+    r"fora do escopo",
+    r"n[ãa]o (?:est[áa] |faz parte|contempla|cobre|inclui)",
+    r"n[ãa]o (?:est[áa]|é) (?:no|do) (?:plano|contrato|escopo)",
+    r"alinhar o (?:plano|escopo|contrato)",
+    r"(?:questiona|reclama|cobra).{0,40}(?:plano|escopo|contrato)",
+    r"antes (?:era|fazia|faziam|se fazia).{0,60}(?:agora|hoje)",
+)
+_ESCOPO_RE = re.compile("|".join(_ESCOPO_PADROES), re.I)
+
+
+def sinal_escopo(comentarios: list[dict]) -> dict | None:
+    """Evidências de desalinhamento de ESCOPO nos comentários dos gestores.
+    → {ocorrencias: [{data, autor, trecho}], n} ou None. Não classifica risco:
+    entrega a frase para o gestor decidir."""
+    achados = []
+    for c in comentarios or []:
+        texto = " ".join((c.get("texto") or "").split())
+        m = _ESCOPO_RE.search(texto)
+        if not m:
+            continue
+        ini = max(0, m.start() - 70)
+        trecho = ("…" if ini else "") + texto[ini:m.end() + 130].strip() + \
+                 ("…" if m.end() + 130 < len(texto) else "")
+        achados.append({"data": (c.get("data") or "")[:10],
+                        "autor": c.get("autor") or "?", "trecho": trecho})
+    if not achados:
+        return None
+    return {"n": len(achados), "ocorrencias": achados[:4]}
 
 
 def ensure_reports_table(conn: Any) -> None:
@@ -433,6 +478,8 @@ def build_report(conn: Any, account_id: str, ref_month: str, generated_by: str |
         data["comentarios_clickup"] = client_comments(acc["name"])
     except Exception:  # noqa: BLE001 — ClickUp fora não derruba o relatório
         data["comentarios_clickup"] = []
+    # alerta de expectativa/escopo (caso PP Sports) — alinhar ANTES do pedido
+    data["sinal_escopo"] = sinal_escopo(data["comentarios_clickup"])
 
     # --- plano de ação individual (gestor de CS sênior) + histórico do caso ---
     from .agents.growth.action_plan import generate_plan

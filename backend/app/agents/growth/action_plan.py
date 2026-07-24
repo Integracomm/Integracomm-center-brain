@@ -92,6 +92,15 @@ def _dossie(data: dict, updates: list[dict]) -> str:
             lines.append(f"  [{str(u['created_at'])[:10]} {u.get('author') or ''}] {u['text']}")
     if data.get("nps"):
         lines.append(f"NPS: {data['nps']}")
+    # sinal de ESCOPO (caso PP Sports): expectativa desalinhada precede o pedido
+    # de cancelamento em semanas e não aparece em score/tom/execução
+    esc = data.get("sinal_escopo")
+    if esc:
+        lines.append(f"⚠ SINAL DE ESCOPO/EXPECTATIVA — {esc['n']} registro(s) do gestor em que o "
+                     "cliente questiona o que o plano cobre. É o padrão que precedeu o cancelamento "
+                     "do PP Sports; trate ANTES de virar pedido de saída:")
+        for o in esc["ocorrencias"]:
+            lines.append(f"  [{o['data']} {o['autor']}] {o['trecho']}")
     # --- contexto de entrega: NÃO é o plano, serve só para citar se virar assunto ---
     lines.append(f"ENTREGAS CONCLUÍDAS NO MÊS: {a['total']} (contexto — o gestor já conhece a fila)")
     px = (a.get("proximas") or {}).get("tasks") or []

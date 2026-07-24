@@ -114,14 +114,25 @@ def check_whatsapp(conn: Any, contas: list[dict], dry: bool = False) -> int:
             conta = por_chave.get((a.group_id or "").lower())
             if not conta:
                 continue
-            # dedup por conta e DIA da análise (Otávio 23/07: "avisar sempre que
-            # encontrarmos algum cliente em crítico ou com reclamação realmente
-            # séria, que mereceria intervenção imediata"). Era 1x/SEMANA, e um
-            # caso crítico NOVO na mesma semana ficava silenciado — justamente o
-            # que exige ação. Não vira spam porque as análises sem evento novo
-            # ("sem novas mensagens" / "status mantido") já saem no filtro acima:
-            # só dispara em dia com conteúdo crítico novo.
+            # SÓ CASOS DO DIA (Otávio 24/07: "temos que ter certeza que estamos
+            # enviando os casos certos do dia, para o time de gestores agir
+            # corretamente"). A varredura cobre 48h para tolerar buraco na
+            # rodada, mas o AVISO fica restrito a hoje/ontem: análise mais velha
+            # que isso é caso que o time já tratou — reavisar atrapalha em vez
+            # de ajudar. Sem isso, um caso do dia 22 já contornado voltou ao
+            # Slack no dia 24 (incidente real).
+            dia = dt.date.fromisoformat(a.analysis_date[:10])
+            if dia < dt.date.today() - dt.timedelta(days=1):
+                continue
+            # dedup por conta e DIA da análise (era 1x/SEMANA; um caso crítico
+            # NOVO na mesma semana ficava silenciado). A chave MUDOU de formato
+            # em 23/07 — sem checar a chave LEGADA (bloco semanal), todo evento
+            # já avisado no esquema antigo volta a parecer inédito e é reenviado.
+            # Foi exatamente o que aconteceu com o D LA BELLA.
             k = f"wa:{a.group_id}:{a.analysis_date[:10]}"
+            k_legado = f"wa:{a.group_id}:{dia.toordinal() // 7}"
+            if _visto(conn, k_legado, dry=True):
+                continue  # já avisado no esquema antigo — não reenviar
             if _visto(conn, k, dry):
                 continue
             resumo = (a.summary or "").strip()[:220]
