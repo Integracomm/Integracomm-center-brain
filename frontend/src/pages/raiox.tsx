@@ -11,6 +11,8 @@ import {
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
+import { BarListH } from "@/components/charts/bar-list-h";
+import { TimeSeries } from "@/components/charts/time-series";
 import { formatBRL, formatNumber, formatPct } from "@/lib/format";
 
 // Raio-X por Bundle (Lote 5) — /api/raiox EMBRULHA _dados_bundle (que já era
@@ -56,8 +58,14 @@ export function RaioXPage() {
   const [bundle, setBundle] = useState(params.get("b") ?? "TODOS");
   const [janela, setJanela] = useState(params.get("j") ?? "120");
   const q = useApi<Payload>(`/api/raiox?b=${bundle}&j=${janela}`);
+  // A leitura do especialista vem SEPARADA: ela chama o Claude e, com cache
+  // frio, levava 10-25s. Antes segurava o payload inteiro e a tela ficava
+  // vazia; agora o conteúdo aparece na hora e esta troca quando fica pronta.
+  const ql = useApi<Payload["leitura"]>(`/api/raiox/leitura?b=${bundle}&j=${janela}`);
   const d = q.data;
   const x = d?.dados;
+  // enquanto o Claude não responde, mostra a heurística que veio no payload
+  const leitura = ql.data ?? d?.leitura;
 
   return (
     <div className="space-y-6">
@@ -89,7 +97,17 @@ export function RaioXPage() {
         </Select>
       </div>
 
-      {q.loading && <LoadingSkeleton rows={6} />}
+      {/* skeleton no FORMATO da tela (2 colunas de blocos), não uma tira fina:
+          com `rows={6}` a página parecia vazia durante o carregamento */}
+      {q.loading && !d && (
+        <>
+          <LoadingSkeleton rows={2} />
+          <div className="grid gap-6 xl:grid-cols-2">
+            <LoadingSkeleton rows={3} />
+            <LoadingSkeleton rows={3} />
+          </div>
+        </>
+      )}
       {q.error && <ErrorState message={q.error} onRetry={q.refetch} />}
       {d && x && (
         <>
@@ -110,14 +128,16 @@ export function RaioXPage() {
 
           <SectionCard hint={<Hint area="raiox" titulo="Leitura do especialista" />}
             title="Leitura do especialista"
-            subtitle={`gerada por ${d.leitura.fonte} — hipótese para investigar, não veredito`}>
-            <p className="text-sm leading-relaxed">→ {d.leitura.texto}</p>
-            {d.leitura.alternativa && (
+            subtitle={ql.loading
+              ? "consultando o especialista… (a leitura determinística já está abaixo)"
+              : `gerada por ${leitura?.fonte ?? ""} — hipótese para investigar, não veredito`}>
+            <p className="text-sm leading-relaxed">→ {leitura?.texto ?? ""}</p>
+            {leitura?.alternativa && (
               <details className="mt-3">
                 <summary className="cursor-pointer text-xs font-medium text-primary">
                   ver também a leitura determinística
                 </summary>
-                <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{d.leitura.alternativa}</p>
+                <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{leitura.alternativa}</p>
               </details>
             )}
             {d.fatos.length > 0 && (
@@ -136,6 +156,25 @@ export function RaioXPage() {
             <SectionCard hint={<Hint area="raiox" titulo="Aquisição por canal" />}
               headerClassName="min-h-[72px]" title="Aquisição — canal × retenção"
               subtitle="de onde vem o cliente e quantos saem cedo · CAC aj. = CAC ÷ retenção (o custo real por cliente que FICA)">
+              {/* a distância entre CAC e CAC ajustado É o custo do churn precoce
+                  — a barra torna isso imediato; a tabela fica preservada abaixo */}
+              {(() => {
+                const cs = Object.entries(x.por_canal)
+                  .filter(([, v]) => v.cac_aj != null)
+                  .sort((a, b) => (b[1].cac_aj ?? 0) - (a[1].cac_aj ?? 0))
+                  .map(([c, v]) => ({ label: c, value: v.cac_aj ?? 0, cac: v.cac, n: v.n }));
+                return cs.length ? (
+                  <div className="mb-3">
+                    <p className="mb-1 text-xs text-muted-foreground">
+                      CAC ajustado por canal (custo real por cliente que fica)
+                    </p>
+                    <BarListH data={cs} height={Math.max(120, cs.length * 44)}
+                      color="var(--chart-2)"
+                      xTickFormatter={(v) => formatBRL(v, { compact: true })}
+                      valueLabel={(v, it) => `${formatBRL(v)}${it.cac ? ` (CAC ${formatBRL(it.cac)})` : ""}`} />
+                  </div>
+                ) : null;
+              })()}
               <div className="overflow-x-auto">
                 <Table>
                   <TableHeader>
@@ -221,22 +260,40 @@ export function RaioXPage() {
                 <Badge variant="outline">tardio {pc(x.tardio_pct)}</Badge>
                 <Badge variant="outline" className="text-muted-foreground">coorte {x.coorte_n}</Badge>
               </div>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className={thCls}>Motivo</TableHead>
-                    <TableHead className={`${thCls} text-right`}>Saídas</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {x.motivos.slice(0, 8).map(([m, n]) => (
-                    <TableRow key={m}>
-                      <TableCell className="text-sm">{m}</TableCell>
-                      <TableCell className={numCls}>{n}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+              {/* Pareto: o motivo dominante tem que saltar aos olhos. A tabela
+                  completa fica preservada no details, como manda o padrão. */}
+              {x.motivos.length > 0 ? (
+                <>
+                  <BarListH
+                    data={x.motivos.slice(0, 8).map(([m, n]) => ({ label: m, value: n }))}
+                    height={Math.max(120, Math.min(8, x.motivos.length) * 44)}
+                    color="var(--destructive)" width={190}
+                    valueLabel={(v) => `${v} saída(s)`} />
+                  <details className="mt-2">
+                    <summary className="cursor-pointer text-xs font-medium text-primary">
+                      ver tabela completa ({x.motivos.length} motivo(s))
+                    </summary>
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className={thCls}>Motivo</TableHead>
+                          <TableHead className={`${thCls} text-right`}>Saídas</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {x.motivos.map(([m, n]) => (
+                          <TableRow key={m}>
+                            <TableCell className="text-sm">{m}</TableCell>
+                            <TableCell className={numCls}>{n}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </details>
+                </>
+              ) : (
+                <p className="text-sm text-muted-foreground">sem motivos registrados no recorte.</p>
+              )}
               {x.canc_sem_motivo > 0 && (
                 <p className="mt-2 text-xs text-muted-foreground">
                   {x.canc_sem_motivo} saída(s) <b>sem motivo registrado</b> — lacuna de registro, não ausência de causa.
@@ -279,6 +336,25 @@ export function RaioXPage() {
             subtitle={x.mrr_exato
               ? `base de MRR: ${formatBRL(x.mrr_soma)} (todas as contas cadastradas)`
               : `base ESTIMADA em ${brl(x.mrr_est)} — só ${x.mrr_cnt} de ${x.base_contas} contas têm MRR cadastrado (média aplicada às demais)`}>
+            {/* o que importa aqui é o SALDO mês a mês: bookings anulados por
+                cancelamento não aparecem numa tabela de 5 colunas */}
+            {x.entra_sai.length > 0 && (
+              <div className="mb-3">
+                <TimeSeries
+                  data={x.entra_sai.map(([mes, , vIn, , vOut]) => ({
+                    mes, entrou: vIn, saiu: -vOut, saldo: vIn - vOut }))}
+                  xKey="mes" height={240}
+                  series={[
+                    { key: "entrou", label: "R$ que entrou", color: "var(--success)",
+                      valueFormatter: (v) => formatBRL(v) },
+                    { key: "saiu", label: "R$ que saiu", color: "var(--destructive)",
+                      valueFormatter: (v) => formatBRL(Math.abs(v)) },
+                    { key: "saldo", label: "Saldo", color: "var(--chart-1)", kind: "area",
+                      valueFormatter: (v) => formatBRL(v) },
+                  ]}
+                  references={[{ value: 0, label: "equilíbrio" }]} />
+              </div>
+            )}
             <div className="overflow-x-auto">
               <Table>
                 <TableHeader>

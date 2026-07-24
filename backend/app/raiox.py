@@ -881,20 +881,43 @@ def api_raiox(request: Request, b: str = Query("TODOS"), j: int = Query(120)):
         b = "TODOS"
     if j not in (30, 90, 120):
         j = 120
+    # A leitura via Claude NÃO entra aqui (24/07): ela rodava DENTRO do request
+    # e, com cache frio, segurava o payload inteiro por 10-25s — a tela ficava
+    # praticamente vazia nesse tempo. Agora o conteúdo sai na hora com a leitura
+    # HEURÍSTICA (determinística, barata) e o frontend busca a do especialista
+    # em /api/raiox/leitura, trocando quando chegar.
     with A._conn() as c:
         d = _dados_bundle(c, b, j)
         fatos = _fatos(d)
         heur = _leitura_heuristica(d)
-        llm = _leitura_llm(c, b, fatos)
         areas = [{"area": a, "href": href, "link": lbl, "bullets": [_sem_tags(x) for x in bl]}
                  for a, href, lbl, bl in _insights_areas(d)]
     return {"bundle": b, "rotulo": _rotulo(b), "janela": j,
             "bundles": list(_BUNDLES), "janelas": [30, 90, 120],
             "dados": _json_safe(d), "fatos": fatos,
-            "leitura": {"texto": llm or heur, "via_llm": bool(llm),
-                        "alternativa": heur if llm else None,
-                        "fonte": "Claude (cache 20h)" if llm else "regras determinísticas"},
+            "leitura": {"texto": heur, "via_llm": False, "alternativa": None,
+                        "fonte": "regras determinísticas"},
             "areas": areas}
+
+
+@router.get("/api/raiox/leitura")
+def api_raiox_leitura(request: Request, b: str = Query("TODOS"), j: int = Query(120)):
+    """Leitura do ESPECIALISTA (Claude, cache 20h) — endpoint separado de
+    propósito: é a parte lenta e não pode segurar o resto da tela. Devolve a
+    heurística como `alternativa` quando o Claude respondeu."""
+    A = _deps()
+    A._require_api(request)
+    if b not in _BUNDLES:
+        b = "TODOS"
+    if j not in (30, 90, 120):
+        j = 120
+    with A._conn() as c:
+        d = _dados_bundle(c, b, j)
+        heur = _leitura_heuristica(d)
+        llm = _leitura_llm(c, b, _fatos(d))
+    return {"texto": llm or heur, "via_llm": bool(llm),
+            "alternativa": heur if llm else None,
+            "fonte": "Claude (cache 20h)" if llm else "regras determinísticas"}
 
 
 @router.get("/raiox", response_class=HTMLResponse)
