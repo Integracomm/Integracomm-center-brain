@@ -348,6 +348,53 @@ def winloss_dados(conn: Any, ini: dt.date, fim: dt.date) -> dict:
 # Oportunidade→Booking (meta 15%) — régua já existente da tela HTML, é ELA
 # que o Win/Loss referencia (decisão: não inventar win rate por lá).
 # ---------------------------------------------------------------------------
+# etapas que representam o pipe REALMENTE na mão do closer: 6 Reunião,
+# 5 Reagendamento, 7 Negociação. Fora daqui é topo de funil (ainda não é pipe).
+_ST_PIPE_ABERTO = (6, 5, 7)
+
+
+def pipe_aberto_por_bundle(conn: Any) -> dict:
+    """Deals ABERTOS hoje por bundle: quantidade, valor, idade e empacados.
+
+    Otávio (27/07) não encontrou isso: o número existia só como a coluna
+    "Pipeline" da tabela de metas (Performance & Meta) — contagem crua, sem
+    valor nem idade, e num lugar onde ninguém procura "o que está aberto".
+    A régua é a MESMA que o forecast já usava (`status='open'` nas etapas
+    6/5/7); virou função para as duas telas nunca divergirem.
+
+    NOMENCLATURA (regra do Otávio, 14/07): isto é **pipe aberto / deals
+    abertos**, NUNCA "Oportunidade" — Oportunidade é o campo Dia Oportunidade
+    e conta ENTRADA no período, não o que está aberto agora. São conceitos
+    diferentes e misturá-los já gerou confusão."""
+    with conn.cursor() as cur:
+        cur.execute(f"""
+            SELECT COALESCE(substring(produto FROM 'B[1-5]'), 'outros') AS b,
+                   count(*),
+                   COALESCE(sum(COALESCE(valor_custom, valor)), 0),
+                   percentile_cont(0.5) WITHIN GROUP (
+                       ORDER BY EXTRACT(day FROM now() - oport_time)),
+                   count(*) FILTER (WHERE oport_time < now() - interval '30 days')
+              FROM mkt_deals_attribution
+             WHERE status='open' AND stage_id IN {_ST_PIPE_ABERTO}
+             GROUP BY 1""")  # noqa: S608 — tupla de inteiros literais, sem entrada externa
+        linhas = {}
+        for b, n, v, idade, velhos in cur.fetchall():
+            linhas[b] = {"bundle": b, "deals": int(n), "valor": _f(v),
+                         "idade_mediana_dias": (round(float(idade)) if idade is not None else None),
+                         "parados_30d": int(velhos)}
+    ordem = ["B1", "B2", "B3", "B4", "B5", "outros"]
+    out = [linhas.get(b, {"bundle": b, "deals": 0, "valor": 0.0,
+                          "idade_mediana_dias": None, "parados_30d": 0})
+           for b in ordem if b in linhas or b != "outros"]
+    total = {"deals": sum(x["deals"] for x in out),
+             "valor": sum(x["valor"] for x in out),
+             "parados_30d": sum(x["parados_30d"] for x in out)}
+    return {"por_bundle": out, "total": total,
+            "nota": ("deals ABERTOS agora nas etapas de reunião/reagendamento/negociação — "
+                     "é o pipe na mão dos closers, não as Oportunidades que ENTRARAM no "
+                     "período (conceitos diferentes)")}
+
+
 def vd_funil_dados(conn: Any, ini: dt.date, fim: dt.date) -> dict:
     from ..marketing.ui import _funil_oficial
     from . import especialista as ESP
@@ -446,6 +493,8 @@ def vd_funil_dados(conn: Any, ini: dt.date, fim: dt.date) -> dict:
                         "bookings": w,
                         "conv_pct": round(w / o * 100, 1) if o else None}
                        for bn, o, w in bdados],
+        # o que está ABERTO agora (≠ o que entrou no período, acima)
+        "pipe_aberto": pipe_aberto_por_bundle(conn),
         "origem_x_plano": {"planos": planos_cols, "linhas": linhas_ox},
         "tendencia": [{"mes": m, "oportunidades": o, "bookings": w,
                        "conv_pct": round(w / o * 100, 1) if o else None,
@@ -935,10 +984,10 @@ def vd_forecast_dados(conn: Any, mes: dt.date) -> dict:
                          FROM mkt_deals_attribution
                         WHERE status='won' AND won_time >= %s AND won_time < %s GROUP BY 1""", (a, b))
         feito = {p_: (int(n), float(v)) for p_, n, v in cur.fetchall()}
-        cur.execute("""SELECT COALESCE(substring(produto FROM 'B[1-5]'), 'outros'), count(*)
-                         FROM mkt_deals_attribution WHERE status='open' AND stage_id IN (6, 5, 7)
-                        GROUP BY 1""")
-        pipe = {k: int(v) for k, v in cur.fetchall()}
+    # régua ÚNICA do pipe aberto (27/07): a mesma função que a aba Funil usa —
+    # antes esta consulta vivia solta aqui e a outra tela reimplementaria
+    pipe = {x["bundle"]: x["deals"] for x in pipe_aberto_por_bundle(conn)["por_bundle"]}
+    with conn.cursor() as cur:
         cur.execute("SELECT count(*) FROM mkt_deals_attribution WHERE oport_time >= %s", (a90,))
         oport90 = cur.fetchone()[0]
         cur.execute("SELECT count(*) FROM mkt_deals_attribution WHERE status='won' AND won_time >= %s", (a90,))

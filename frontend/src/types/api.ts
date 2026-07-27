@@ -219,6 +219,13 @@ export interface VendasFunilPayload {
   };
   por_bundle: Array<{ bundle: string; oportunidades: number; mix_pct: number;
     bookings: number; conv_pct: number | null }>;
+  // pipe ABERTO agora (≠ por_bundle, que é o que ENTROU no período)
+  pipe_aberto?: {
+    por_bundle: Array<{ bundle: string; deals: number; valor: number;
+      idade_mediana_dias: number | null; parados_30d: number }>;
+    total: { deals: number; valor: number; parados_30d: number };
+    nota: string;
+  };
   origem_x_plano: {
     planos: string[];
     linhas: Array<{ origem: string; por_plano: Record<string, number>; total: number;

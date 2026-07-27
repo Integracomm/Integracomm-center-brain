@@ -74,7 +74,7 @@ export function VendasFunilPage() {
           <div className="grid gap-6 xl:grid-cols-2">
             <SectionCard hint={<Hint area="vendas/funil" titulo="Oportunidades por bundle" />}
               title="Oportunidades por bundle"
-              subtitle="oportunidades novas e contratos fechados no período, por plano — planos antigos/exceções pelo nome">
+              subtitle="o que ENTROU no período: oportunidades novas e contratos fechados, por plano — para o que está aberto AGORA, veja o card ao lado">
               <div className="overflow-x-auto">
                 <Table>
                   <TableHeader>
@@ -100,6 +100,50 @@ export function VendasFunilPage() {
                 </Table>
               </div>
             </SectionCard>
+
+            {/* PIPE ABERTO (27/07): o Otávio procurou "quantas oportunidades
+                estão em aberto por bundle" e não achou — o número existia só
+                como a coluna "Pipeline" da tabela de metas, sem valor nem
+                idade. Fica ao LADO do card de entradas justamente porque são
+                conceitos diferentes e confundi-los já custou leitura errada. */}
+            {d.pipe_aberto && (
+              <SectionCard title="Pipe aberto por bundle · hoje"
+                subtitle={`${d.pipe_aberto.total.deals} deals abertos · ${formatBRL(d.pipe_aberto.total.valor)} — o que está na mão dos closers agora`}>
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className={thCls}>Bundle</TableHead>
+                        <TableHead className={`${thCls} text-right`}>Abertos</TableHead>
+                        <TableHead className={`${thCls} text-right`}>Valor</TableHead>
+                        <TableHead className={`${thCls} text-right`}>Idade mediana</TableHead>
+                        <TableHead className={`${thCls} text-right`}>Parados +30d</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {d.pipe_aberto.por_bundle.map((b) => (
+                        <TableRow key={b.bundle}>
+                          <TableCell className="font-medium">{b.bundle}</TableCell>
+                          <TableCell className={numCls}>{b.deals}</TableCell>
+                          <TableCell className={numCls}>{formatBRL(b.valor)}</TableCell>
+                          <TableCell className={numCls}>
+                            {b.idade_mediana_dias != null ? `${b.idade_mediana_dias} d` : "—"}
+                          </TableCell>
+                          <TableCell className={`${numCls} ${b.parados_30d ? "font-semibold text-warning" : ""}`}>
+                            {b.parados_30d || "—"}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  {d.pipe_aberto.nota}. Idade = mediana de dias desde a entrada em oportunidade
+                  (mediana, não média: alguns poucos deals muito antigos distorcem a média).
+                  "Parados +30d" é a fila que merece decisão — retomar ou dar como perdido.
+                </p>
+              </SectionCard>
+            )}
 
             <SectionCard hint={<Hint area="vendas/funil" titulo="Tendência Oportunidade → Booking" />}
               title="Tendência Oportunidade → Booking"

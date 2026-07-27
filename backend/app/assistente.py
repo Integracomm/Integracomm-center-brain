@@ -300,8 +300,10 @@ _DESCRICOES = {
         "CAC e CAC ajustado por retenção, safras em maturação.",
     "prevendas": "Pré-vendas: funil de qualificação, speed-to-lead, origens, "
         "conversão por dia/tipo de contato.",
-    "funil_vendas": "Vendas: funil de fechamento, bookings por plano, ciclo, "
-        "deals empacados no período.",
+    "funil_vendas": "Vendas: funil de fechamento, bookings por plano, ciclo e o "
+        "PIPE ABERTO por bundle (deals abertos hoje, valor, idade mediana e "
+        "parados há +30d). Atenção: 'pipe aberto' = o que está aberto AGORA; "
+        "'oportunidades' = o que ENTROU no período — conceitos diferentes.",
     "winloss": "Win/Loss: motivos de perda por frequência e R$, cruzamentos por "
         "origem e closer.",
     "ponte_pv_vendas": "Ponte Pré-vendas→Vendas: qualificação × fechamento, SLA "
