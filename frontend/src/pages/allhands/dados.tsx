@@ -176,11 +176,7 @@ export function AllHandsDadosPage() {
               fonte (27/07) — subtarefas "Reunião GC" e o campo `satisfação`. */}
           {d.assessoria.reunioes && (
             <SectionCard title="Assessoria · reuniões por gerente de contas" headerClassName="min-h-[46px]"
-              subtitle={`${d.assessoria.reunioes.realizadas} realizadas de ${
-                d.assessoria.reunioes.agendadas} agendadas${
-                d.assessoria.reunioes.satisfacao_geral != null
-                  ? ` · satisfação média ${d.assessoria.reunioes.satisfacao_geral.toLocaleString("pt-BR")} de 5`
-                  : ""}`}>
+              subtitle={`quem conduziu as reuniões de ${d.mes_label} e como o cliente avaliou`}>
               <BarListH
                 data={d.assessoria.reunioes.por_gc.map((g) => ({
                   label: g.gc, value: g.reunioes, satisfacao: g.satisfacao, n: g.com_nota,
@@ -191,6 +187,22 @@ export function AllHandsDadosPage() {
                   `${v}${it.satisfacao != null
                     ? ` · ★ ${(it.satisfacao as number).toLocaleString("pt-BR")} (${it.n})`
                     : ""}`} />
+              {/* TOTAL DA EMPRESA (Otávio 27/07): as barras por GC não somam de
+                  cabeça — o consolidado é o número que abre a conversa no All
+                  Hands. Vem do backend, não de soma no frontend (uma reunião com
+                  2 responsáveis conta para os dois GCs, mas UMA vez no total). */}
+              <div className="mt-3 border-t border-border pt-1">
+                <Linha rot="Integracomm · total do mês"
+                  val={`${formatNumber(d.assessoria.reunioes.realizadas)} reunião(ões)${
+                    d.assessoria.reunioes.satisfacao_geral != null
+                      ? ` · ★ ${d.assessoria.reunioes.satisfacao_geral.toLocaleString("pt-BR")}`
+                      : ""}`}
+                  sub={`${formatNumber(d.assessoria.reunioes.agendadas)} agendadas no total${
+                    d.assessoria.reunioes.satisfacao_geral != null
+                      ? ` · satisfação média de 1 a 5, sobre ${d.assessoria.reunioes.com_nota} avaliada(s)`
+                      : " · nenhuma avaliada"}`}
+                  bold />
+              </div>
               {/* honestidade sobre a base: a nota cobre ~40% das reuniões e
                   satura em 5 — serve de cobertura/exceção, não de variação */}
               <p className="mt-2 text-xs text-muted-foreground">
@@ -199,6 +211,16 @@ export function AllHandsDadosPage() {
                 {d.assessoria.reunioes.agendadas} reuniões do mês foram avaliadas — a média vem dessa
                 amostra. Reagendadas, canceladas e "não compareceu" contam como agendadas, não como
                 realizadas.
+                {d.assessoria.reunioes.por_gc.reduce((s, g) => s + g.reunioes, 0) >
+                  d.assessoria.reunioes.realizadas && (
+                  <>
+                    {" "}As barras somam mais que o total porque{" "}
+                    {d.assessoria.reunioes.por_gc.reduce((s, g) => s + g.reunioes, 0) -
+                      d.assessoria.reunioes.realizadas}{" "}
+                    reunião(ões) teve mais de um gerente: aparece para cada um, mas conta uma
+                    vez só no total da empresa.
+                  </>
+                )}
               </p>
             </SectionCard>
           )}
