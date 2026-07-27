@@ -1,4 +1,7 @@
-import { Bot, Check, Copy, CornerDownLeft, Download, Loader2, Sparkles, X } from "lucide-react";
+import {
+  Bot, Check, Copy, CornerDownLeft, Download, Loader2, MessageSquarePlus,
+  Printer, Sparkles, ThumbsDown, X,
+} from "lucide-react";
 import React, { useEffect, useRef, useState } from "react";
 import {
   Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle,
@@ -22,10 +25,33 @@ interface Status {
   restantes_hoje?: number;
 }
 
+interface Conversa { id: string; titulo: string; msgs: Msg[] }
+
+// Conversas ficam no navegador de QUEM perguntou (sessionStorage): nada vai
+// para o servidor, então a conversa de um gestor não aparece para outro.
+// sessionStorage e não localStorage: some ao fechar a aba — dado de negócio
+// não fica esquecido num computador compartilhado.
+const CHAVE = "assistente:conversas";
+
+function carrega(): Conversa[] {
+  try {
+    const raw = sessionStorage.getItem(CHAVE);
+    const v = raw ? JSON.parse(raw) : null;
+    return Array.isArray(v) && v.length ? v : [{ id: "1", titulo: "Nova conversa", msgs: [] }];
+  } catch {
+    return [{ id: "1", titulo: "Nova conversa", msgs: [] }];
+  }
+}
+
 export function AssistentePainel() {
   const [status, setStatus] = useState<Status | null>(null);
   const [aberto, setAberto] = useState(false);
-  const [msgs, setMsgs] = useState<Msg[]>([]);
+  const [conversas, setConversas] = useState<Conversa[]>(carrega);
+  const [atualId, setAtualId] = useState<string>(() => carrega()[0].id);
+  const msgs = conversas.find((c) => c.id === atualId)?.msgs ?? [];
+  const setMsgs = (fn: Msg[] | ((m: Msg[]) => Msg[])) =>
+    setConversas((cs) => cs.map((c) => c.id === atualId
+      ? { ...c, msgs: typeof fn === "function" ? fn(c.msgs) : fn } : c));
   const [rascunho, setRascunho] = useState("");
   const [gerando, setGerando] = useState(false);
   const [atividade, setAtividade] = useState<string | null>(null);
@@ -61,6 +87,62 @@ export function AssistentePainel() {
     fimRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [msgs, atividade]);
 
+  useEffect(() => {
+    try { sessionStorage.setItem(CHAVE, JSON.stringify(conversas)); } catch { /* cota cheia */ }
+  }, [conversas]);
+
+  function novaConversa() {
+    const id = String(Date.now());
+    setConversas((cs) => [...cs, { id, titulo: "Nova conversa", msgs: [] }]);
+    setAtualId(id);
+    setErro(null);
+  }
+
+  function fecharConversa(id: string) {
+    setConversas((cs) => {
+      const restantes = cs.filter((c) => c.id !== id);
+      const finais = restantes.length ? restantes : [{ id: "1", titulo: "Nova conversa", msgs: [] }];
+      if (id === atualId) setAtualId(finais[0].id);
+      return finais;
+    });
+  }
+
+  // PDF sem dependência nova: janela de impressão do navegador ("Salvar como
+  // PDF"). O mesmo caminho que a apresentação do All Hands já usa.
+  function imprimir(texto: string) {
+    const w = window.open("", "_blank", "width=820,height=900");
+    if (!w) return;
+    const esc = (s: string) => s.replace(/[&<>]/g, (c) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c] as string));
+    w.document.write(`<!doctype html><html lang=pt-br><head><meta charset=utf-8>
+<title>Assistente Integracomm — ${new Date().toLocaleDateString("pt-BR")}</title>
+<style>body{font:13px/1.6 system-ui,sans-serif;color:#111;max-width:760px;margin:28px auto;padding:0 20px}
+pre{white-space:pre-wrap;font:inherit}h1{font-size:17px}
+@media print{@page{margin:16mm}}</style></head><body>
+<h1>Assistente Integracomm</h1>
+<p style="color:#666;font-size:11px">Gerado por IA a partir dos dados do painel em
+${new Date().toLocaleString("pt-BR")} — confira números críticos na tela de origem.</p>
+<hr><pre>${esc(texto)}</pre></body></html>`);
+    w.document.close();
+    w.focus();
+    setTimeout(() => w.print(), 300);
+  }
+
+  async function enviarFeedback(m: Msg, pergunta: string) {
+    const comentario = window.prompt(
+      "O que faltou nesta resposta? (vai para o administrador virar melhoria — "
+      + "descreva o dado ou a análise que você precisava)");
+    if (comentario === null) return;
+    await fetch("/api/assistente/feedback", {
+      method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ util: false, categoria: "faltou_dado",
+        comentario, pergunta, ferramentas: m.consultas ?? [] }),
+    }).catch(() => null);
+    setErro(null);
+    alert("Registrado. Obrigado — isso vira melhoria no painel.");
+  }
+
   if (!status?.disponivel) return null;
 
   async function enviar(pergunta: string) {
@@ -71,6 +153,9 @@ export function AssistentePainel() {
     setGerando(true);
     const historico = [...msgs, { role: "user" as const, content: p }];
     setMsgs([...historico, { role: "assistant", content: "", consultas: [] }]);
+    // a 1ª pergunta nomeia a conversa (para achar entre várias)
+    setConversas((cs) => cs.map((c) => c.id === atualId && c.msgs.length === 0
+      ? { ...c, titulo: p.slice(0, 38) + (p.length > 38 ? "…" : "") } : c));
     try {
       const resp = await fetch("/api/assistente/chat", {
         method: "POST",
@@ -159,6 +244,30 @@ export function AssistentePainel() {
             </SheetDescription>
           </SheetHeader>
 
+          {/* conversas paralelas: assuntos distintos não se misturam no
+              histórico (cada uma tem o próprio contexto) */}
+          <div className="flex items-center gap-1 overflow-x-auto border-b border-border px-3 py-1.5">
+            {conversas.map((c) => (
+              <div key={c.id}
+                className={`group flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs ${
+                  c.id === atualId ? "bg-muted font-medium" : "text-muted-foreground hover:bg-muted/50"}`}>
+                <button onClick={() => setAtualId(c.id)} className="max-w-[150px] truncate">
+                  {c.titulo}
+                </button>
+                {conversas.length > 1 && (
+                  <button onClick={() => fecharConversa(c.id)} aria-label="Fechar conversa"
+                    className="opacity-0 transition-opacity group-hover:opacity-100">
+                    <X className="h-3 w-3" />
+                  </button>
+                )}
+              </div>
+            ))}
+            <button onClick={novaConversa} title="Nova conversa"
+              className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs text-primary hover:bg-primary/10">
+              <MessageSquarePlus className="h-3.5 w-3.5" /> nova
+            </button>
+          </div>
+
           <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
             {msgs.length === 0 && (
               <div className="space-y-2">
@@ -198,7 +307,17 @@ export function AssistentePainel() {
                         </button>
                         <button onClick={() => baixar(m.content)} title="Baixar como .md"
                           className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground">
-                          <Download className="h-3 w-3" /> baixar .md
+                          <Download className="h-3 w-3" /> .md
+                        </button>
+                        <button onClick={() => imprimir(m.content)} title="Imprimir ou salvar como PDF"
+                          className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground">
+                          <Printer className="h-3 w-3" /> PDF
+                        </button>
+                        <button
+                          onClick={() => enviarFeedback(m, msgs[i - 1]?.content ?? "")}
+                          title="Faltou algo nesta resposta? conte ao administrador"
+                          className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:text-warning">
+                          <ThumbsDown className="h-3 w-3" /> faltou algo
                         </button>
                       </div>
                     )}

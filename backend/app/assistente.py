@@ -32,7 +32,8 @@ from .config import get_settings
 router = APIRouter()
 
 _MODEL = "claude-sonnet-5"
-_MAX_RODADAS = 5          # teto de idas ao modelo por pergunta (laço caro)
+_MAX_RODADAS = 5          # teto de CONSULTAS por pergunta (laço caro)
+_MAX_CONTINUACOES = 3     # retomadas quando a resposta bate o teto de tamanho
 # 3000: um relatório executivo precisa caber INTEIRO — texto cortado no meio já
 # queimou a confiança uma vez (plano de ação 24/07, max_tokens curto demais)
 _MAX_TOKENS = 3000        # por rodada
@@ -453,6 +454,72 @@ def api_assistente_status(request: Request):
             "restantes_hoje": lim - usadas}
 
 
+_FEEDBACK_DDL = """CREATE TABLE IF NOT EXISTS assistente_feedback (
+    id         bigserial PRIMARY KEY,
+    at         timestamptz NOT NULL DEFAULT now(),
+    usuario    text NOT NULL,
+    util       boolean,
+    categoria  text,
+    comentario text,
+    pergunta   text,
+    ferramentas text
+)"""
+
+
+@router.post("/api/assistente/feedback")
+def api_assistente_feedback(request: Request, body: dict = Body(...)):
+    """O que o gestor procurou e NÃO achou — a única forma de a aplicação
+    aprender com o uso (27/07, pergunta do Otávio).
+
+    O modelo não aprende sozinho: ele não guarda nada entre conversas. O que
+    fecha esse ciclo é registrar o que faltou e transformar em ferramenta/tela
+    nova. Guardamos a PERGUNTA (o gestor a escreveu sabendo que vira melhoria)
+    — nunca a resposta nem o histórico."""
+    A = _deps()
+    user, _role = A._require_api(request)
+    util = body.get("util")
+    cat = str(body.get("categoria") or "")[:40]
+    com = str(body.get("comentario") or "")[:1000]
+    perg = str(body.get("pergunta") or "")[:1000]
+    ferr = ",".join(str(f)[:40] for f in (body.get("ferramentas") or [])[:10])
+    with A._conn() as c, c.cursor() as cur:
+        cur.execute(_FEEDBACK_DDL)
+        cur.execute("""INSERT INTO assistente_feedback
+                         (usuario, util, categoria, comentario, pergunta, ferramentas)
+                       VALUES (%s,%s,%s,%s,%s,%s)""",
+                    (user, bool(util) if util is not None else None, cat or None,
+                     com or None, perg or None, ferr or None))
+        c.commit()
+    return {"ok": True}
+
+
+@router.get("/api/assistente/aprendizado")
+def api_assistente_aprendizado(request: Request):
+    """O que o uso real mostrou faltar (admin) — fecha o ciclo da Fase 3."""
+    A = _deps()
+    _user, role = A._require_api(request)
+    if role != "admin":
+        return JSONResponse({"error": "visão do administrador"}, status_code=403)
+    with A._conn() as c, c.cursor() as cur:
+        cur.execute(_FEEDBACK_DDL)
+        cur.execute("""SELECT count(*) FILTER (WHERE util IS TRUE),
+                              count(*) FILTER (WHERE util IS FALSE)
+                         FROM assistente_feedback""")
+        uteis, inuteis = cur.fetchone()
+        cur.execute("""SELECT categoria, count(*) FROM assistente_feedback
+                        WHERE categoria IS NOT NULL GROUP BY 1 ORDER BY 2 DESC""")
+        por_categoria = [{"categoria": k, "n": n} for k, n in cur.fetchall()]
+        cur.execute("""SELECT usuario, categoria, comentario, pergunta,
+                              (at AT TIME ZONE 'America/Sao_Paulo')::date
+                         FROM assistente_feedback
+                        WHERE util IS FALSE OR comentario IS NOT NULL
+                        ORDER BY at DESC LIMIT 30""")
+        itens = [{"usuario": u, "categoria": k, "comentario": c_, "pergunta": p,
+                  "quando": str(d)} for u, k, c_, p, d in cur.fetchall()]
+    return {"uteis": int(uteis or 0), "inuteis": int(inuteis or 0),
+            "por_categoria": por_categoria, "itens": itens}
+
+
 @router.get("/api/assistente/uso")
 def api_assistente_uso(request: Request):
     """Uso do assistente no mês, POR USUÁRIO (admin) — item (f) do controle de
@@ -551,6 +618,7 @@ def api_assistente_chat(request: Request, body: dict = Body(...)):
         from .llm_budget import LlmBudgetExceeded, ensure_budget, record_usage
         custo_total = 0.0
         usadas_ferramentas: list[str] = []
+        continuacoes = 0
         try:
             with A._conn() as c:
                 ensure_budget(c)  # teto GLOBAL do admin — degradação clara
@@ -563,7 +631,11 @@ def api_assistente_chat(request: Request, body: dict = Body(...)):
 
             cli = anthropic.Anthropic(api_key=s.anthropic_api_key, max_retries=1, timeout=90.0)
             conversa = list(msgs)
-            for _rodada in range(_MAX_RODADAS):
+            # dois tetos INDEPENDENTES: consultas (custo) e continuações
+            # (tamanho). Continuar de onde parou não pode gastar a cota de
+            # consulta, senão um relatório longo deixaria de buscar dados.
+            consultas_feitas = 0
+            while consultas_feitas < _MAX_RODADAS:
                 with cli.messages.stream(
                     model=_MODEL, max_tokens=_MAX_TOKENS,
                     thinking={"type": "disabled"},
@@ -585,14 +657,28 @@ def api_assistente_chat(request: Request, body: dict = Body(...)):
 
                 pedidos = [b for b in fim.content if b.type == "tool_use"]
                 if not pedidos:
+                    # CONTINUAÇÃO AUTOMÁTICA (27/07). Antes a resposta parava no
+                    # teto de tokens e pedia ao usuário para continuar — o Otávio
+                    # levou um relatório PELA METADE para uma reunião de
+                    # faturamento. Relatório cortado não serve para nada; agora o
+                    # modelo é retomado de onde parou, sem o gestor pedir nada.
+                    if fim.stop_reason == "max_tokens" and continuacoes < _MAX_CONTINUACOES:
+                        continuacoes += 1
+                        conversa.append({"role": "assistant", "content": fim.content})
+                        conversa.append({"role": "user", "content":
+                                         "Continue exatamente de onde parou, sem repetir "
+                                         "o que já foi escrito e sem reintroduzir o texto."})
+                        continue
                     if fim.stop_reason == "max_tokens":
                         yield _sse({"tipo": "texto", "delta":
-                                    "\n\n_(resposta cortada no limite de tamanho — "
-                                    "peça a continuação ou um recorte menor)_"})
+                                    "\n\n_(o relatório ficou longo demais mesmo após "
+                                    f"{_MAX_CONTINUACOES} continuações — peça um recorte "
+                                    "menor, por área ou por período)_"})
                     break
-                if _rodada == _MAX_RODADAS - 1:
-                    # última rodada e o modelo ainda quer consultar: não paga a
-                    # consulta que ninguém vai ler — encerra com o aviso do teto
+                consultas_feitas += 1
+                if consultas_feitas >= _MAX_RODADAS:
+                    # o modelo ainda quer consultar, mas o teto chegou: não paga
+                    # a consulta que ninguém vai ler — encerra com o aviso
                     yield _sse({"tipo": "texto", "delta":
                                 "\n\n_(parei no teto de consultas desta pergunta — "
                                 "o que está acima usa os dados que consegui reunir)_"})

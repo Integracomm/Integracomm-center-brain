@@ -144,13 +144,35 @@ def test_system_prompt_carrega_as_regras_da_casa():
         assert trecho in s, f"system prompt perdeu: {trecho}"
 
 
-def test_ferramentas_sao_somente_leitura():
-    """Nenhum executor pode escrever: o módulo não toca INSERT/UPDATE/DELETE
-    nem dispara Slack — inspeção direta do fonte, exceto o audit_log do chat."""
+def test_assistente_nao_escreve_dado_de_negocio():
+    """O assistente é SOMENTE LEITURA sobre os dados da empresa.
+
+    Duas escritas são legítimas e ficam explicitamente permitidas:
+      - `audit_log`: registro de ACESSO (quem perguntou, quais ferramentas);
+      - `assistente_feedback`: o gestor dizendo o que faltou — é um ato DELE,
+        na própria tabela do assistente, e é o que fecha o ciclo de melhoria.
+    Qualquer outra escrita, ou qualquer disparo externo (Slack/e-mail/ClickUp),
+    é violação de escopo. A lista de permitidas é curta DE PROPÓSITO: crescer
+    aqui é decisão consciente, não descuido."""
     import inspect
+    import re as _re
     fonte = inspect.getsource(AS)
-    corpo_sem_audit = fonte.replace(
-        "INSERT INTO audit_log (actor, action, source, scope) ", "")
-    for proibido in ("INSERT INTO", "UPDATE ", "DELETE FROM", "send_text",
-                     "webhook", "httpx.post"):
-        assert proibido not in corpo_sem_audit, f"escrita proibida no assistente: {proibido}"
+
+    tabelas = set(_re.findall(r"INSERT INTO\s+(\w+)", fonte))
+    assert tabelas <= {"audit_log", "assistente_feedback"}, \
+        f"assistente escrevendo em tabela não autorizada: {tabelas}"
+
+    for proibido in ("UPDATE ", "DELETE FROM", "send_text", "send_admin_text",
+                     "webhook", "httpx.post", "httpx.put"):
+        assert proibido not in fonte, f"escrita/disparo proibido no assistente: {proibido}"
+
+
+def test_continuacao_automatica_tem_teto_e_e_independente_das_consultas():
+    """Relatório cortado no meio não serve para reunião (Otávio 27/07 levou um
+    pela metade). A retomada é automática, mas com teto — e não pode consumir a
+    cota de CONSULTAS, senão um texto longo deixaria de buscar dados."""
+    import inspect
+    fonte = inspect.getsource(AS.api_assistente_chat)
+    assert "_MAX_CONTINUACOES" in fonte
+    assert AS._MAX_CONTINUACOES >= 1
+    assert "consultas_feitas" in fonte, "contadores têm de ser separados"
