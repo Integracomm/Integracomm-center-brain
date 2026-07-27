@@ -35,7 +35,12 @@ if ! flock -n 9; then
 fi
 
 INICIO=$(date +%s)
-timeout -k 60 "$TETO" /usr/bin/docker compose -f "$COMPOSE" exec -T app sh /app/deploy/daily_run.sh
+# 27/07: `run --rm rodada` (container PRÓPRIO, perfil `batch`) no lugar de
+# `exec app`. A rodada deixa de dividir o cgroup do painel: ganha teto e swap
+# seus, e um estouro vira lentidão dela em vez de OOM do HOST — que em 27/07
+# matou o processo e levaria junto painel/Caddy/SSH se o kernel escolhesse
+# outra vítima. `--rm` garante que o container some ao terminar.
+timeout -k 60 "$TETO" /usr/bin/docker compose -f "$COMPOSE" run --rm -T rodada
 CODIGO=$?
 
 DUROU=$(( $(date +%s) - INICIO ))
@@ -60,6 +65,17 @@ if [ "$CODIGO" -eq 124 ] || [ "$CODIGO" -eq 137 ]; then
     # o padrão pega o script E qualquer etapa `python -m scripts.X` (hoje
     # run_portfolio, sync_cancelamentos, sync_marketing, check_nps_fill; amanhã
     # o que entrar). NÃO casa com o painel, que é `python -m uvicorn`.
+    # com container próprio, derrubar a rodada é parar O CONTAINER DELA — sem
+    # tocar no painel. O `docker top` no app fica como rede de segurança para
+    # execuções antigas (`exec app`) que ainda estejam vivas.
+    docker ps -q --filter "ancestor=integracomm-ia:latest" --filter "status=running" 2>/dev/null \
+        | while read -r cid; do
+            nome=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null)
+            case "$nome" in
+                *rodada*) echo "    parando container da rodada: $nome"
+                          docker stop -t 20 "$cid" >/dev/null 2>&1 ;;
+            esac
+        done
     alvos() {
         docker top deploy-app-1 -eo pid,args 2>/dev/null \
             | grep -E 'daily_run|python -m scripts\.' | awk '{print $1}'

@@ -491,11 +491,19 @@ def api_assistente_uso(request: Request):
                         WHERE feature='assistente:chat'
                           AND ts >= date_trunc('month', now())""")
         custo_mes, chamadas = cur.fetchone()
+    # memória do processo junto: o OOM do host (27/07) matou a rodada e nada na
+    # tela mostrava a pressão de RAM. Aqui fica visível sem abrir o servidor.
+    try:
+        from .sources.clickup_activities import memoria_caches
+        memoria = memoria_caches()
+    except Exception:  # noqa: BLE001
+        memoria = {}
     return {"mes": dt.date.today().strftime("%Y-%m"),
             "custo_mes_usd": round(float(custo_mes), 4),
             "chamadas_ao_modelo": int(chamadas),
             "limite_por_usuario_dia": _limite_dia(),
-            "por_usuario": por_usuario}
+            "por_usuario": por_usuario,
+            "memoria": memoria}
 
 
 def _sse(obj: dict) -> str:

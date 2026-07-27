@@ -72,6 +72,8 @@ interface UsoAssistente {
   limite_por_usuario_dia: number;
   por_usuario: Array<{ usuario: string; perguntas: number; custo_usd: number;
     ferramentas_mais_usadas: Array<[string, number]> }>;
+  memoria?: { rss_mb: number | null; teto_por_conta: number;
+    entradas_por_familia: Record<string, number> };
 }
 
 function UsoDoAssistente() {
@@ -86,6 +88,15 @@ function UsoDoAssistente() {
         <span className="font-display text-2xl font-bold tabular-nums">US$ {d.custo_mes_usd.toFixed(2)}</span>
         <span className="text-xs text-muted-foreground">{d.chamadas_ao_modelo} chamada(s) ao modelo</span>
       </div>
+      {d.memoria?.rss_mb != null && (
+        <p className="mt-2 border-t border-border pt-2 text-xs text-muted-foreground">
+          Memória do processo: <span className="tabular-nums font-medium">{d.memoria.rss_mb.toFixed(0)} MB</span>
+          {" · "}caches em RAM:{" "}
+          {Object.entries(d.memoria.entradas_por_familia).map(([f, n]) => `${f} ${n}`).join(" · ") || "vazios"}
+          {" · "}teto de {d.memoria.teto_por_conta} entradas por conta (o excedente vive no banco).
+          O host tem 1,9 GB e a rodada precisa de ~0,5 GB — este número é o que decide se ela cabe.
+        </p>
+      )}
       <div className="mt-3">
         {d.por_usuario.length === 0 ? (
           <p className="py-1 text-xs text-muted-foreground">nenhuma pergunta neste mês ainda</p>

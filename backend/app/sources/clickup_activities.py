@@ -56,6 +56,51 @@ _PERSIST_DDL = """CREATE TABLE IF NOT EXISTS clickup_cache (
 )"""
 _persist_refreshing: set[str] = set()
 
+# TETO DA CAMADA EM MEMÓRIA (27/07) — só para as chaves COM LASTRO NO RDS.
+# O host tem 1,9 GB e o app sozinho chegou a 1,34 GB; a rodada foi morta pelo
+# OOM do HOST (dmesg: global_oom). As entradas POR CONTA (`cu-bfs:` uma árvore
+# por cliente, `cu-coment:`) crescem o dia inteiro conforme relatórios são
+# gerados e nunca eram liberadas. Agora que elas vivem no RDS, largar da RAM
+# custa uma LEITURA DE BANCO — nunca uma chamada nova ao ClickUp.
+# ATENÇÃO: as LISTAS (`cu:<id>`) NÃO entram aqui de propósito — elas não têm
+# lastro, e despejá-las obrigaria a rebaixar ~12,7 mil tasks da API do ClickUp,
+# que é exatamente o que não pode acontecer (rate limit + 500 esporádicos).
+_MEM_MAX_POR_CONTA = 60
+_PREFIXOS_DESPEJAVEIS = ("cu-bfs:", "cu-coment:")
+
+
+def _limita_memoria() -> None:
+    """Mantém no máximo `_MEM_MAX_POR_CONTA` entradas por prefixo despejável,
+    descartando as mais ANTIGAS (o carimbo do cache é a idade da entrada)."""
+    for pref in _PREFIXOS_DESPEJAVEIS:
+        chaves = [(v[0], k) for k, v in _cache.items() if k.startswith(pref)]
+        if len(chaves) <= _MEM_MAX_POR_CONTA:
+            continue
+        chaves.sort()  # mais antigo primeiro
+        for _ts, k in chaves[:len(chaves) - _MEM_MAX_POR_CONTA]:
+            _cache.pop(k, None)
+
+
+def memoria_caches() -> dict:
+    """Diagnóstico honesto do que o processo guarda (usado no admin).
+    Sem medir, qualquer ajuste de memória é chute."""
+    fam: dict[str, int] = {}
+    for k in _cache:
+        fam[k.split(":")[0]] = fam.get(k.split(":")[0], 0) + 1
+    out = {"entradas_por_familia": dict(sorted(fam.items(), key=lambda x: -x[1])),
+           "teto_por_conta": _MEM_MAX_POR_CONTA}
+    try:  # RSS real do processo — o número que o OOM killer enxerga
+        import resource
+        out["rss_mb"] = round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 1)
+    except Exception:  # noqa: BLE001 — Windows não tem `resource`
+        try:
+            import os
+            import psutil  # type: ignore
+            out["rss_mb"] = round(psutil.Process(os.getpid()).memory_info().rss / 1e6, 1)
+        except Exception:  # noqa: BLE001
+            out["rss_mb"] = None
+    return out
+
 
 def _persist_conn():
     import psycopg
@@ -100,6 +145,7 @@ def _cached_persistente(key: str, fn, ttl: float = _LIST_TTL):
     if disco is not None:
         idade, valor = disco
         _cache[key] = (time.monotonic() - min(idade, ttl), valor)
+        _limita_memoria()
         if idade < ttl:
             return valor
         # velho: devolve na hora e renova em segundo plano (o gestor não espera)
@@ -121,6 +167,7 @@ def _cached_persistente(key: str, fn, ttl: float = _LIST_TTL):
     val = fn()
     _cache[key] = (time.monotonic(), val)
     _persist_write(key, val)
+    _limita_memoria()
     return val
 
 

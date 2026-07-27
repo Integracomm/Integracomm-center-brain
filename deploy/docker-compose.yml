@@ -22,6 +22,7 @@ services:
       retries: 20
 
   app:
+    image: integracomm-ia:latest
     build:
       context: ..
       dockerfile: deploy/Dockerfile
@@ -46,6 +47,37 @@ services:
     depends_on:
       db:
         condition: service_healthy
+
+  # RODADA DIÁRIA EM CONTAINER PRÓPRIO (27/07) ------------------------------
+  # Até aqui a rodada era `docker compose exec app …`: rodava DENTRO do
+  # container do painel, dividindo o mesmo cgroup. Em 27/07 o kernel do host
+  # matou o processo (dmesg: `Out of memory: Killed process (python)`,
+  # constraint=CONSTRAINT_NONE, **global_oom**) — o container não bateu no
+  # PRÓPRIO teto (por isso `memory.events oom_kill` seguia 0 e as checagens
+  # anteriores não acusavam nada); foi o HOST, com 1,9 GB, que acabou.
+  # Com cgroup próprio a rodada passa a ter teto E swap SEUS: o excedente vai
+  # para o swapfile (lentidão) em vez de sobrar para o kernel escolher uma
+  # vítima no host — que é como o painel, o Caddy e o SSH iam junto.
+  #
+  # `profiles` mantém este serviço FORA do `up -d`: ele NÃO sobe com os demais
+  # e não ocupa RAM parada. Sobe sob demanda e morre no fim:
+  #     docker compose -f deploy/docker-compose.yml run --rm rodada
+  # Mesma imagem do app (build único, `integracomm-ia:latest`).
+  rodada:
+    image: integracomm-ia:latest
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    profiles: ["batch"]
+    restart: "no"
+    env_file: ../.env
+    mem_limit: 700m
+    memswap_limit: 1600m
+    volumes:
+      - ../.env:/app/.env:ro
+      - ../data:/app/data
+      - ../logs:/app/logs
+    command: ["sh", "/app/deploy/daily_run.sh"]
 
   caddy:
     image: caddy:2
