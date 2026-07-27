@@ -83,22 +83,32 @@ def _limita_memoria() -> None:
 
 def memoria_caches() -> dict:
     """Diagnóstico honesto do que o processo guarda (usado no admin).
-    Sem medir, qualquer ajuste de memória é chute."""
+
+    Devolve RSS ATUAL e PICO, separados — a 1ª versão (27/07) usava só
+    `ru_maxrss`, que é o PICO desde o boot e NUNCA desce: era justamente o
+    número errado para acompanhar memória ao longo do dia (não mostraria o
+    efeito de nenhuma redução). O atual vem de `/proc/self/status`, que é
+    barato e sem dependência; no Windows não existe e o campo fica None."""
     fam: dict[str, int] = {}
     for k in _cache:
         fam[k.split(":")[0]] = fam.get(k.split(":")[0], 0) + 1
-    out = {"entradas_por_familia": dict(sorted(fam.items(), key=lambda x: -x[1])),
-           "teto_por_conta": _MEM_MAX_POR_CONTA}
-    try:  # RSS real do processo — o número que o OOM killer enxerga
+    out: dict[str, Any] = {
+        "entradas_por_familia": dict(sorted(fam.items(), key=lambda x: -x[1])),
+        "teto_por_conta": _MEM_MAX_POR_CONTA,
+        "rss_mb": None, "pico_mb": None}
+    try:  # ATUAL — é o que o host enxerga agora (Linux)
+        with open("/proc/self/status", encoding="utf-8") as fh:
+            for linha in fh:
+                if linha.startswith("VmRSS:"):
+                    out["rss_mb"] = round(int(linha.split()[1]) / 1024, 1)
+                    break
+    except OSError:  # Windows/local — sem /proc
+        pass
+    try:  # PICO desde o boot — o que explica um OOM já ocorrido
         import resource
-        out["rss_mb"] = round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 1)
-    except Exception:  # noqa: BLE001 — Windows não tem `resource`
-        try:
-            import os
-            import psutil  # type: ignore
-            out["rss_mb"] = round(psutil.Process(os.getpid()).memory_info().rss / 1e6, 1)
-        except Exception:  # noqa: BLE001
-            out["rss_mb"] = None
+        out["pico_mb"] = round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 1)
+    except Exception:  # noqa: BLE001
+        pass
     return out
 
 

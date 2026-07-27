@@ -72,13 +72,52 @@ interface UsoAssistente {
   limite_por_usuario_dia: number;
   por_usuario: Array<{ usuario: string; perguntas: number; custo_usd: number;
     ferramentas_mais_usadas: Array<[string, number]> }>;
-  memoria?: { rss_mb: number | null; teto_por_conta: number;
+  memoria?: { rss_mb: number | null; pico_mb: number | null; teto_por_conta: number;
     entradas_por_familia: Record<string, number> };
 }
 
-function UsoDoAssistente() {
-  const q = useApi<UsoAssistente>("/api/assistente/uso");
-  const d = q.data;
+// Memória do painel — card PRÓPRIO, ao lado da Saúde das integrações (27/07:
+// o Otávio procurou e não achou, porque estava enterrado no card do
+// assistente). É infraestrutura, não uso de IA. Existe porque a rodada diária
+// morreu 4 dias seguidos por OOM do HOST e nada na tela mostrava a pressão.
+const HOST_MB = 1907;      // Lightsail: 1,9 GB
+const RODADA_MB = 515;     // o que a rodada precisa (medido no kill de 27/07)
+
+function MemoriaDoPainel({ m }: { m: NonNullable<UsoAssistente["memoria"]> }) {
+  if (m.rss_mb == null) return null;
+  const usado = m.rss_mb;
+  const sobra = HOST_MB - usado;
+  const cabe = sobra >= RODADA_MB;
+  const pct = Math.min(100, (usado / HOST_MB) * 100);
+  const cor = cabe ? "bg-success" : sobra > RODADA_MB * 0.6 ? "bg-warning" : "bg-destructive";
+  return (
+    <SectionCard title="Memória do painel no servidor"
+      subtitle="o host tem 1,9 GB e a rodada diária precisa de ~0,5 GB — é este número que decide se ela cabe"
+      className="max-w-[560px]">
+      <div className="flex items-baseline justify-between">
+        <span className="font-display text-2xl font-bold tabular-nums">{usado.toFixed(0)} MB</span>
+        <span className="text-xs text-muted-foreground">
+          de {(HOST_MB / 1024).toFixed(1)} GB do host
+          {m.pico_mb != null && ` · pico ${m.pico_mb.toFixed(0)} MB`}
+        </span>
+      </div>
+      <div className="mt-2 h-2 overflow-hidden rounded bg-muted">
+        <div className={`h-full ${cor}`} style={{ width: `${pct}%` }} />
+      </div>
+      <p className={`mt-2 text-xs ${cabe ? "text-muted-foreground" : "text-warning"}`}>
+        {cabe
+          ? `Sobram ~${sobra.toFixed(0)} MB — a rodada cabe.`
+          : `Sobram só ~${sobra.toFixed(0)} MB: a rodada (~${RODADA_MB} MB) pode não caber. `
+            + "O envelope reinicia o painel às 06h justamente para liberar isso."}
+        {" "}Caches em RAM:{" "}
+        {Object.entries(m.entradas_por_familia).map(([f, n]) => `${f} ${n}`).join(" · ") || "vazios"}
+        {" · "}teto de {m.teto_por_conta} por conta (o excedente vive no banco, não some).
+      </p>
+    </SectionCard>
+  );
+}
+
+function UsoDoAssistente({ d }: { d: UsoAssistente | null }) {
   if (!d) return null;
   return (
     <SectionCard title="Assistente de IA — uso no mês"
@@ -88,15 +127,6 @@ function UsoDoAssistente() {
         <span className="font-display text-2xl font-bold tabular-nums">US$ {d.custo_mes_usd.toFixed(2)}</span>
         <span className="text-xs text-muted-foreground">{d.chamadas_ao_modelo} chamada(s) ao modelo</span>
       </div>
-      {d.memoria?.rss_mb != null && (
-        <p className="mt-2 border-t border-border pt-2 text-xs text-muted-foreground">
-          Memória do processo: <span className="tabular-nums font-medium">{d.memoria.rss_mb.toFixed(0)} MB</span>
-          {" · "}caches em RAM:{" "}
-          {Object.entries(d.memoria.entradas_por_familia).map(([f, n]) => `${f} ${n}`).join(" · ") || "vazios"}
-          {" · "}teto de {d.memoria.teto_por_conta} entradas por conta (o excedente vive no banco).
-          O host tem 1,9 GB e a rodada precisa de ~0,5 GB — este número é o que decide se ela cabe.
-        </p>
-      )}
       <div className="mt-3">
         {d.por_usuario.length === 0 ? (
           <p className="py-1 text-xs text-muted-foreground">nenhuma pergunta neste mês ainda</p>
@@ -470,6 +500,9 @@ function Contas({ d }: { d: Payload }) {
 
 export function AdminPage() {
   const q = useApi<Payload>("/api/admin/painel");
+  // uso do assistente + memória do painel vêm do mesmo endpoint: uma busca só,
+  // dois cards (custo por usuário e saúde de memória)
+  const uso = useApi<UsoAssistente>("/api/assistente/uso");
   const d = q.data;
   return (
     <div className="space-y-6">
@@ -488,9 +521,12 @@ export function AdminPage() {
       {d && (
         <>
           {d.llm && <MedidorIA llm={d.llm} />}
-          <UsoDoAssistente />
+          <UsoDoAssistente d={uso.data ?? null} />
           <Times d={d} recarrega={q.refetch} />
           <Integracoes d={d} />
+          {/* memória logo DEPOIS das integrações: as duas são saúde de
+              infraestrutura e é aqui que o admin vem procurar */}
+          {uso.data?.memoria && <MemoriaDoPainel m={uso.data.memoria} />}
           <Contas d={d} />
         </>
       )}
