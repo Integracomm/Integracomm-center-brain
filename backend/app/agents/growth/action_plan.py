@@ -34,6 +34,17 @@ Hierarquia das fontes (a mais recente manda): 1) atualizações dos gestores (Cl
 painel) — é o estado REAL do caso, escrito por quem falou com o cliente; 2) o que o cliente
 disse nas conversas (tom, temas, reclamações); 3) NPS; 4) números (faturamento, execução).
 
+DATAS: o dossiê começa com a data de HOJE. TODA data que você escrever (prazos, "até quando")
+tem de ser POSTERIOR a hoje — nunca use o mês de referência como se fosse o mês corrente; ele é
+o mês ANTERIOR, fechado para efeito de faturamento. Prazo no passado invalida o plano inteiro.
+
+NÃO SE CONTRADIGA COM O RELATÓRIO: o gestor lê seu texto ao lado do histórico completo de
+atividades da conta. Antes de afirmar que a conta está parada/abandonada/nunca começou, confira
+a linha ATIVIDADE DE ENTREGA — ela traz a última entrega e as janelas de 30/90 dias. Zero
+entregas no mês de referência com entregas recentes NÃO é abandono. O mesmo vale para a data da
+última atualização escrita pelo gestor: registro antigo significa que ninguém ESCREVEU, não que
+ninguém trabalhou; nesse caso trate como lacuna de registro e peça a atualização.
+
 Regras: use SOMENTE os dados do dossiê (não invente fatos, números, nomes nem falas); se
 faltar base para uma seção, diga o que precisa ser descoberto na reunião em vez de inventar;
 escreva em pt-BR, direto, como quem conhece a conta; formato markdown EXATO com estas seções:
@@ -57,12 +68,33 @@ cliente, com data, não como tarefa interna."""
 def _dossie(data: dict, updates: list[dict]) -> str:
     """Dossiê em texto (mesmo insumo p/ Claude e p/ o determinístico)."""
     h, s, f, a = data["header"], data["saude"], data["faturamento"], data["atividades"]
-    lines = [f"CLIENTE: {h['cliente']} | plano {h.get('plano') or '?'} | mês ref. {h['reference_month_label']}"]
+    # HOJE explícito (24/07): sem isto o modelo ancorava as datas no mês de
+    # REFERÊNCIA (que é o mês anterior) e devolvia plano com prazos JÁ VENCIDOS
+    # — "até 15/07" num relatório aberto em 24/07. A data do dia é dado, não
+    # conhecimento do modelo.
+    _hoje = dt.date.today()
+    _sem = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira",
+            "sexta-feira", "sábado", "domingo"][_hoje.weekday()]
+    lines = [f"HOJE: {_hoje.strftime('%d/%m/%Y')} ({_sem}). Todo prazo que você escrever "
+             f"tem de ser POSTERIOR a hoje — as 2 semanas vão até "
+             f"{(_hoje + dt.timedelta(days=14)).strftime('%d/%m/%Y')}.",
+             f"CLIENTE: {h['cliente']} | plano {h.get('plano') or '?'} | mês ref. {h['reference_month_label']} "
+             f"(fechamento de faturamento — é o mês ANTERIOR, não o mês corrente)"]
     if data.get("equipe_squad"):
         eq = data["equipe_squad"]
         lines.append("EQUIPE (squad %s): %s" % (eq["squad"], ", ".join(f"{m['funcao']}: {m['nome']}" for m in eq["membros"])))
     lines.append(f"SAÚDE: score {s['score'] if s['score'] is not None else 's/dados'}/100, faixa {s['faixa']}, "
                  f"estágio {s['estagio']}, trajetória {s['trajetoria']}; tom {s['tom']['rotulo']} ({s['tom']['detalhe']})")
+    # o que o cliente RECLAMOU, com as palavras dele (extraído pela análise de
+    # tom das conversas). Ficava gravado e não chegava aqui até 24/07 — é o
+    # insumo mais concreto de "o que irrita este cliente".
+    if s.get("temas_insatisfacao"):
+        lines.append("TEMAS DE INSATISFAÇÃO ditos pelo cliente nas conversas"
+                     + (f" (análise de {s['tom_analisado_em']})" if s.get("tom_analisado_em") else "")
+                     + ": " + "; ".join(s["temas_insatisfacao"]))
+    if s.get("iniciativa_cliente"):
+        lines.append(f"POSTURA DO CLIENTE: {s['iniciativa_cliente']} "
+                     "(quem puxa as demandas — 'cliente' = ele cobra, nós reagimos)")
     if s.get("motivos"):
         lines.append("MOTIVOS DO SCORE: " + " | ".join(s["motivos"]))
     if s.get("exec_score") is not None:
@@ -110,7 +142,39 @@ def _dossie(data: dict, updates: list[dict]) -> str:
         for o in esc["ocorrencias"]:
             lines.append(f"  [{o['data']} {o['autor']}] {o['trecho']}")
     # --- contexto de entrega: NÃO é o plano, serve só para citar se virar assunto ---
-    lines.append(f"ENTREGAS CONCLUÍDAS NO MÊS: {a['total']} (contexto — o gestor já conhece a fila)")
+    # ATIVIDADE: o contador do mês de referência sozinho MENTE sobre conta viva
+    # (caso WMA 24/07 — 0 no mês fechado, histórico cheio, e o plano concluiu
+    # "conta parada desde a largada"). Recência primeiro, mês de referência
+    # depois, e o total histórico para ancorar.
+    _ult = a.get("ultima_em")
+    _dias = None
+    if _ult:
+        try:
+            _dias = (dt.date.today() - dt.date.fromisoformat(_ult[:10])).days
+        except ValueError:
+            _dias = None
+    # DADO DEGRADADO: quando a API do ClickUp falha, o relatório cai no espelho
+    # da Operação, que pode devolver ZERO atividade para uma conta que trabalha
+    # normalmente. Sem este aviso o modelo lê o zero como abandono e escreve
+    # "a conta pode nunca ter começado" — foi o que aconteceu no WMA (24/07).
+    if a.get("aviso") or (a.get("source") and a["source"] != "clickup_api"):
+        lines.append(f"⚠ LEITURA DE ATIVIDADES DEGRADADA (fonte: {a.get('source')}"
+                     + (f"; {a['aviso']}" if a.get("aviso") else "")
+                     + "). Os contadores abaixo podem estar INCOMPLETOS: NÃO conclua que a conta "
+                       "parou nem que o time não entregou — trate como falha de leitura e diga ao "
+                       "gestor que o histórico precisa ser conferido no ClickUp.")
+    lines.append(
+        "ATIVIDADE DE ENTREGA (ClickUp): "
+        + (f"última entrega concluída em {_ult[:10]}"
+           + (f" ({_dias} dia(s) atrás)" if _dias is not None else "")
+           if _ult else "NENHUMA entrega concluída no histórico")
+        + f"; {a.get('ultimas_30d', 0)} nos últimos 30 dias, {a.get('ultimas_90d', 0)} nos últimos 90 dias, "
+          f"{a.get('total_hist', 0)} no histórico todo; {a['total']} no mês de referência "
+          f"({h['reference_month_label']}). ATENÇÃO: mês de referência com 0 NÃO significa conta "
+          "abandonada — olhe a recência antes de afirmar que a conta parou.")
+    if a.get("atrasadas", {}).get("tasks"):
+        lines.append(f"TAREFAS VENCIDAS EM ABERTO: {len(a['atrasadas']['tasks'])} "
+                     "(é a fila de cobrança — o cliente pode trazer isso à reunião)")
     px = (a.get("proximas") or {}).get("tasks") or []
     if px:
         lines.append("FILA DO CLICKUP (contexto; só citar se o cliente cobrou nominalmente): "
@@ -159,7 +223,10 @@ def _via_claude(dossie: str, cache_key: tuple[str, str] | None = None) -> str | 
             ensure_budget(bconn)
             cli = anthropic.Anthropic(api_key=s.anthropic_api_key, max_retries=0, timeout=30.0)
             msg = cli.messages.create(
-                model=_MODEL, max_tokens=1200,
+                # 1200 truncava o fim do texto — o Otávio recebeu planos com as
+                # últimas seções pela metade (24/07). São 6 seções + plano
+                # numerado; o alvo de ~450 palavras não cabia com folga.
+                model=_MODEL, max_tokens=2000,
                 thinking={"type": "disabled"},  # volume/custo; sem isso vem ThinkingBlock antes do texto
                 system=[{"type": "text", "text": _SYSTEM, "cache_control": {"type": "ephemeral"}}],
                 messages=[{"role": "user", "content": dossie}],
@@ -170,6 +237,11 @@ def _via_claude(dossie: str, cache_key: tuple[str, str] | None = None) -> str | 
             record_usage(bconn, "growth:plano_acao", _MODEL, tin, msg.usage.output_tokens,
                          cache_read=cr, cache_creation=cc)
             texto = next(b.text for b in msg.content if b.type == "text").strip()
+            # texto cortado no meio NÃO entra no cache de 20h — senão o gestor
+            # fica um dia inteiro com o plano pela metade (24/07).
+            if getattr(msg, "stop_reason", None) == "max_tokens":
+                return texto + "\n\n_(geração interrompida por limite de tamanho — "
+                "recarregue o relatório para uma versão completa)_"
             if cache_key and texto:
                 with bconn.cursor() as cur:
                     cur.execute("""INSERT INTO growth_plan_cache (account_id, ref_month, texto)

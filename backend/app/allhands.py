@@ -460,12 +460,26 @@ def api_allhands_dados(request: Request, mes: str = Query(None)):
     # velho e reconstrói em thread; só a 1ª chamada do mês constrói inline.
     import time as _t
     hit = _DADOS_CACHE.get(alvo.isoformat())
+    if hit is None:
+        # lastro no RDS: o cache de memória morre a cada deploy e a tela voltava
+        # a construir do zero (24/07 — o Otávio pegou lento outra vez logo após
+        # o deploy). Aqui a última versão boa volta na hora e a reconstrução
+        # acontece fora do caminho do usuário.
+        from .sources.clickup_activities import _persist_read
+        disco = _persist_read(f"allhands-dados:{alvo.isoformat()}")
+        if disco is not None:
+            idade, payload_velho = disco
+            hit = (_t.monotonic() - min(idade, _DADOS_TTL + 1), payload_velho)
+            _DADOS_CACHE[alvo.isoformat()] = hit
     if hit is not None:
         if _t.monotonic() - hit[0] > _DADOS_TTL and _DADOS_LOCK.acquire(blocking=False):
             def _rebuild(iso=alvo.isoformat(), d_alvo=alvo):
                 try:
                     with A._conn() as c2:
-                        _DADOS_CACHE[iso] = (_t.monotonic(), _monta_dados(c2, d_alvo))
+                        novo = _monta_dados(c2, d_alvo)
+                    _DADOS_CACHE[iso] = (_t.monotonic(), novo)
+                    from .sources.clickup_activities import _persist_write
+                    _persist_write(f"allhands-dados:{iso}", novo)
                 except Exception:  # noqa: BLE001 — segue o stale
                     pass
                 finally:
@@ -476,6 +490,8 @@ def api_allhands_dados(request: Request, mes: str = Query(None)):
     with A._conn() as c:
         payload = _monta_dados(c, alvo)
     _DADOS_CACHE[alvo.isoformat()] = (_t.monotonic(), payload)
+    from .sources.clickup_activities import _persist_write
+    _persist_write(f"allhands-dados:{alvo.isoformat()}", payload)
     return payload
 
 

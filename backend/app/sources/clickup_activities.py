@@ -42,11 +42,111 @@ def _cached(key: str, fn, ttl: float = _TTL):
     return val
 
 
+# --- cache PERSISTENTE (24/07) ------------------------------------------------
+# O cache acima vive só no processo: todo restart/deploy zera tudo e a próxima
+# geração de relatório volta a pagar a varredura inteira (medido: 57s numa
+# única conta). Como fizemos vários deploys num dia, na prática o gestor pagava
+# quase sempre o preço frio — foi o "os relatórios voltaram a demorar".
+# Aqui a mesma leitura fica no RDS e SOBREVIVE ao deploy, com serve-stale:
+# valor velho volta na hora e a renovação acontece fora do caminho do usuário.
+_PERSIST_DDL = """CREATE TABLE IF NOT EXISTS clickup_cache (
+    chave      TEXT PRIMARY KEY,
+    payload    JSONB NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)"""
+_persist_refreshing: set[str] = set()
+
+
+def _persist_conn():
+    import psycopg
+    return psycopg.connect(get_settings().app_database_url)
+
+
+def _persist_read(chave: str) -> tuple[float, Any] | None:
+    """(idade_em_segundos, valor) ou None."""
+    try:
+        with _persist_conn() as c, c.cursor() as cur:
+            cur.execute(_PERSIST_DDL)
+            cur.execute("SELECT payload, EXTRACT(EPOCH FROM (now() - updated_at)) "
+                        "FROM clickup_cache WHERE chave=%s", (chave,))
+            row = cur.fetchone()
+            return (float(row[1]), row[0]) if row else None
+    except Exception:  # noqa: BLE001 — cache indisponível nunca derruba a leitura
+        return None
+
+
+def _persist_write(chave: str, valor: Any) -> None:
+    try:
+        import json
+        with _persist_conn() as c, c.cursor() as cur:
+            cur.execute(_PERSIST_DDL)
+            cur.execute("""INSERT INTO clickup_cache (chave, payload, updated_at)
+                           VALUES (%s, %s, now())
+                           ON CONFLICT (chave) DO UPDATE
+                              SET payload = EXCLUDED.payload, updated_at = now()""",
+                        (chave, json.dumps(valor)))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _cached_persistente(key: str, fn, ttl: float = _LIST_TTL):
+    """Como `_cached`, mas com lastro no RDS e serve-stale.
+    ATENÇÃO: só para valores serializáveis em JSON (tupla volta como lista)."""
+    hit = _cache.get(key)
+    if hit and time.monotonic() - hit[0] < ttl:
+        return hit[1]
+
+    disco = _persist_read(key)
+    if disco is not None:
+        idade, valor = disco
+        _cache[key] = (time.monotonic() - min(idade, ttl), valor)
+        if idade < ttl:
+            return valor
+        # velho: devolve na hora e renova em segundo plano (o gestor não espera)
+        if key not in _persist_refreshing:
+            _persist_refreshing.add(key)
+
+            def renova():
+                try:
+                    novo = fn()
+                    _cache[key] = (time.monotonic(), novo)
+                    _persist_write(key, novo)
+                except Exception:  # noqa: BLE001
+                    pass
+                finally:
+                    _persist_refreshing.discard(key)
+            threading.Thread(target=renova, name=f"cu-refresh-{key[:24]}", daemon=True).start()
+        return valor
+
+    val = fn()
+    _cache[key] = (time.monotonic(), val)
+    _persist_write(key, val)
+    return val
+
+
 # --- caminho 1: API oficial do ClickUp --------------------------------------
+class _PaginaIndisponivel(RuntimeError):
+    """Uma página da lista não veio depois de todas as tentativas. Distinta de
+    'página vazia', que significa fim da lista."""
+
+
+# list_id -> nº de páginas que falharam no último download (0 = íntegro)
+_download_falhas: dict[str, int] = {}
+
+
 def _fetch_list_page(token: str, list_id: str, page: int) -> list[dict]:
-    """Uma página da lista; trata 429 com espera+retry. [] se a página é vazia."""
+    """Uma página da lista; trata 429 E 5xx com espera+retry. [] se a página é vazia.
+
+    O retry de 5xx entrou em 24/07: a lista de assessoria tem ~108 páginas e um
+    500 ESPORÁDICO do ClickUp (visto na página 21) estourava a exceção para
+    cima, jogando fora o download inteiro. O prewarm então recomeçava do zero a
+    cada 2 min e a lista NUNCA ficava quente — era a causa de fundo de "os
+    relatórios e o All Hands voltaram a demorar": sem lista em cache, cada
+    requisição do usuário tentava baixar tudo na hora.
+    """
     with httpx.Client(timeout=60.0) as cli:
-        for _ in range(6):
+        espera = 2.0
+        for tentativa in range(6):
             r = cli.get(f"{_CLICKUP_BASE}/list/{list_id}/task",
                         params={"page": page, "subtasks": "true",
                                 "include_closed": "true", "archived": "false"},
@@ -54,24 +154,50 @@ def _fetch_list_page(token: str, list_id: str, page: int) -> list[dict]:
             if r.status_code == 429:
                 time.sleep(float(r.headers.get("Retry-After") or 3))
                 continue
+            if r.status_code >= 500:
+                # transitório do lado do ClickUp — recuo exponencial e insiste
+                # nesta página (as anteriores já baixadas são preservadas)
+                time.sleep(espera)
+                espera = min(espera * 2, 30.0)
+                continue
             r.raise_for_status()
             return r.json().get("tasks", [])
-    return []
+    # NUNCA devolver [] aqui: o chamador lê página curta como FIM DA LISTA e
+    # truncaria a lista em silêncio — contas inteiras ficariam "sem atividade"
+    # (foi assim que o WMA apareceu com histórico zerado). Falha é falha.
+    raise _PaginaIndisponivel(f"lista {list_id} página {page}: 6 tentativas sem sucesso")
 
 
 def _download_list(token: str, list_id: str) -> list[dict]:
     """Baixa a lista inteira com páginas EM PARALELO (pool=8) por lotes até vir
-    página curta (fim) — ~3x mais rápido que serial."""
+    página curta (fim) — ~3x mais rápido que serial.
+
+    Uma página que FALHA (500 do ClickUp, mesmo após os retries) não encerra a
+    paginação — ela é contada como falha e o download segue. Encerrar ali
+    truncaria a lista sem ninguém perceber (24/07).
+    """
     out: list[dict] = []
+    falhas = 0
+
+    def pega(p: int) -> list[dict] | None:
+        try:
+            return _fetch_list_page(token, list_id, p)
+        except _PaginaIndisponivel:
+            return None  # falhou ≠ acabou
+
     with ThreadPoolExecutor(max_workers=8) as ex:
         page, done = 0, False
         while not done and page < 300:
             batch = list(range(page, page + 8))
-            for tasks in ex.map(lambda p: _fetch_list_page(token, list_id, p), batch):
+            for tasks in ex.map(pega, batch):
+                if tasks is None:
+                    falhas += 1
+                    continue
                 out.extend(tasks)
                 if len(tasks) < 100:  # página curta = última
                     done = True
             page += 8
+    _download_falhas[list_id] = falhas
     return out
 
 
@@ -97,6 +223,12 @@ def _refresh_list(token: str, list_id: str) -> None:
     """Baixa a lista SEM bloquear leitores e troca o valor do cache (+ reconstrói
     o índice derivado). Usado só pelo prewarm."""
     fresh = _download_list(token, list_id)
+    # download incompleto NÃO derruba uma lista boa que já esteja em cache:
+    # trocar o íntegro pelo parcial faria contas sumirem dos relatórios.
+    if _download_falhas.get(list_id) and _cache.get(f"cu:{list_id}"):
+        raise _PaginaIndisponivel(
+            f"lista {list_id}: {_download_falhas[list_id]} página(s) falharam — "
+            "mantido o cache anterior")
     _cache[f"cu:{list_id}"] = (time.monotonic(), fresh)
     _cache.pop(f"cu-idx:{list_id}", None)    # força reconstrução dos índices na próxima leitura
     _cache.pop(f"cu-roots:{list_id}", None)
@@ -133,14 +265,20 @@ def prewarm_clickup() -> None:
         if not (s.clickup_api_token and s.clickup_list_assessoria):
             return
         while True:
-            try:
-                for lst in _report_lists(s):
+            # cada lista se aquece por conta própria: antes, uma falha na
+            # primeira impedia a segunda de ser baixada e derrubava o ciclo
+            # inteiro por 2 min (24/07).
+            falhou = False
+            for lst in _report_lists(s):
+                try:
                     _refresh_list(s.clickup_api_token, lst)
+                except Exception:  # noqa: BLE001 — a próxima volta tenta de novo
+                    falhou = True
+            try:
                 _warm_aux()  # mirror de clientes, planilha mestre de NPS, squads
-            except Exception:  # noqa: BLE001 — best-effort; próxima volta tenta de novo
-                time.sleep(120)
-                continue
-            time.sleep(_LIST_TTL - 300)  # renova a cada ~25 min
+            except Exception:  # noqa: BLE001
+                falhou = True
+            time.sleep(120 if falhou else _LIST_TTL - 300)  # renova a cada ~25 min
     threading.Thread(target=loop, name="clickup-prewarm", daemon=True).start()
 
 
@@ -292,7 +430,10 @@ def _bfs_nodes(token: str, root_id: str, max_nodes: int = 200) -> list[tuple[str
                         visited.add(sid)
                         frontier.append(sid)
         return nodes
-    return _cached(f"cu-bfs:{root_id}", scan, ttl=_LIST_TTL)
+    # persistente: é a leitura mais cara do relatório (1 GET por nó sob rate
+    # limit) e a única que o prewarm não cobre — sem lastro em disco, todo
+    # deploy fazia o gestor pagar ~1min de novo.
+    return _cached_persistente(f"cu-bfs:{root_id}", scan, ttl=_LIST_TTL)
 
 
 def _bfs_completed(token: str, root_id: str, start: dt.datetime, end: dt.datetime,
@@ -623,7 +764,9 @@ def client_comments(account_name: str, limite: int = 8) -> list[dict]:
         return out
 
     try:
-        return _cached(f"cu-coment:{n}", build)[:limite]
+        # persistente: sobrevive ao deploy e, se estiver velho, devolve o que
+        # tem e renova em segundo plano — o gestor nunca espera por comentário.
+        return _cached_persistente(f"cu-coment:{n}", build, ttl=_TTL)[:limite]
     except Exception:  # noqa: BLE001
         return []
 

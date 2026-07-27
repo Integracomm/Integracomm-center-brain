@@ -228,7 +228,11 @@ def _account_row(conn: Any, account_id: str) -> dict | None:
 def _signals(conn: Any, account_id: str, start: dt.datetime, end: dt.datetime) -> dict:
     """Sinais p/ a seção de saúde: preferimos os capturados DENTRO do mês; se não
     houver (a série começou depois), caímos para o mais recente, sinalizando."""
-    keys = ("tom_negativo", "fala_em_cancelar", "critico_recente", "exec_score")
+    # `tom_claude` entrou em 24/07: a análise de tom já extraía os TEMAS DE
+    # INSATISFAÇÃO e a postura do cliente (iniciativa) e gravava tudo no
+    # value_text do último ponto — mas ninguém lia, então o dado de
+    # relacionamento mais concreto que temos nunca chegava ao plano de ação.
+    keys = ("tom_negativo", "fala_em_cancelar", "critico_recente", "exec_score", "tom_claude")
     out: dict[str, dict] = {}
     with conn.cursor() as cur:
         for key in keys:
@@ -249,6 +253,22 @@ def _signals(conn: Any, account_id: str, start: dt.datetime, end: dt.datetime) -
                             "text": row[1], "captured_at": row[2].date().isoformat(),
                             "in_month": in_month}
     return out
+
+
+def _tom_claude_extra(sig: dict) -> dict:
+    """Temas de insatisfação + postura do cliente, do JSON que a análise de tom
+    grava no último ponto da série (`tom_claude`). Silencioso quando não há."""
+    bruto = (sig.get("tom_claude") or {}).get("text")
+    if not bruto:
+        return {"temas_insatisfacao": [], "iniciativa_cliente": None, "tom_analisado_em": None}
+    try:
+        d = json.loads(bruto)
+    except (ValueError, TypeError):
+        return {"temas_insatisfacao": [], "iniciativa_cliente": None, "tom_analisado_em": None}
+    temas = [t for t in (d.get("temas") or []) if isinstance(t, str)][:8]
+    return {"temas_insatisfacao": temas,
+            "iniciativa_cliente": d.get("iniciativa"),
+            "tom_analisado_em": (sig.get("tom_claude") or {}).get("captured_at")}
 
 
 def _tone_label(sig: dict) -> tuple[str, str]:
@@ -409,6 +429,18 @@ def build_report(conn: Any, account_id: str, ref_month: str, generated_by: str |
     total_mes = sum(1 for t in atv["tasks"]
                     if start.date().isoformat() <= t["concluida_em"] < end.date().isoformat())
     atv["total_mes"] = total_mes  # régua mensal p/ observações/plano
+    # RECÊNCIA (24/07): o mês de referência é o ANTERIOR (fechamento de
+    # faturamento), então `total_mes` pode ser 0 numa conta que trabalhou a
+    # semana inteira. O plano de ação lia só esse contador e concluiu "conta
+    # parada desde a largada" num cliente com histórico cheio (caso WMA) —
+    # daqui em diante o dossiê recebe também a última entrega e as janelas
+    # móveis, que são o que diz se a conta está viva HOJE.
+    _hoje = dt.date.today()
+    _d30 = (_hoje - dt.timedelta(days=30)).isoformat()
+    _d90 = (_hoje - dt.timedelta(days=90)).isoformat()
+    atv["ultima_em"] = atv["tasks"][0]["concluida_em"] if atv["tasks"] else None
+    atv["ultimas_30d"] = sum(1 for t in atv["tasks"] if t["concluida_em"] >= _d30)
+    atv["ultimas_90d"] = sum(1 for t in atv["tasks"] if t["concluida_em"] >= _d90)
     grupos: dict[str, list] = {}
     for t in atv["tasks"]:
         chave = month_label(t["concluida_em"][:7])
@@ -448,6 +480,9 @@ def build_report(conn: Any, account_id: str, ref_month: str, generated_by: str |
         # venda') — sem ele, 'atrasada' sem tarefa vencida parecia inconsistente
         # (caso DNEZA 15/07)
         "exec_motivo": sig.get("exec_score", {}).get("text"),
+        # temas concretos de insatisfação ditos pelo cliente + postura dele
+        # (quem puxa as demandas) — insumo direto do plano de relacionamento
+        **_tom_claude_extra(sig),
         "sinais_do_mes": all(v.get("in_month") for v in sig.values()) if sig else False,
         "score_computado_em": (acc["computed_at"].date().isoformat() if acc.get("computed_at") else None),
     }
@@ -482,6 +517,8 @@ def build_report(conn: Any, account_id: str, ref_month: str, generated_by: str |
     data = {"header": header, "equipe_squad": equipe_squad, "faturamento": fat,
             "atividades": {"source": atv["source"], "aviso": atv["aviso"],
                            "total": total_mes, "total_hist": len(atv["tasks"]),
+                           "ultima_em": atv["ultima_em"], "ultimas_30d": atv["ultimas_30d"],
+                           "ultimas_90d": atv["ultimas_90d"],
                            "grupos": atv["grupos"],
                            "atrasadas": {"source": atrasadas["source"], "aviso": atrasadas["aviso"],
                                          "tasks": atrasadas["tasks"]},
