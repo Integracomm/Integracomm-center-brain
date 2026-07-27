@@ -16,7 +16,10 @@ param(
     # deploya MESMO com a rodada diaria em andamento (mata a pontuacao do dia).
     # So use quando a rodada estiver comprovadamente travada e voce quiser
     # substitui-la — ver o guarda no passo [2.5/4].
-    [switch]$MesmoComRodada
+    [switch]$MesmoComRodada,
+    # deploya SEM ter validado no painel local. Existe para emergencia (hotfix
+    # com o local fora do ar); o padrao e a regra da casa: local primeiro.
+    [switch]$SemValidacaoLocal
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
@@ -33,6 +36,59 @@ if ($dirty) {
     } else {
         $answer = Read-Host "Continuar mesmo assim? (s/N)"
         if ($answer -ne 's') { Write-Host "Cancelado."; exit 1 }
+    }
+}
+
+# =============================================================================
+# GUARDA DE ORDEM: LOCAL PRIMEIRO, ONLINE DEPOIS (regra do Otavio, 10/07)
+# -----------------------------------------------------------------------------
+# "O localhost deve sempre ser atualizado primeiro, e apenas depois de validacao
+# e que a aplicacao online deve ser alterada. Do contrario ficaria muito dificil
+# analisar se erros foram deixados de lado durante alguma atualizacao." (27/07)
+#
+# A regra existia desde 10/07 e mesmo assim foi violada 6x em 27/07: cada deploy
+# subiu direto e o painel local ficou para tras EM SILENCIO — o Otavio viu a
+# correcao de fuso valendo online e nao no local, e perdeu a chance de validar
+# antes. Depender da minha memoria nao funcionou; agora o script confere.
+#
+# Como se mede: o uvicorn local roda SEM --reload, entao ele so tem o codigo
+# novo se o processo tiver sido iniciado DEPOIS do ultimo commit que mexeu em
+# backend/ ou frontend/. Se for mais velho, o local esta defasado.
+# =============================================================================
+Write-Host "== [0/4] o painel LOCAL esta com este codigo? ==" -ForegroundColor Cyan
+$commitCodigo = git log -1 --format=%cI -- backend frontend
+$dtCommit = if ($commitCodigo) { [datetime]::Parse($commitCodigo) } else { $null }
+# O painel carimba o proprio boot em logs/painel_boot.txt (ver _prewarm em
+# api.py). NAO use Get-Process().StartTime: o painel roda como SYSTEM e um
+# PowerShell sem elevacao le vazio - o guarda acusaria "defasado" sempre.
+$bootFile = Join-Path $root "logs\painel_boot.txt"
+$dtBoot = $null
+if (Test-Path $bootFile) {
+    try { $dtBoot = [datetime]::Parse((Get-Content $bootFile -Raw).Trim()) } catch { $dtBoot = $null }
+}
+
+if (-not $dtBoot) {
+    Write-Host "   painel local nunca registrou boot (nao rodou desde esta melhoria?)" -ForegroundColor Yellow
+    $localOk = $false
+} else {
+    $localOk = ($dtCommit -ne $null -and $dtBoot -gt $dtCommit)
+    if ($localOk) {
+        Write-Host ("   OK - painel local subiu {0}, depois do ultimo commit de codigo" -f $dtBoot.ToLocalTime().ToString('dd/MM HH:mm')) -ForegroundColor Green
+    } else {
+        Write-Host ("   DEFASADO - painel local subiu {0}, ANTES do ultimo commit ({1})" -f $dtBoot.ToLocalTime().ToString('dd/MM HH:mm'), $dtCommit.ToLocalTime().ToString('dd/MM HH:mm')) -ForegroundColor Yellow
+    }
+}
+
+if (-not $localOk) {
+    Write-Host "   Regra da casa: validar no localhost:8000 ANTES de subir para os gestores." -ForegroundColor Yellow
+    Write-Host "   Reinicie o painel local (tarefa IntegracommIA-Painel) e valide; depois rode o deploy." -ForegroundColor Yellow
+    if ($SemValidacaoLocal) {
+        Write-Host "   (-SemValidacaoLocal: seguindo assim mesmo, sob sua responsabilidade)" -ForegroundColor Yellow
+    } elseif ($SemConfirmacao) {
+        throw "painel local defasado - deploy abortado. Valide local primeiro ou use -SemValidacaoLocal."
+    } else {
+        $r = Read-Host "   Subir para PRODUCAO sem ter validado no local? (s/N)"
+        if ($r -notmatch '^[sS]') { Write-Host "Cancelado - valide no local primeiro."; exit 1 }
     }
 }
 

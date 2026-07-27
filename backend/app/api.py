@@ -56,6 +56,21 @@ async def _sem_cache_no_conteudo(request: Request, call_next):
 def _prewarm() -> None:
     """Aquece o cache da lista do ClickUp em background já no boot — a 1ª
     geração de relatório não paga o download (~min) de ~10,8 mil tasks."""
+    # CARIMBO DE BOOT (27/07) — é o que o `deploy.ps1` lê para saber se o
+    # painel local já está com o código do commit atual (regra da casa: local
+    # primeiro, online depois). Medir pelo `Get-Process().StartTime` NÃO serve:
+    # o painel roda como SYSTEM (tarefa agendada) e um PowerShell sem elevação
+    # lê `StartTime` vazio — o guarda acusaria "defasado" sempre e viraria
+    # ruído que se aprende a ignorar. O processo carimbando a si mesmo não tem
+    # esse problema.
+    try:
+        from pathlib import Path as _P
+        _boot = _P(__file__).resolve().parents[2] / "logs" / "painel_boot.txt"
+        _boot.parent.mkdir(parents=True, exist_ok=True)
+        _boot.write_text(dt.datetime.now(dt.timezone.utc).isoformat(), encoding="utf-8")
+    except Exception:  # noqa: BLE001 — carimbo é diagnóstico, nunca bloqueia o boot
+        pass
+
     # INTERRUPTOR DE MEMÓRIA (27/07): PREWARM_CLICKUP=0 sobe o painel SEM
     # carregar as listas completas (~12,7 mil tasks) na RAM. O host tem 1,9 GB
     # e o uvicorn com tudo aquecido fica em ~1,34 GB — não sobra espaço para a
