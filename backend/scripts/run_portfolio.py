@@ -284,8 +284,6 @@ def main() -> None:
             # pode ter pausado por ineficiência do serviço)
             "is_paused": bool(_PAUSED.search(name)),
         })
-        if args.limit and len(sample) >= args.limit:
-            break
 
     # ORDEM POR DEFASAGEM (27/07): a conta com o score mais VELHO é lida
     # primeiro. Junto com o prazo de coleta, isso garante que, se sobrar tempo
@@ -293,9 +291,15 @@ def main() -> None:
     # quem ficou de fora hoje encabeça a fila amanhã. Sem isso, um prazo cortaria
     # SEMPRE o mesmo rabo da lista e essas contas nunca mais seriam pontuadas.
     sample = ordena_por_defasagem(sample)
+    # `--limit` corta DEPOIS da ordenação (27/07): assim ele significa "as N
+    # contas MAIS DEFASADAS", que é o que a 2ª varredura do dia precisa —
+    # antes cortava as N primeiras do universo bruto, contas quaisquer.
+    if args.limit:
+        sample = sample[:args.limit]
 
     print(f"Universo resolvido: {len(sample)} contas ativas-cliente"
-          f" ({'cache' if args.from_cache else 'AO VIVO'})")
+          f" ({'cache' if args.from_cache else 'AO VIVO'})"
+          + (f" — limitado às {args.limit} mais defasadas" if args.limit else ""))
     if args.dry_list:
         for s in sample[:60]:
             print(f"  {s['account_id']:<10} {s['name'][:60]}  mrr={s['recurring_revenue']}")

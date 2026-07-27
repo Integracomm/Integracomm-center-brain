@@ -31,6 +31,18 @@ fi
 
 echo "--- carteira: pontuação + Slack (etapa longa) ---"
 python -m scripts.run_portfolio --slack || echo "[ERRO] run_portfolio falhou (código $?) — seguindo para as demais etapas"
+
+# 2ª VARREDURA — só o que sobrou (Otávio 27/07: "não seria melhor já fazer uma
+# segunda varredura logo em seguida apenas dessas contas restantes?").
+# Na 1ª passada de hoje: 220 de 251 pontuadas, 28 cortadas pelo prazo e 2 com
+# falha de leitura. Deixar para amanhã significa o gestor decidir com score de
+# ontem numa conta que talvez seja justamente a que virou risco.
+# Não precisa de lista: `--limit` corta DEPOIS da ordenação por defasagem, então
+# "as 60 mais defasadas" JÁ SÃO as que ficaram de fora — as demais, recém
+# pontuadas, nem entram. Sem --slack: o relatório do dia já foi enviado.
+echo "--- carteira: 2ª varredura (só as contas que ficaram para trás) ---"
+python -m scripts.run_portfolio --limit 60 --prazo-min 45 \
+    || echo "[ERRO] 2ª varredura falhou (código $?) — as pendentes entram primeiro amanhã"
 # REDE DE SEGURANÇA DO SLACK (27/07). O `--slack` acima é a última linha do
 # run_portfolio: se ele morre no meio (teto de tempo, OOM, container recriado),
 # o relatório simplesmente não sai — foi o que aconteceu de 24 a 27/07, com o

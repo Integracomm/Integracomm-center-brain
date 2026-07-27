@@ -34,6 +34,18 @@ if ! flock -n 9; then
     exit 0
 fi
 
+# LIBERA A RAM ANTES DA RODADA (27/07) — a causa raiz das mortes.
+# O painel acumula cache do ClickUp ao longo do dia (chegou a 1,34 GB num host
+# de 1,9 GB) e a rodada precisa de ~515 MB: não cabia, e o kernel matava o
+# processo (global_oom). Reiniciar o container do app IMEDIATAMENTE antes
+# devolve a memória — às 06h ninguém está usando o painel, então o custo é
+# zero, e ele volta a encher sozinho conforme o dia. Sem isso, a rodada
+# dependeria de alguém lembrar de desligar o prewarm na véspera.
+echo "=== $(agora) liberando memória: reiniciando o painel antes da rodada ==="
+/usr/bin/docker compose -f "$COMPOSE" restart app >/dev/null 2>&1 \
+    || echo "    (aviso: restart do app falhou — seguindo assim mesmo)"
+sleep 20   # o app volta a atender antes de a rodada começar a consumir
+
 INICIO=$(date +%s)
 # 27/07: `run --rm rodada` (container PRÓPRIO, perfil `batch`) no lugar de
 # `exec app`. A rodada deixa de dividir o cgroup do painel: ganha teto e swap
