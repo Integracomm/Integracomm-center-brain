@@ -127,7 +127,8 @@ def test_cardapio_completo_e_coerente():
         "central_overview", "raiox_bundle", "growth_contas", "growth_alertas",
         "cancelamentos", "carga_squads", "marketing_canais", "marketing_funil",
         "ciclo_vida", "prevendas", "funil_vendas", "winloss", "ponte_pv_vendas",
-        "financeiro_meta", "receita_recorrente", "semana", "operacoes_iniciativas"}
+        "financeiro_meta", "receita_recorrente", "semana", "operacoes_iniciativas",
+        "churn_semana"}
     for t in AS._TOOLS_SCHEMA:
         assert t["description"], t["name"]
         assert t["input_schema"]["type"] == "object"

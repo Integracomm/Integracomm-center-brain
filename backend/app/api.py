@@ -957,7 +957,7 @@ def admin_panel(request: Request):
         acessos = _admin_acessos(c)
     for u in users:
         n, ult = acessos.get(u["email"], (0, None))
-        u["views"], u["last_seen"] = n, (ult.strftime("%d/%m/%Y às %H:%M") if ult else None)
+        u["views"], u["last_seen"] = n, (_fmt_hora_br(ult) if ult else None)
     return HTMLResponse(_render_hub(user, stats, users, None, page="admin", llm=llm,
                                     teams_html=teams, pedidos_senha=pedidos))
 
@@ -995,7 +995,7 @@ def admin_dados(conn, atual: str) -> dict:
             "status": u["status"], "is_admin": bool(u.get("is_admin")),
             "areas": list(u.get("areas") or []),
             "views": n,
-            "last_seen": ult.strftime("%d/%m/%Y às %H:%M") if ult else None,
+            "last_seen": _fmt_hora_br(ult) if ult else None,
             "eu": u["email"] == atual,
         })
     llm = month_summary(conn)
@@ -1015,7 +1015,7 @@ def admin_dados(conn, atual: str) -> dict:
             continue
         ts, quando, ha = r["ultima"], "—", ""
         if ts is not None:
-            quando = ts.strftime("%d/%m %H:%M") if hasattr(ts, "hour") else ts.strftime("%d/%m/%Y")
+            quando = _fmt_hora_br(ts, "%d/%m %H:%M")
             if r["h"] is not None:
                 ha = f"há {r['h'] / 24:.1f} d" if r["h"] >= 48 else f"há {r['h']:.0f} h"
         fontes.append({"fonte": r["fonte"], "status": r["status"],
@@ -1535,7 +1535,11 @@ def dashboard(request: Request, view: str = Query("contas")):
     if redir:
         return redir
     user, role = s
-    if view not in ("contas", "alertas", "playbooks", "relatorios", "cancelamentos", "carga"):
+    # `churn-semana` NASCEU no SPA (regra 24/07: tudo novo nasce no frontend
+    # novo) — não tem versão HTML; se cair aqui sem estar em SPA_GROWTH_VIEWS,
+    # vira "contas" e o gestor acha que o link quebrou.
+    if view not in ("contas", "alertas", "playbooks", "relatorios",
+                    "cancelamentos", "carga", "churn-semana"):
         view = "contas"
     # redesenho (migração rota a rota): view migrada+habilitada entrega o SPA
     from . import spa as _spa_mod
@@ -1753,6 +1757,26 @@ def _fmt_brl(v: float) -> str:
     return f"R$ {v:,.0f}".replace(",", ".")
 
 
+_BRT = dt.timezone(dt.timedelta(hours=-3))
+
+
+def _fmt_hora_br(ts: Any, fmt: str = "%d/%m/%Y às %H:%M") -> str:
+    """Instante para EXIBIÇÃO no fuso de Brasília.
+
+    O RDS entrega `timestamptz` na sessão em **UTC**, e `strftime` direto
+    formatava o horário CRU: o Otávio viu "último acesso hoje às 11:58" às
+    09:41 da manhã (27/07) — 3h no futuro. Vale para todo instante que aparece
+    na tela (último login, última sincronização das integrações); DATA pura
+    (sem hora) não sofre e usa `_fmt_date_br`."""
+    if ts is None:
+        return "—"
+    if not hasattr(ts, "hour"):          # date puro
+        return ts.strftime("%d/%m/%Y")
+    if ts.tzinfo is None:                # naive: veio como UTC do banco
+        ts = ts.replace(tzinfo=dt.timezone.utc)
+    return ts.astimezone(_BRT).strftime(fmt)
+
+
 def _fmt_date_br(v: Any) -> str:
     """Data para EXIBIÇÃO no padrão DD-MM-AAAA (decisão do Otávio, 2026-07-03).
     O dado interno (banco/JSON/API) permanece ISO — ordena e consulta certo."""
@@ -1941,7 +1965,7 @@ def _integracoes_html(rows: list[dict]) -> str:
         ts = r["ultima"]
         quando = "—"
         if ts is not None:
-            quando = ts.strftime("%d/%m %H:%M") if hasattr(ts, "hour") else ts.strftime("%d/%m/%Y")
+            quando = _fmt_hora_br(ts, "%d/%m %H:%M")
             if r["h"] is not None:
                 quando += f" <span style='color:var(--text-faint)'>(há {r['h'] / 24:.1f} d)</span>" if r["h"] >= 48 \
                     else f" <span style='color:var(--text-faint)'>(há {r['h']:.0f} h)</span>"
@@ -4564,6 +4588,103 @@ def bundle_conta(nome: str) -> tuple[str, str]:
     return "sem_tag", "sem tag"
 
 
+# --- RÉGUA ÚNICA DA TAXA DE CANCELAMENTO (27/07) ----------------------------
+# Pedido do Otávio: "nem para clientes ativos e nem para cancelados devemos
+# levar em conta clientes B1, e podemos contar novos e antigos separadamente e
+# juntos. Esses cálculos devem estar de acordo com TODAS as áreas".
+# B1-START é semestral pago à vista — não é recorrente e distorce a taxa nas
+# DUAS pontas. Antes cada tela fazia à sua maneira: o All Hands já tirava o B1,
+# mas a aba Cancelamentos só o excluía da linha GERAL e montava a base com
+# `substring(name FROM 'B[1-5]')` sobre TODAS as contas — o mesmo bug de regex
+# que os chips já tinham corrigido ([ADS-B4-S1] virava B4) e ainda contando
+# canceladas como base viva. Agora as duas leem daqui.
+_RE_B1 = re.compile(r"\bB1\b|START", re.I)
+# nome comercial do plano → bundle. É o MESMO mapa do `_canc_bundle` (régua
+# oficial das barras de vendas): a lista Clientes Ativos do ClickUp guarda
+# "Traction"/"Scale"/"Platinum"/"Elite", sem o código Bx — sem este mapa o All
+# Hands classificava TODOS os bundles novos como "antigo" (pego na validação
+# de 27/07, antes de ir para a tela).
+_PLANO_BUNDLE = (("START", "b1"), ("TRACTION", "novo"), ("SCALE", "novo"),
+                 ("PLATINUM", "novo"), ("ELITE", "novo"))
+
+
+def grupo_churn(nome_ou_plano: str) -> str:
+    """'novo' (B2-B5) | 'antigo' (planos em runoff) | 'b1' | 'sem_tag'.
+
+    Aceita o NOME da conta ("[ST-B1-S2] FULANO"), o CÓDIGO ("B3-SCALE") ou o
+    NOME COMERCIAL do plano ("Scale") — cada tela guarda a informação de um
+    jeito e a régua tem de valer para as três."""
+    grupo, rotulo = bundle_conta(nome_ou_plano)
+    if grupo == "novo":
+        return "b1" if _RE_B1.search(rotulo) else "novo"
+    if grupo == "antigo":
+        return "antigo"
+    t = (nome_ou_plano or "").upper()
+    if not t.strip():
+        return "sem_tag"
+    if _RE_B1.search(t):
+        return "b1"
+    if re.search(r"\bB[2-5]\b", t):
+        return "novo"
+    for chave, g in _PLANO_BUNDLE:
+        if chave in t:
+            return g
+    return "antigo"
+
+
+def taxa_churn(saidas: int, base: int) -> float | None:
+    """Taxa de cancelamento = saídas ÷ base ativa. None quando não há base."""
+    return (saidas / base) if base else None
+
+
+def grupo_churn_saida(r: dict) -> str:
+    """Grupo de UMA linha de cancelamento. Usa `_canc_bundle` (régua de 20/07:
+    o PLANO manda, nunca o squad — cliente ADS de squad B5-S3 não é churn de
+    B5); só cai no nome quando não há plano lançado."""
+    b = _canc_bundle(r)
+    if b == "B1":
+        return "b1"
+    if b:                       # B2..B5
+        return "novo"
+    plano = str(r.get("plano") or "").strip()
+    if plano:
+        return "b1" if _RE_B1.search(plano.upper()) else "antigo"
+    return grupo_churn(r.get("cliente") or "")
+
+
+def churn_por_grupo(base_por_nome: list[str], saidas: list) -> dict:
+    """Taxa de cancelamento em 3 recortes, com o B1 FORA de ambas as pontas:
+    `novos` (B2-B5), `antigos` (runoff) e `recorrentes` (os dois juntos).
+    `b1` sai à parte, contado mas nunca somado — é semestral, não recorrente.
+
+    `base_por_nome` = nomes/rótulos das contas ATIVAS. `saidas` = linhas de
+    cancelamento (dicts, classificadas pelo plano) OU nomes/rótulos (str).
+    Quem chama decide o período; classificação e fórmula moram aqui para as
+    telas nunca divergirem."""
+    def conta(itens: list) -> dict[str, int]:
+        out = {"novo": 0, "antigo": 0, "b1": 0, "sem_tag": 0}
+        for it in itens:
+            g = grupo_churn_saida(it) if isinstance(it, dict) else grupo_churn(it)
+            out[g] += 1
+        return out
+
+    b, s = conta(base_por_nome), conta(saidas)
+    rec_b, rec_s = b["novo"] + b["antigo"], s["novo"] + s["antigo"]
+    return {
+        "novos": {"base": b["novo"], "saidas": s["novo"],
+                  "taxa": taxa_churn(s["novo"], b["novo"])},
+        "antigos": {"base": b["antigo"], "saidas": s["antigo"],
+                    "taxa": taxa_churn(s["antigo"], b["antigo"])},
+        "recorrentes": {"base": rec_b, "saidas": rec_s,
+                        "taxa": taxa_churn(rec_s, rec_b)},
+        # informativo: B1 nunca entra nas taxas acima
+        "b1_fora": {"base": b["b1"], "saidas": s["b1"]},
+        "sem_tag": {"base": b["sem_tag"], "saidas": s["sem_tag"]},
+        "regua": ("B1/START fora das duas pontas (semestral à vista, não "
+                  "recorrente); 'recorrentes' = novos B2-B5 + antigos em runoff"),
+    }
+
+
 def _bundles_da_carteira(scores: list[dict]) -> dict:
     """Distribuição da carteira VIVA por bundle (pedido Otávio 24/07: 'quantos
     clientes temos de cada bundle, incluindo os antigos')."""
@@ -4630,7 +4751,8 @@ def _mrr_por_bundle(scores: list[dict]) -> dict[str, tuple[float, int]]:
 
 
 def _cancel_dados(rows: list[dict], f_ini: dt.date, f_fim: dt.date,
-                  base_bundle: dict, mrr_bundle: dict) -> dict:
+                  base_bundle: dict, mrr_bundle: dict,
+                  nomes_vivos: list[str] | None = None) -> dict:
     """Agregados da aba Cancelamentos como DADOS puros (JSON-able) — mesmas
     fórmulas da tela HTML (taxa = média do período ÷ base ATUAL; base de MRR
     estimada quando nem toda conta tem valor; B1 fora da taxa geral; aviso de
@@ -4706,6 +4828,21 @@ def _cancel_dados(rows: list[dict], f_ini: dt.date, f_fim: dt.date,
     rec_canc = [r for k, rs in canc_bund.items() if k != "B1" for r in rs]
     taxa_geral = _tx("GERAL (recorrentes, sem B1)", rec_base, rec_mrr, rec_canc)
 
+    # RECORTE NOVOS × ANTIGOS × JUNTOS (Otávio 27/07), pela régua única —
+    # B1 fora das DUAS pontas. Média mensal do período, como as demais taxas.
+    churn_grupos = None
+    if nomes_vivos is not None:
+        g = churn_por_grupo(nomes_vivos, canc)
+        for k in ("novos", "antigos", "recorrentes"):
+            saidas_mes = g[k]["saidas"] / n_meses
+            g[k]["saidas_por_mes"] = round(saidas_mes, 1)
+            g[k]["taxa_mensal_pct"] = (round(saidas_mes / g[k]["base"] * 100, 1)
+                                       if g[k]["base"] else None)
+            g[k]["aviso"] = ("base pequena — taxa pouco confiável"
+                             if g[k]["base"] and g[k]["base"] < 12 else None)
+        g["janela_meses"] = n_meses
+        churn_grupos = g
+
     from collections import Counter
     motivos = [{"motivo": m, "saidas": n} for m, n in
                Counter((r["motivo"] or "").strip()[:48] for r in canc if r["motivo"]).most_common(8)]
@@ -4731,6 +4868,7 @@ def _cancel_dados(rows: list[dict], f_ini: dt.date, f_fim: dt.date,
                  "tempo_casa_mediano": (_st.median(tempos) if tempos else None),
                  "tempo_casa_n": len(tempos)},
         "por_mes": por_mes, "taxa_bundle": taxa_bundle, "taxa_geral": taxa_geral,
+        "churn_grupos": churn_grupos,
         "motivos": motivos, "sem_motivo": sum(1 for r in canc if not (r["motivo"] or "").strip()),
         "casos_com_motivo": [{"mes": r["mes"].strftime("%m/%Y"), "cliente": r["cliente"],
                               "plano": r["plano"], "motivo": (r["motivo"] or "")[:160]}
@@ -4750,11 +4888,17 @@ def api_cancelamentos(request: Request, ini: str = Query(""), fim: str = Query("
     _require_api(request)
     with _conn() as c:
         rows = _cancel_rows(c)
-        with c.cursor() as cur:
-            cur.execute("""SELECT COALESCE(substring(name FROM 'B[1-5]'), 'outros'), count(*)
-                             FROM accounts GROUP BY 1""")
-            base_bundle = dict(cur.fetchall())
-        mrr_bundle = _mrr_por_bundle(_latest_scores(c))
+        # BASE = carteira VIVA, classificada pela MESMA régua dos chips
+        # (27/07). Antes: `substring(name FROM 'B[1-5]')` sobre TODAS as contas
+        # — [ADS-B4-S1] contava como B4 e as canceladas inflavam a base, então
+        # a taxa saía menor que a real nas duas pontas.
+        vivas, _fora = _sem_encerradas(_latest_scores(c))
+        base_bundle: dict[str, int] = {}
+        for s in vivas:
+            grupo, rot = bundle_conta(s["name"])
+            chave = rot if grupo == "novo" else "outros"
+            base_bundle[chave] = base_bundle.get(chave, 0) + 1
+        mrr_bundle = _mrr_por_bundle(vivas)
     if not rows:
         return JSONResponse({"error": "sem dados de cancelamento carregados"}, status_code=503)
     todos_meses = sorted({r["mes"] for r in rows})
@@ -4765,7 +4909,8 @@ def api_cancelamentos(request: Request, ini: str = Query(""), fim: str = Query("
         except ValueError:
             return padrao
     return _cancel_dados(rows, _mes(ini, todos_meses[0]), _mes(fim, todos_meses[-1]),
-                         base_bundle, mrr_bundle)
+                         base_bundle, mrr_bundle,
+                         nomes_vivos=[s["name"] for s in vivas])
 
 
 def _cancel_content(rows: list[dict], request: Request, base_bundle: dict | None = None,
@@ -5159,6 +5304,7 @@ from .raiox import router as _raiox_router  # noqa: E402
 from .sales.ui import router as _sales_router  # noqa: E402
 from .semana import router as _semana_router  # noqa: E402
 from .assistente import router as _assistente_router  # noqa: E402
+from .churn_semana import router as _churn_semana_router  # noqa: E402
 
 app.include_router(_report_router)
 app.include_router(_churn_router)
@@ -5170,6 +5316,7 @@ app.include_router(_allhands_router)
 app.include_router(_raiox_router)
 app.include_router(_semana_router)
 app.include_router(_assistente_router)
+app.include_router(_churn_semana_router)
 
 # frontend React (migração rota a rota — ver app/spa.py); registrado por
 # ÚLTIMO para nunca sombrear rotas existentes: só atende /app + SPA_ROUTES

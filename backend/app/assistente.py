@@ -148,6 +148,11 @@ def _t_receita(request: Request, _args: dict) -> Any:
 
 
 # --- Fase 2: cardápio completo ----------------------------------------------
+def _t_churn_semana(request: Request, args: dict) -> Any:
+    from .churn_semana import api_churn_semana
+    return _resultado(api_churn_semana(request, week=str(args.get("semana") or "")))
+
+
 def _t_carga_squads(request: Request, _args: dict) -> Any:
     A = _deps()
     return _resultado(A.api_growth_carga(request))
@@ -243,6 +248,11 @@ _FERRAMENTAS: dict[str, tuple[str, dict, Callable, Any]] = {
             "ini": {"type": "string", "description": "mês inicial YYYY-MM (opcional)"},
             "fim": {"type": "string", "description": "mês final YYYY-MM (opcional)"}}},
         _t_cancelamentos, "growth"),
+    "churn_semana": ("consultando os cancelamentos da semana…",
+        {"type": "object", "properties": {
+            "semana": {"type": "string", "description": "segunda-feira da semana "
+                       "YYYY-MM-DD (opcional; padrão = semana corrente)"}}},
+        _t_churn_semana, "growth"),
     "carga_squads": ("consultando a carga dos squads…",
         {"type": "object", "properties": {}}, _t_carga_squads, "growth"),
     "marketing_canais": ("consultando os canais de marketing…",
@@ -276,6 +286,9 @@ _DESCRICOES = {
     "growth_alertas": "Fila de alertas abertos por severidade (crítico/alto/atenção).",
     "cancelamentos": "Cancelamentos: taxa por bundle, evolução mensal, motivos, "
         "precoce vs tardio.",
+    "churn_semana": "Cancelamentos da SEMANA (guia da reunião semanal): quem saiu "
+        "na semana passada, taxa novos × antigos × juntos e a fila de ações da "
+        "semana corrente (alertas críticos, tratativas, risco sem alerta).",
     "carga_squads": "Análise dos squads: contas e carga por squad/responsável, "
         "MRR em risco, capacidade, novos × antigos.",
     "marketing_canais": "Ranking de canais de marketing: leads, CPL, CAC, "

@@ -5,6 +5,7 @@ import { BibliotecaPage } from "@/pages/biblioteca";
 import { GrowthContasPage } from "@/pages/growth/contas";
 import { GrowthAlertasPage } from "@/pages/growth/alertas";
 import { GrowthCancelamentosPage } from "@/pages/growth/cancelamentos";
+import { GrowthChurnSemanaPage } from "@/pages/growth/churn-semana";
 import { GrowthPlaybooksPage } from "@/pages/growth/playbooks";
 import { GrowthSquadsPage } from "@/pages/growth/squads";
 import { GrowthRelatoriosPage } from "@/pages/growth/relatorios";
@@ -48,8 +49,8 @@ import { useApi } from "@/hooks/use-api";
 // respeita as MESMAS URLs (favoritos/links continuam valendo). Views ainda
 // não migradas de /growth (carga, playbooks, relatorios) seguem no HTML:
 // o backend só entrega o SPA para as views listadas em spa.py.
-const SPA_GROWTH_VIEWS = ["contas", "alertas", "cancelamentos", "playbooks",
-  "relatorios", "carga"] as const;
+const SPA_GROWTH_VIEWS = ["contas", "alertas", "cancelamentos", "churn-semana",
+  "playbooks", "relatorios", "carga"] as const;
 
 // itens SEM o prefixo da área (Otávio 21/07: já estamos dentro dela) —
 // o cabeçalho do grupo diz onde o usuário está
@@ -61,6 +62,7 @@ const NAV: Array<ItemNav> = [
   { href: "/growth?view=contas", label: "Contas", grupo: "Growth / Assessoria" },
   { href: "/growth?view=alertas", label: "Alertas" },
   { href: "/growth?view=cancelamentos", label: "Cancelamentos" },
+  { href: "/growth?view=churn-semana", label: "Cancelamentos da semana" },
   { href: "/growth?view=carga", label: "Análise dos Squads" },
   { href: "/growth?view=playbooks", label: "Playbooks" },
   { href: "/growth?view=relatorios", label: "Relatórios" },
@@ -163,6 +165,7 @@ function GrowthRouter() {
   const view = params.get("view") ?? "contas";
   if (view === "alertas") return <GrowthAlertasPage />;
   if (view === "cancelamentos") return <GrowthCancelamentosPage />;
+  if (view === "churn-semana") return <GrowthChurnSemanaPage />;
   if (view === "carga") return <GrowthSquadsPage />;
   if (view === "playbooks") return <GrowthPlaybooksPage />;
   if (view === "relatorios") return <GrowthRelatoriosPage />;

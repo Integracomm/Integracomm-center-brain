@@ -214,9 +214,14 @@ def _dados_mes(conn, mes: dt.date) -> dict:
     # essa a diferença p/ os números dos decks antigos. Régua: cancelados
     # recorrentes ÷ base ativa recorrente. Junto vai a visão por FATURAMENTO
     # (MRR perdido dos recorrentes no mês).
+    # RÉGUA ÚNICA (27/07): a classificação novo/antigo/B1 vem de `api.grupo_churn`
+    # — a mesma que a aba Cancelamentos usa. Antes cada tela decidia sozinha o
+    # que era "recorrente" e as duas podiam divergir (Otávio: "esses cálculos
+    # devem estar de acordo com todas as áreas da aplicação").
+    _A = _deps()
+
     def _recorrente(plano: str) -> bool:
-        p = (plano or "").upper()
-        return "START" not in p and not p.startswith("B1")
+        return _A.grupo_churn(plano) in ("novo", "antigo")
 
     # base da TAXA = por CLIENTE (cada cliente 1×), não por serviço — a base
     # implícita nos decks antigos (saídas ÷ taxa) é menor que a soma das linhas
@@ -224,14 +229,18 @@ def _dados_mes(conn, mes: dt.date) -> dict:
     base_rec = sum(n for p, n in cli_por_plano.items() if _recorrente(p))
     saidas_rec = sum(n for p, n in saidas_plano if _recorrente(p))
     mrr_rec_perdido = sum(v for p, v in agr_mrr.items() if _recorrente(p))
-    taxa_mes = (saidas_rec / base_rec) if base_rec else None
+    taxa_mes = _A.taxa_churn(saidas_rec, base_rec)
+    # recorte novos × antigos × juntos, no MESMO mês do fechamento
+    churn_grupos = _A.churn_por_grupo(
+        [p for p, n in cli_por_plano.items() for _ in range(n)],
+        [p for p, n in saidas_plano for _ in range(n)])
 
     return {"funil": passou, "bookings": booked, "receita": receita,
             "vendas_plano": vendas_plano, "clientes_plano": clientes_plano,
             "base_ativa": base_ativa, "saidas_plano": saidas_plano,
             "saidas_total": saidas_total, "saidas_sem_plano": saidas_sem_plano,
             "base_rec": base_rec, "saidas_rec": saidas_rec,
-            "mrr_rec_perdido": mrr_rec_perdido,
+            "mrr_rec_perdido": mrr_rec_perdido, "churn_grupos": churn_grupos,
             "taxa_mes": taxa_mes, "meta_mes": meta_mes, "meta_prox": meta_prox,
             "churn_meta": churn_meta, "churn_serie": churn_serie}
 
