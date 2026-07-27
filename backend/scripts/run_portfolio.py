@@ -364,18 +364,15 @@ def main() -> None:
     for s in sorted(ev, key=lambda x: x.score)[:12]:
         print(f"  {s.score:5.1f} | {s.risk_band:8}| {s.stage.value:22}| {s.account_name[:44]}")
 
-    # --slack: envia o relatório do estado recém-persistido ao grupo dos gestores
+    # --slack: envia o relatório ao grupo dos gestores. Idempotente por dia e
+    # compartilhado com o backup das 10h15 (send_slack_report) — quem chega
+    # primeiro envia. Se a rodada trava/aborta e nunca chega aqui, o backup
+    # cobre; ver app.slack.enviar_relatorio_diario.
     if args.slack:
-        from app.api import _conn as _api_conn, _latest_scores, _open_alerts, _report_from, _report_text
-        from app.slack import send_text
+        from app.slack import enviar_relatorio_diario
         try:
-            with _api_conn() as c:
-                text = _report_text(_report_from(_latest_scores(c), _open_alerts(c)))
-            send_text(text)
-            with _api_conn() as c, c.cursor() as cur:
-                cur.execute("INSERT INTO audit_log (actor, action, scope) VALUES (%s,%s,%s)",
-                            ("script:run_portfolio", "report_slack", "slack:webhook"))
-            print("relatório enviado ao Slack ✓")
+            r = enviar_relatorio_diario(actor="script:run_portfolio")
+            print(f"[slack] {r}")
         except Exception as e:  # noqa: BLE001 — envio não pode derrubar a rodada
             print(f"[slack] falha no envio: {type(e).__name__}: {e}", file=sys.stderr)
 

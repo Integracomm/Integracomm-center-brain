@@ -1,8 +1,9 @@
-import { AlertTriangle, Presentation } from "lucide-react";
+import { AlertTriangle, Presentation, Users, ShoppingCart, TrendingDown, Megaphone } from "lucide-react";
 import { useState } from "react";
 import { useApi } from "@/hooks/use-api";
 import { LoadingSkeleton, ErrorState } from "@/components/states";
 import { SectionCard } from "@/components/blocks/section-card";
+import { KpiCard } from "@/components/kpi-card";
 import { BarListH } from "@/components/charts/bar-list-h";
 import { Funnel } from "@/components/charts/funnel";
 import {
@@ -91,23 +92,42 @@ export function AllHandsDadosPage() {
       </header>
 
       {q.loading && !d && (
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          <LoadingSkeleton rows={2} /><LoadingSkeleton rows={2} /><LoadingSkeleton rows={2} />
-        </div>
+        <>
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            <LoadingSkeleton rows={1} /><LoadingSkeleton rows={1} />
+            <LoadingSkeleton rows={1} /><LoadingSkeleton rows={1} />
+          </div>
+          <div className="grid gap-4 lg:grid-cols-2">
+            <LoadingSkeleton rows={3} /><LoadingSkeleton rows={3} />
+          </div>
+        </>
       )}
       {q.error && <ErrorState message={q.error} onRetry={q.refetch} />}
 
       {d && (
-        <div className="grid items-start gap-4 md:grid-cols-2 xl:grid-cols-3">
-          <SectionCard title="Marketing">
-            <Linha rot="Leads gerados" val={formatNumber(d.marketing.leads)} />
-            <Linha rot="Oportunidades geradas" val={formatNumber(d.marketing.oportunidades)}
-              sub="régua retroativa — o número se move enquanto a fila é qualificada" />
-            <Linha rot="Vendas" val={formatNumber(d.marketing.vendas)} />
-            {d.lacunas.marketing?.map((l) => <Lacuna key={l} txt={l} />)}
-          </SectionCard>
+        <>
+        {/* Faixa de KPIs: os 4 números que abrem a reunião. Antes cada um vivia
+            dentro de um card de área diferente e o olho tinha de caçá-los
+            (Otávio 27/07: "um monte de dados jogados na página"). */}
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <KpiCard icon={Megaphone} tone="primary" title="Leads gerados"
+            value={formatNumber(d.marketing.leads)}
+            subtitle={`${formatNumber(d.marketing.oportunidades)} oportunidades`}
+            caveat="Oportunidades seguem régua retroativa: o número se move enquanto a fila é qualificada." />
+          <KpiCard icon={ShoppingCart} tone="success" title="Vendas no mês"
+            value={formatNumber(d.vendas.total)} subtitle={formatBRL(d.vendas.receita)} />
+          <KpiCard icon={Users} tone="accent" title="Clientes ativos"
+            value={formatNumber(d.assessoria.total)}
+            subtitle={`as-of fim de ${d.mes_label}`} />
+          <KpiCard icon={TrendingDown} tone="destructive" title="Saídas no mês"
+            value={formatNumber(d.saidas.total)}
+            subtitle={d.saidas.taxa_recorrentes != null
+              ? `${(d.saidas.taxa_recorrentes * 100).toFixed(1)}% dos recorrentes`
+              : "taxa indisponível"} />
+        </div>
 
-          <SectionCard title="Pré-vendas"
+        <div className="grid items-start gap-4 lg:grid-cols-2">
+          <SectionCard title="Pré-vendas · funil do mês" headerClassName="min-h-[46px]"
             subtitle="mesma régua do funil oficial de Marketing — as duas áreas fecham com os mesmos números por definição">
             <Funnel etapas={[
               { key: "lead", label: "Leads", volume: d.marketing.leads, conversao_da_anterior_pct: null },
@@ -122,21 +142,26 @@ export function AllHandsDadosPage() {
             ]} />
           </SectionCard>
 
-          <SectionCard title="Vendas — bookings por plano">
+          <SectionCard title="Vendas · bookings por plano" headerClassName="min-h-[46px]"
+            subtitle={`${d.vendas.total} contrato(s) · ${formatBRL(d.vendas.receita)} no mês`}>
             <BarListH
               data={d.vendas.por_plano.map((v) => ({ label: v.plano, value: v.qtde, receita: v.receita }))}
               height={Math.max(120, d.vendas.por_plano.length * 44)} width={190}
               color="var(--chart-2)"
               valueLabel={(v, it) => `${v}${it.receita ? ` · ${formatBRL(it.receita as number)}` : ""}`} />
-            <Linha rot="Total" val={`${d.vendas.total} · ${formatBRL(d.vendas.receita)}`} bold />
+            {d.lacunas.marketing?.map((l) => <Lacuna key={l} txt={l} />)}
           </SectionCard>
+        </div>
 
-          <SectionCard title={`Assessoria — clientes ativos por plano (${formatNumber(d.assessoria.total)})`}>
+        <div className="grid items-start gap-4 lg:grid-cols-2">
+          {/* Estratégia NÃO tem card próprio: seu nº de clientes já é uma barra
+              deste gráfico (Otávio 27/07). A lacuna do faturamento vem junto. */}
+          <SectionCard title="Assessoria · clientes ativos por plano" headerClassName="min-h-[46px]"
+            subtitle={`${formatNumber(d.assessoria.total)} clientes as-of fim de ${d.mes_label} — inclui Estratégia`}>
             <BarListH
               data={d.assessoria.clientes_plano.map((c) => ({ label: c.plano, value: c.qtde }))}
               height={Math.max(140, d.assessoria.clientes_plano.length * 40)} width={150}
               color="var(--chart-1)" valueLabel={(v) => formatNumber(v)} />
-            <Linha rot="Total" val={formatNumber(d.assessoria.total)} bold />
             {d.assessoria.leitura_tardia && (
               <Lacuna txt="leitura tardia: a contagem retroativa SUBCONTA (cancelados desde o fechamento saem da lista Clientes Ativos) — o número oficial é o do deck gerado logo após o mês virar" />
             )}
@@ -154,15 +179,14 @@ export function AllHandsDadosPage() {
               </div>
             )}
             {d.lacunas.assessoria?.map((l) => <Lacuna key={l} txt={l} />)}
+            {d.lacunas.estrategia?.map((l) => <Lacuna key={l} txt={`Estratégia: ${l}`} />)}
           </SectionCard>
 
-          <SectionCard title="Estratégia">
-            <Linha rot="Clientes ativos" val={formatNumber(d.estrategia.clientes)}
-              sub="da lista Clientes Ativos do ClickUp (as-of fim do mês)" />
-            {d.lacunas.estrategia?.map((l) => <Lacuna key={l} txt={l} />)}
-          </SectionCard>
-
-          <SectionCard title="Saídas do mês">
+          <SectionCard title="Saídas do mês" headerClassName="min-h-[46px]"
+            subtitle={`${formatNumber(d.saidas.total)} saída(s) · ${
+              d.saidas.taxa_recorrentes != null
+                ? `${(d.saidas.taxa_recorrentes * 100).toFixed(1)}% da base recorrente`
+                : "taxa indisponível"}`}>
             {d.saidas.por_plano.length > 0 && (
               <BarListH
                 data={d.saidas.por_plano.slice(0, 8).map((s) => ({ label: s.plano, value: s.qtde }))}
@@ -172,12 +196,12 @@ export function AllHandsDadosPage() {
             {d.saidas.sem_plano > 0 && (
               <Lacuna txt={`${d.saidas.sem_plano} saída(s) sem plano lançado na planilha`} />
             )}
-            <Linha rot="Total de saídas" val={formatNumber(d.saidas.total)} bold />
             <Linha rot="Taxa de cancelamento (recorrentes)"
               val={d.saidas.taxa_recorrentes != null ? `${(d.saidas.taxa_recorrentes * 100).toFixed(1)}%` : "—"}
               sub={`saídas recorrentes ${d.saidas.saidas_rec} ÷ base recorrente ${formatNumber(d.saidas.base_rec)} — B1/Start fora (semestral)`} />
           </SectionCard>
         </div>
+        </>
       )}
 
       {/* a apresentação virou o FECHO da página (Otávio 24/07: All Hands abre
