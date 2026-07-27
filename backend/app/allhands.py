@@ -488,7 +488,19 @@ def _reunioes_gc(alvo: dt.date) -> dict:
             "com_nota": tot["com_nota"]}
 
 
+# VERSÃO DO PAYLOAD — bump obrigatório sempre que o FORMATO de `_monta_dados`
+# mudar (campo novo, campo removido, renomeado). O cache persistente sobrevive
+# ao deploy, então sem isso a tela nova recebe o payload VELHO e o campo novo
+# simplesmente não aparece — foi o que aconteceu em 27/07 com as reuniões por
+# GC: o Otávio abriu, veio o payload antigo (ainda com `nps`) e o card não
+# existia. A versão entra na chave: formato novo = chave nova = nunca há
+# resposta com o formato errado.
+_DADOS_VERSAO = 2  # v2: `assessoria.nps` -> `assessoria.reunioes` (27/07)
 _DADOS_CACHE: dict = {}  # mes_iso -> (monotonic, payload)
+
+
+def _chave_dados(mes_iso: str) -> str:
+    return f"allhands-dados:v{_DADOS_VERSAO}:{mes_iso}"
 _DADOS_TTL = 300.0
 _DADOS_LOCK = __import__("threading").Lock()
 
@@ -517,7 +529,7 @@ def api_allhands_dados(request: Request, mes: str = Query(None)):
         # o deploy). Aqui a última versão boa volta na hora e a reconstrução
         # acontece fora do caminho do usuário.
         from .sources.clickup_activities import _persist_read
-        disco = _persist_read(f"allhands-dados:{alvo.isoformat()}")
+        disco = _persist_read(_chave_dados(alvo.isoformat()))
         if disco is not None:
             idade, payload_velho = disco
             hit = (_t.monotonic() - min(idade, _DADOS_TTL + 1), payload_velho)
@@ -530,7 +542,7 @@ def api_allhands_dados(request: Request, mes: str = Query(None)):
                         novo = _monta_dados(c2, d_alvo)
                     _DADOS_CACHE[iso] = (_t.monotonic(), novo)
                     from .sources.clickup_activities import _persist_write
-                    _persist_write(f"allhands-dados:{iso}", novo)
+                    _persist_write(_chave_dados(iso), novo)
                 except Exception:  # noqa: BLE001 — segue o stale
                     pass
                 finally:
@@ -542,7 +554,7 @@ def api_allhands_dados(request: Request, mes: str = Query(None)):
         payload = _monta_dados(c, alvo)
     _DADOS_CACHE[alvo.isoformat()] = (_t.monotonic(), payload)
     from .sources.clickup_activities import _persist_write
-    _persist_write(f"allhands-dados:{alvo.isoformat()}", payload)
+    _persist_write(_chave_dados(alvo.isoformat()), payload)
     return payload
 
 
