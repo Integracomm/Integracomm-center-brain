@@ -56,11 +56,22 @@ async def _sem_cache_no_conteudo(request: Request, call_next):
 def _prewarm() -> None:
     """Aquece o cache da lista do ClickUp em background já no boot — a 1ª
     geração de relatório não paga o download (~min) de ~10,8 mil tasks."""
-    try:
-        from .sources.clickup_activities import prewarm_clickup
-        prewarm_clickup()
-    except Exception:  # noqa: BLE001 — nunca bloquear o boot por causa disto
-        pass
+    # INTERRUPTOR DE MEMÓRIA (27/07): PREWARM_CLICKUP=0 sobe o painel SEM
+    # carregar as listas completas (~12,7 mil tasks) na RAM. O host tem 1,9 GB
+    # e o uvicorn com tudo aquecido fica em ~1,34 GB — não sobra espaço para a
+    # rodada, que é o que a estava matando (OOM do HOST). Desligado, as telas
+    # ficam mais lentas na 1ª abertura (o cache persistente no RDS cobre boa
+    # parte) mas a rodada CABE. Padrão = ligado; usar só em janela de rodada.
+    import os as _os
+    if _os.environ.get("PREWARM_CLICKUP", "1").strip() not in ("0", "false", "nao"):
+        try:
+            from .sources.clickup_activities import prewarm_clickup
+            prewarm_clickup()
+        except Exception:  # noqa: BLE001 — nunca bloquear o boot por causa disto
+            pass
+    else:
+        print("[prewarm] DESLIGADO por PREWARM_CLICKUP=0 — telas mais lentas, "
+              "memória livre para a rodada", flush=True)
     try:
         from .sentinel import start_sentinel
         start_sentinel(_conn)  # avisos imediatos de cancelamento (30 em 30 min)
