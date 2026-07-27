@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     # créditos de API, cada chamada falha e só adiciona latência ao relatório.
     # Ligar (GROWTH_LLM_PLANS=1) quando os créditos estiverem disponíveis.
     growth_llm_plans: bool = Field(False, alias="GROWTH_LLM_PLANS")
+    # Assistente de IA (consultor somente leitura): teto de perguntas por
+    # usuário por dia — além do teto GLOBAL de custo (LLM_BUDGET_USD), para uma
+    # pessoa não consumir sozinha o orçamento do mês.
+    assistente_perguntas_dia: int = Field(40, alias="ASSISTENTE_PERGUNTAS_DIA")
 
     # ClickUp (RO)
     clickup_api_token: str | None = Field(None, alias="CLICKUP_API_TOKEN")

@@ -5158,6 +5158,7 @@ from .operacoes.ui import router as _operacoes_router  # noqa: E402
 from .raiox import router as _raiox_router  # noqa: E402
 from .sales.ui import router as _sales_router  # noqa: E402
 from .semana import router as _semana_router  # noqa: E402
+from .assistente import router as _assistente_router  # noqa: E402
 
 app.include_router(_report_router)
 app.include_router(_churn_router)
@@ -5168,6 +5169,7 @@ app.include_router(_financeiro_router)
 app.include_router(_allhands_router)
 app.include_router(_raiox_router)
 app.include_router(_semana_router)
+app.include_router(_assistente_router)
 
 # frontend React (migração rota a rota — ver app/spa.py); registrado por
 # ÚLTIMO para nunca sombrear rotas existentes: só atende /app + SPA_ROUTES

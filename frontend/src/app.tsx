@@ -1,4 +1,5 @@
 import { Route, Routes, useSearchParams } from "react-router-dom";
+import { AssistentePainel } from "@/components/assistente/painel";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { BibliotecaPage } from "@/pages/biblioteca";
 import { GrowthContasPage } from "@/pages/growth/contas";
@@ -286,6 +287,10 @@ function Shell({ children }: { children: React.ReactNode }) {
         {children}
         {/* procedência do dado + defasagem — estava no rodapé do HTML */}
         <RodapeFonte pathname={area} />
+        {/* consultor de IA somente leitura (Fase 1: o backend decide quem vê).
+            Montado no Shell para acompanhar QUALQUER tela — o contexto da tela
+            atual vai junto com a pergunta. */}
+        <AssistentePainel />
       </main>
     </div>
   );
