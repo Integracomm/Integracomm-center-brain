@@ -82,7 +82,11 @@ if ($rodando -and -not $MesmoComRodada) {
 } elseif ($rodando) {
     Write-Host "   rodada ativa, mas -MesmoComRodada foi passado - seguindo" -ForegroundColor Yellow
 } else {
-    Write-Host "   nenhuma rodada ativa — seguro" -ForegroundColor Green
+    # ATENCAO: NADA de travessao/acento DENTRO de string neste arquivo. O PS 5.1
+    # le .ps1 sem BOM como ANSI e o travessao vira aspa curva (0x94), que FECHA
+    # a string e quebra o parse do script inteiro. Foi assim que este guarda
+    # abortou o deploy em 27/07. Em comentario passa; em string, nao.
+    Write-Host "   nenhuma rodada ativa - seguro" -ForegroundColor Green
 }
 
 Write-Host "== [3/4] enviando para o servidor ==" -ForegroundColor Cyan
