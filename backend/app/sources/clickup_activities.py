@@ -218,11 +218,69 @@ def _fetch_list_page(token: str, list_id: str, page: int) -> list[dict]:
                 espera = min(espera * 2, 30.0)
                 continue
             r.raise_for_status()
-            return r.json().get("tasks", [])
+            # enxuga JA NA ENTRADA: o JSON completo nem chega a virar objeto
+            # retido — é aqui que a memória é ganha
+            return [_enxuga_task(t) for t in r.json().get("tasks", [])]
     # NUNCA devolver [] aqui: o chamador lê página curta como FIM DA LISTA e
     # truncaria a lista em silêncio — contas inteiras ficariam "sem atividade"
     # (foi assim que o WMA apareceu com histórico zerado). Falha é falha.
     raise _PaginaIndisponivel(f"lista {list_id} página {page}: 6 tentativas sem sucesso")
+
+
+# ENXUGAMENTO DA TASK (27/07) — guardar só o que a aplicação lê.
+# A API do ClickUp devolve a task INTEIRA (histórico, permissões, checklists,
+# anexos, watchers, descrição...) e nós guardávamos tudo em memória: 12,7 mil
+# tasks × campos que ninguém lê. O painel chegou a 1,15 GB num host de 1,9 GB
+# e a rodada diária morria de OOM por não caber.
+# Levantamento dos campos REALMENTE usados (grep em todo o backend, 27/07):
+#   id, name, parent, status.status, assignees[].username, tags,
+#   date_done, date_closed, date_created, due_date, url, custom_fields, subtasks
+# Otávio autorizou (27/07): "deixe apenas os dados que usamos ou algum outro que
+# você julgue necessário para uma visão futura; se houver necessidade no futuro,
+# nós os puxaremos novamente". Guardados A MAIS, de propósito:
+#   - `priority` e `time_estimate`: candidatos naturais de carga/priorização;
+#   - `date_updated`: permite "o que mudou desde ontem" sem re-baixar tudo;
+#   - `list.id`: saber de qual lista veio a task, com 2 listas em uso.
+# Nada disso muda o que BAIXAMOS da API (mesma chamada, mesmo custo lá) — só o
+# que fica retido na RAM.
+_CAMPOS_TASK = ("id", "name", "parent", "url", "tags",
+                "date_done", "date_closed", "date_created", "due_date",
+                "date_updated", "priority", "time_estimate")
+
+
+def _enxuga_task(t: dict) -> dict:
+    """Uma task reduzida aos campos que a aplicação usa (+ margem para o futuro).
+
+    Preserva o FORMATO das estruturas aninhadas que o código já espera —
+    `status` continua sendo dict com a chave `status`, `assignees` continua
+    lista de dicts com `username` — para nenhum consumidor precisar mudar."""
+    if not isinstance(t, dict):
+        return t
+    out = {k: t.get(k) for k in _CAMPOS_TASK if k in t}
+    st = t.get("status")
+    if isinstance(st, dict):
+        out["status"] = {"status": st.get("status"), "type": st.get("type")}
+    elif st is not None:
+        out["status"] = st
+    out["assignees"] = [{"username": (a or {}).get("username")}
+                        for a in (t.get("assignees") or []) if isinstance(a, dict)]
+    # custom_fields: só os que TÊM valor (a lista vem com TODOS os campos do
+    # workspace em cada task, a maioria vazia — é o maior peso morto).
+    cf = []
+    for c in (t.get("custom_fields") or []):
+        if not isinstance(c, dict):
+            continue
+        if c.get("value") in (None, "", [], {}):
+            continue
+        cf.append({"name": c.get("name"), "value": c.get("value"),
+                   "type": c.get("type"), "type_config": c.get("type_config")})
+    out["custom_fields"] = cf
+    if t.get("list") and isinstance(t["list"], dict):
+        out["list"] = {"id": t["list"].get("id")}
+    # subtarefas vêm aninhadas e são percorridas pelo BFS: enxuga também
+    if t.get("subtasks"):
+        out["subtasks"] = [_enxuga_task(s) for s in t["subtasks"] if isinstance(s, dict)]
+    return out
 
 
 def _download_list(token: str, list_id: str) -> list[dict]:
@@ -478,7 +536,7 @@ def _bfs_nodes(token: str, root_id: str, max_nodes: int = 200) -> list[tuple[str
                     r.raise_for_status()  # token inválido -> aviso específico no chamador
                 if r.status_code != 200:
                     continue
-                t = r.json()
+                t = _enxuga_task(r.json())  # idem: não retém a task inteira
                 if tid != root_id:
                     nodes.append((tid, t))
                 for s2 in (t.get("subtasks") or []):
