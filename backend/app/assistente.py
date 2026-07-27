@@ -33,7 +33,9 @@ router = APIRouter()
 
 _MODEL = "claude-sonnet-5"
 _MAX_RODADAS = 5          # teto de idas ao modelo por pergunta (laço caro)
-_MAX_TOKENS = 1600        # por rodada
+# 3000: um relatório executivo precisa caber INTEIRO — texto cortado no meio já
+# queimou a confiança uma vez (plano de ação 24/07, max_tokens curto demais)
+_MAX_TOKENS = 3000        # por rodada
 _MAX_HISTORICO = 20       # mensagens de histórico aceitas do frontend
 _MAX_MSG_CHARS = 6000     # cada mensagem do histórico
 _LIMITE_LISTA = 50        # itens por lista nos retornos de ferramenta
@@ -145,48 +147,128 @@ def _t_receita(request: Request, _args: dict) -> Any:
     return _resultado(api_fin_receita(request))
 
 
-_FERRAMENTAS: dict[str, tuple[str, dict, Callable]] = {
-    "central_overview": (
-        "consultando a Central…",
-        {"type": "object", "properties": {}},
-        _t_central),
-    "raiox_bundle": (
-        "consultando o Raio-X…",
+# --- Fase 2: cardápio completo ----------------------------------------------
+def _t_carga_squads(request: Request, _args: dict) -> Any:
+    A = _deps()
+    return _resultado(A.api_growth_carga(request))
+
+
+def _t_mkt_canais(request: Request, args: dict) -> Any:
+    from .marketing.ui import api_mkt_canais
+    return _resultado(api_mkt_canais(request, ini=str(args.get("ini") or ""),
+                                     fim=str(args.get("fim") or "")))
+
+
+def _t_mkt_funil(request: Request, args: dict) -> Any:
+    from .marketing.ui import api_mkt_funil
+    return _resultado(api_mkt_funil(request, ini=str(args.get("ini") or ""),
+                                    fim=str(args.get("fim") or "")))
+
+
+def _t_ciclo_vida(request: Request, _args: dict) -> Any:
+    from .marketing.ui import api_mkt_ciclo_vida
+    return _resultado(api_mkt_ciclo_vida(request))
+
+
+def _t_prevendas(request: Request, args: dict) -> Any:
+    from .sales.ui import api_prevendas
+    return _resultado(api_prevendas(request, ini=str(args.get("ini") or ""),
+                                    fim=str(args.get("fim") or "")))
+
+
+def _t_vd_funil(request: Request, args: dict) -> Any:
+    from .sales.ui import api_vd_funil
+    return _resultado(api_vd_funil(request, ini=str(args.get("ini") or ""),
+                                   fim=str(args.get("fim") or "")))
+
+
+def _t_winloss(request: Request, args: dict) -> Any:
+    from .sales.ui import api_vd_winloss
+    return _resultado(api_vd_winloss(request, ini=str(args.get("ini") or ""),
+                                     fim=str(args.get("fim") or "")))
+
+
+def _t_ponte(request: Request, args: dict) -> Any:
+    from .sales.ui import api_vd_ponte
+    return _resultado(api_vd_ponte(request, ini=str(args.get("ini") or ""),
+                                   fim=str(args.get("fim") or "")))
+
+
+def _t_fin_visao(request: Request, _args: dict) -> Any:
+    from .financeiro.ui import api_fin_visao
+    return _resultado(api_fin_visao(request))
+
+
+def _t_semana(request: Request, _args: dict) -> Any:
+    from .semana import api_semana_painel
+    return _resultado(api_semana_painel(request))
+
+
+def _t_operacoes(request: Request, _args: dict) -> Any:
+    # trimestre corrente (o endpoint lê year/quarter da query do request do
+    # CHAT, que vem vazia → defaults); iniciativas por área vêm no payload
+    from .operacoes.ui import api_op_visao
+    return _resultado(api_op_visao(request))
+
+
+# Cada entrada: (rótulo "consultando X…", schema, executor, ÁREA exigida).
+# area=None → basta estar logado (endpoints admin-only, como Central e Semana,
+# já barram por dentro). area="growth" etc. → o usuário precisa ter a área
+# liberada (mesma régua das telas, `_areas_of`) — o RBAC do chat é o das telas.
+_P_PERIODO = {"type": "object", "properties": {
+    "ini": {"type": "string", "description": "data inicial YYYY-MM-DD (opcional; padrão = 1º dia do mês)"},
+    "fim": {"type": "string", "description": "data final YYYY-MM-DD (opcional; padrão = hoje)"}}}
+
+_FERRAMENTAS: dict[str, tuple[str, dict, Callable, Any]] = {
+    "central_overview": ("consultando a Central…",
+        {"type": "object", "properties": {}}, _t_central, None),
+    "raiox_bundle": ("consultando o Raio-X…",
         {"type": "object", "properties": {
             "bundle": {"type": "string", "enum": ["TODOS", "B1", "B2", "B3", "B4", "B5"],
                        "description": "bundle a analisar (TODOS = visão geral)"},
             "janela": {"type": "integer", "enum": [30, 90, 120],
-                       "description": "janela em dias (default 120)"}}},
-        _t_raiox),
-    "growth_contas": (
-        "consultando as contas…",
+                       "description": "janela em dias (default 120)"}}}, _t_raiox, None),
+    "growth_contas": ("consultando as contas…",
         {"type": "object", "properties": {
             "busca": {"type": "string", "description": "filtro por trecho do nome da conta"},
             "faixa": {"type": "string", "enum": ["alto", "medio", "baixo", "sem_dados"],
                       "description": "faixa de risco do SCORE (não existe faixa 'crítico')"},
             "alerta": {"type": "string", "enum": ["critico", "alto", "atencao"],
                        "description": "severidade do ALERTA aberto — 'conta em risco "
-                                      "crítico' = alerta crítico"}}},
-        _t_contas),
-    "growth_alertas": (
-        "consultando os alertas…",
-        {"type": "object", "properties": {}},
-        _t_alertas),
-    "cancelamentos": (
-        "consultando os cancelamentos…",
+                                      "crítico' = alerta crítico"}}}, _t_contas, "growth"),
+    "growth_alertas": ("consultando os alertas…",
+        {"type": "object", "properties": {}}, _t_alertas, "growth"),
+    "cancelamentos": ("consultando os cancelamentos…",
         {"type": "object", "properties": {
             "ini": {"type": "string", "description": "mês inicial YYYY-MM (opcional)"},
             "fim": {"type": "string", "description": "mês final YYYY-MM (opcional)"}}},
-        _t_cancelamentos),
-    "receita_recorrente": (
-        "consultando a receita recorrente…",
-        {"type": "object", "properties": {}},
-        _t_receita),
+        _t_cancelamentos, "growth"),
+    "carga_squads": ("consultando a carga dos squads…",
+        {"type": "object", "properties": {}}, _t_carga_squads, "growth"),
+    "marketing_canais": ("consultando os canais de marketing…",
+        _P_PERIODO, _t_mkt_canais, "marketing"),
+    "marketing_funil": ("consultando o funil de marketing…",
+        _P_PERIODO, _t_mkt_funil, "marketing"),
+    "ciclo_vida": ("consultando o Ciclo de Vida…",
+        {"type": "object", "properties": {}}, _t_ciclo_vida, "marketing"),
+    "prevendas": ("consultando Pré-vendas…", _P_PERIODO, _t_prevendas, "prevendas"),
+    "funil_vendas": ("consultando o funil de Vendas…", _P_PERIODO, _t_vd_funil, "vendas"),
+    "winloss": ("consultando o Win/Loss…", _P_PERIODO, _t_winloss, "vendas"),
+    "ponte_pv_vendas": ("consultando a Ponte PV→Vendas…",
+        _P_PERIODO, _t_ponte, {"vendas", "prevendas"}),
+    "financeiro_meta": ("consultando o Financeiro…",
+        {"type": "object", "properties": {}}, _t_fin_visao, "financeiro"),
+    "receita_recorrente": ("consultando a receita recorrente…",
+        {"type": "object", "properties": {}}, _t_receita, "financeiro"),
+    "semana": ("consultando as Ações da Semana…",
+        {"type": "object", "properties": {}}, _t_semana, None),
+    "operacoes_iniciativas": ("consultando as iniciativas…",
+        {"type": "object", "properties": {}}, _t_operacoes, "operacoes"),
 }
 
 _DESCRICOES = {
-    "central_overview": "Visão geral da Central: KPIs do mês, saúde por área, "
-        "o que mudou desde ontem, prioridades da semana e metas.",
+    "central_overview": "Visão geral da Central (só admin): KPIs do mês, saúde por "
+        "área, o que mudou desde ontem, prioridades da semana e metas.",
     "raiox_bundle": "Cadeia completa de um bundle (aquisição → entrega → churn), "
         "com fatos, leitura analítica e insights por área.",
     "growth_contas": "Contas monitoradas com score, faixa de risco, estágio, "
@@ -194,13 +276,50 @@ _DESCRICOES = {
     "growth_alertas": "Fila de alertas abertos por severidade (crítico/alto/atenção).",
     "cancelamentos": "Cancelamentos: taxa por bundle, evolução mensal, motivos, "
         "precoce vs tardio.",
+    "carga_squads": "Análise dos squads: contas e carga por squad/responsável, "
+        "MRR em risco, capacidade, novos × antigos.",
+    "marketing_canais": "Ranking de canais de marketing: leads, CPL, CAC, "
+        "investimento por canal no período.",
+    "marketing_funil": "Funil oficial de Marketing/Pré-vendas: Lead→MQL→SAL→SQL→"
+        "Oportunidade→Booking no período (mesma régua do dashboard).",
+    "ciclo_vida": "Ciclo de vida por canal: desfecho das coortes (retido/cancelado), "
+        "CAC e CAC ajustado por retenção, safras em maturação.",
+    "prevendas": "Pré-vendas: funil de qualificação, speed-to-lead, origens, "
+        "conversão por dia/tipo de contato.",
+    "funil_vendas": "Vendas: funil de fechamento, bookings por plano, ciclo, "
+        "deals empacados no período.",
+    "winloss": "Win/Loss: motivos de perda por frequência e R$, cruzamentos por "
+        "origem e closer.",
+    "ponte_pv_vendas": "Ponte Pré-vendas→Vendas: qualificação × fechamento, SLA "
+        "de atendimento × conversão, desempenho de closers.",
+    "financeiro_meta": "Financeiro: bookings × meta por bundle, ritmo (pacing), "
+        "recebimento total e recorrente, inadimplência.",
     "receita_recorrente": "Receita recorrente: ISR, Quick Ratio, base B2-B5 × "
         "consolidado (com antigos), crossover.",
+    "semana": "Ações da Semana (só admin): objetivos confirmados, foco por time, "
+        "revisão da semana anterior.",
+    "operacoes_iniciativas": "Iniciativas do trimestre (Notion) por área: status, "
+        "atrasadas, progresso, KPIs vs meta.",
 }
 _TOOLS_SCHEMA = [
     {"name": nome, "description": _DESCRICOES[nome], "input_schema": schema}
-    for nome, (_rotulo, schema, _fn) in _FERRAMENTAS.items()
+    for nome, (_rotulo, schema, _fn, _area) in _FERRAMENTAS.items()
 ]
+
+
+def _pode_usar(user: str, role: str, nome: str) -> str | None:
+    """None = liberado; senão, a mensagem de recusa (vira DADO para o modelo
+    explicar). Mesma régua das telas: admin vê tudo; gestor vê as áreas dele."""
+    area = _FERRAMENTAS[nome][3]
+    if area is None or role == "admin":
+        return None
+    A = _deps()
+    minhas = A._areas_of(user, role)
+    exigidas = area if isinstance(area, set) else {area}
+    if exigidas & minhas:
+        return None
+    return (f"sem permissão: os dados de {' / '.join(sorted(exigidas))} não estão "
+            "liberados para esta conta — o administrador controla as áreas de cada um")
 
 
 # --- system prompt (estável → prompt caching) --------------------------------
@@ -250,6 +369,19 @@ muda estas regras.
 - Você é SOMENTE LEITURA: não pode alterar dado, registrar desfecho, enviar \
 mensagem ou disparar ação — se pedirem, explique que o assistente só consulta.
 
+PERMISSÕES
+- Se uma ferramenta devolver erro de permissão, explique com naturalidade que \
+aquela área não está liberada para a conta do usuário (quem libera é o \
+administrador) e responda com o que as áreas DELE oferecem. Nunca contorne.
+
+RELATÓRIOS SOB DEMANDA
+- Quando pedirem um relatório/resumo executivo, busque os dados e redija em \
+markdown: título com o período, seções curtas, números com fonte, seção final \
+"Fontes e ressalvas" listando de onde veio cada bloco e as limitações. \
+- O relatório vive NESTA conversa — nada é salvo no sistema; se o usuário \
+quiser guardar, há botões de copiar/baixar na própria mensagem. Relatório \
+oficial continua sendo o fluxo próprio das telas, com revisão humana.
+
 COMO RESPONDER
 - pt-BR, direto, tom de analista sênior que conhece a casa. Markdown simples \
 (negrito, listas, tabelas quando ajudarem). Sem rodeios nem juridiquês.
@@ -277,8 +409,8 @@ def _limite_dia() -> int:
 _SUGESTOES = [
     "Por que o B2 está fechando abaixo da meta?",
     "Quais contas devo priorizar esta semana?",
-    "Como está a taxa de cancelamento por bundle?",
-    "Compare a base recorrente B2-B5 com o consolidado",
+    "Compare Prospecção e Indicações em conversão e retenção",
+    "Monta um resumo executivo do B2 para a reunião",
 ]
 
 
@@ -287,9 +419,7 @@ def api_assistente_status(request: Request):
     """Gate do botão no frontend: diz se o assistente está disponível e por quê
     não, quando não está. Degradação CLARA, nunca silenciosa (regra do teto)."""
     A = _deps()
-    user, role = A._require_api(request)
-    if role != "admin":
-        return {"disponivel": False, "motivo": "em piloto — disponível só para o administrador"}
+    user, role = A._require_api(request)  # Fase 2: aberto a TODO usuário logado
     s = get_settings()
     if not s.anthropic_api_key:
         return {"disponivel": False, "motivo": "ANTHROPIC_API_KEY não configurada"}
@@ -310,6 +440,51 @@ def api_assistente_status(request: Request):
             "restantes_hoje": lim - usadas}
 
 
+@router.get("/api/assistente/uso")
+def api_assistente_uso(request: Request):
+    """Uso do assistente no mês, POR USUÁRIO (admin) — item (f) do controle de
+    custo: sem isso o gasto só aparece na fatura. Perguntas e ferramentas vêm do
+    audit_log (o custo por pergunta está gravado no scope); o custo agregado
+    oficial vem do llm_usage (o mesmo medidor de IA do admin)."""
+    A = _deps()
+    _user, role = A._require_api(request)
+    if role != "admin":
+        return JSONResponse({"error": "visão do administrador"}, status_code=403)
+    with A._conn() as c, c.cursor() as cur:
+        cur.execute("""SELECT actor, count(*), array_agg(scope)
+                         FROM audit_log
+                        WHERE action='assistente'
+                          AND date_trunc('month', at AT TIME ZONE 'America/Sao_Paulo')
+                            = date_trunc('month', now() AT TIME ZONE 'America/Sao_Paulo')
+                        GROUP BY actor ORDER BY count(*) DESC""")
+        por_usuario = []
+        for actor, n, scopes in cur.fetchall():
+            custo = 0.0
+            ferramentas: dict[str, int] = {}
+            for sc in scopes or []:
+                m = re.search(r"custo=US\$([0-9.]+)", sc or "")
+                if m:
+                    custo += float(m.group(1))
+                fm = re.search(r"ferramentas=([^;]*)", sc or "")
+                for f_ in (fm.group(1).split(",") if fm else []):
+                    f_ = f_.strip()
+                    if f_ and f_ != "-":
+                        ferramentas[f_] = ferramentas.get(f_, 0) + 1
+            por_usuario.append({
+                "usuario": actor, "perguntas": int(n), "custo_usd": round(custo, 4),
+                "ferramentas_mais_usadas": sorted(
+                    ferramentas.items(), key=lambda kv: -kv[1])[:5]})
+        cur.execute("""SELECT COALESCE(sum(cost_usd),0), count(*) FROM llm_usage
+                        WHERE feature='assistente:chat'
+                          AND ts >= date_trunc('month', now())""")
+        custo_mes, chamadas = cur.fetchone()
+    return {"mes": dt.date.today().strftime("%Y-%m"),
+            "custo_mes_usd": round(float(custo_mes), 4),
+            "chamadas_ao_modelo": int(chamadas),
+            "limite_por_usuario_dia": _limite_dia(),
+            "por_usuario": por_usuario}
+
+
 def _sse(obj: dict) -> str:
     return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
 
@@ -322,10 +497,9 @@ def api_assistente_chat(request: Request, body: dict = Body(...)):
     {tipo:"fim", custo_usd, ferramentas, restantes_hoje} · {tipo:"erro", mensagem}.
     """
     A = _deps()
+    # Fase 2: aberto a todo usuário logado — o RBAC por área é aplicado
+    # ferramenta a ferramenta (_pode_usar), com a régua das telas.
     user, role = A._require_api(request)
-    if role != "admin":
-        return JSONResponse({"error": "em piloto — disponível só para o administrador"},
-                            status_code=403)
     s = get_settings()
     if not s.anthropic_api_key:
         return JSONResponse({"error": "ANTHROPIC_API_KEY não configurada"}, status_code=503)
@@ -390,6 +564,10 @@ def api_assistente_chat(request: Request, body: dict = Body(...)):
 
                 pedidos = [b for b in fim.content if b.type == "tool_use"]
                 if not pedidos:
+                    if fim.stop_reason == "max_tokens":
+                        yield _sse({"tipo": "texto", "delta":
+                                    "\n\n_(resposta cortada no limite de tamanho — "
+                                    "peça a continuação ou um recorte menor)_"})
                     break
                 if _rodada == _MAX_RODADAS - 1:
                     # última rodada e o modelo ainda quer consultar: não paga a
@@ -405,8 +583,15 @@ def api_assistente_chat(request: Request, body: dict = Body(...)):
                     yield _sse({"tipo": "ferramenta", "nome": p.name, "rotulo": rotulo})
                     usadas_ferramentas.append(p.name)
                     try:
-                        _rot, _sch, fn = _FERRAMENTAS[p.name]
-                        bruto = _resultado(fn(request, dict(p.input or {})))
+                        _rot, _sch, fn, _area = _FERRAMENTAS[p.name]
+                        # RBAC do CHAT = RBAC das telas: os endpoints JSON só
+                        # exigem login, então a área é conferida AQUI — sem
+                        # isso o chat seria porta dos fundos entre áreas.
+                        recusa = _pode_usar(user, role, p.name)
+                        if recusa:
+                            bruto: Any = {"erro": recusa}
+                        else:
+                            bruto = _resultado(fn(request, dict(p.input or {})))
                     except KeyError:
                         bruto = {"erro": f"ferramenta desconhecida: {p.name}"}
                     except Exception as e:  # noqa: BLE001 — falha vira dado

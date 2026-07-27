@@ -33,13 +33,48 @@ def test_chat_exige_sessao():
     assert e.value.status_code == 401
 
 
-def test_nao_admin_nao_entra_no_piloto(monkeypatch):
+def test_fase2_gestor_entra_e_uso_fica_com_o_admin(monkeypatch):
+    """Fase 2: o chat abre para todo usuário logado; a visão de USO (custo por
+    pessoa) segue exclusiva do admin."""
     import app.api as A
     monkeypatch.setattr(A, "_require_api", lambda r: ("gestor@x", "gestor_growth"))
+    monkeypatch.setattr(AS, "get_settings", lambda: type("S", (), {
+        "anthropic_api_key": "sk-teste", "assistente_perguntas_dia": 40})())
+    monkeypatch.setattr(A, "_conn", lambda: (_ for _ in ()).throw(RuntimeError("sem banco")))
     r = AS.api_assistente_status(_Req())
-    assert r["disponivel"] is False
-    resp = AS.api_assistente_chat(_Req(), {"mensagens": [{"role": "user", "content": "oi"}]})
-    assert resp.status_code == 403
+    assert r["disponivel"] is True  # banco fora não fecha o gate (usadas=0)
+    assert AS.api_assistente_uso(_Req()).status_code == 403
+
+
+# --- RBAC por área: o chat NÃO é porta dos fundos ----------------------------
+def test_gestor_nao_alcanca_ferramenta_de_outra_area(monkeypatch):
+    """Os endpoints JSON só exigem login — a área é conferida na camada do
+    assistente, com a MESMA régua das telas (_areas_of)."""
+    import app.api as A
+    monkeypatch.setattr(A, "_areas_of", lambda u, r: {"growth"})
+    assert AS._pode_usar("g@x", "gestor_growth", "growth_contas") is None
+    assert AS._pode_usar("g@x", "gestor_growth", "carga_squads") is None
+    recusa = AS._pode_usar("g@x", "gestor_growth", "marketing_canais")
+    assert recusa and "marketing" in recusa
+    assert AS._pode_usar("g@x", "gestor_growth", "financeiro_meta") is not None
+    # ponte aceita QUALQUER uma das duas áreas
+    monkeypatch.setattr(A, "_areas_of", lambda u, r: {"prevendas"})
+    assert AS._pode_usar("g@x", "gestor_prevendas", "ponte_pv_vendas") is None
+
+
+def test_admin_alcanca_todas_as_ferramentas():
+    for nome in AS._FERRAMENTAS:
+        assert AS._pode_usar("adm", "admin", nome) is None, nome
+
+
+def test_ferramentas_de_area_tem_area_declarada():
+    """Toda ferramenta de dado de área TEM de declarar a área — esquecer o 4º
+    campo deixaria a ferramenta aberta a qualquer logado."""
+    sem_area_ok = {"central_overview", "semana",   # endpoints já barram (admin)
+                   "raiox_bundle"}                 # visão da empresa, régua da tela
+    for nome, (_r, _s, _f, area) in AS._FERRAMENTAS.items():
+        if nome not in sem_area_ok:
+            assert area, f"{nome} sem área declarada"
 
 
 def test_chat_sem_pergunta_retorna_422(monkeypatch):
@@ -86,11 +121,13 @@ def test_resultado_converte_jsonresponse_de_erro_em_dado():
 
 
 # --- contrato do cardápio ----------------------------------------------------
-def test_cardapio_fase1_completo_e_coerente():
+def test_cardapio_completo_e_coerente():
     nomes = {t["name"] for t in AS._TOOLS_SCHEMA}
     assert nomes == set(AS._FERRAMENTAS) == {
-        "central_overview", "raiox_bundle", "growth_contas",
-        "growth_alertas", "cancelamentos", "receita_recorrente"}
+        "central_overview", "raiox_bundle", "growth_contas", "growth_alertas",
+        "cancelamentos", "carga_squads", "marketing_canais", "marketing_funil",
+        "ciclo_vida", "prevendas", "funil_vendas", "winloss", "ponte_pv_vendas",
+        "financeiro_meta", "receita_recorrente", "semana", "operacoes_iniciativas"}
     for t in AS._TOOLS_SCHEMA:
         assert t["description"], t["name"]
         assert t["input_schema"]["type"] == "object"

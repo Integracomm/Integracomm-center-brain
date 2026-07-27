@@ -1,4 +1,4 @@
-import { Bot, CornerDownLeft, Loader2, Sparkles, X } from "lucide-react";
+import { Bot, Check, Copy, CornerDownLeft, Download, Loader2, Sparkles, X } from "lucide-react";
 import React, { useEffect, useRef, useState } from "react";
 import {
   Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle,
@@ -30,7 +30,25 @@ export function AssistentePainel() {
   const [gerando, setGerando] = useState(false);
   const [atividade, setAtividade] = useState<string | null>(null);
   const [erro, setErro] = useState<string | null>(null);
+  const [copiado, setCopiado] = useState<number | null>(null);
   const fimRef = useRef<HTMLDivElement>(null);
+
+  // relatórios vivem NA CONVERSA (nada é salvo como relatório oficial) — os
+  // botões de copiar/baixar são o caminho de guardar o texto
+  function copiar(i: number, texto: string) {
+    navigator.clipboard.writeText(texto).then(() => {
+      setCopiado(i);
+      setTimeout(() => setCopiado(null), 1500);
+    });
+  }
+  function baixar(texto: string) {
+    const blob = new Blob([texto], { type: "text/markdown;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `assistente-integracomm-${new Date().toISOString().slice(0, 10)}.md`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
 
   useEffect(() => {
     fetch("/api/assistente/status", { credentials: "same-origin" })
@@ -171,6 +189,19 @@ export function AssistentePainel() {
                       </p>
                     )}
                     <Md texto={m.content} />
+                    {m.content && !(gerando && i === msgs.length - 1) && (
+                      <div className="mt-1.5 flex gap-1">
+                        <button onClick={() => copiar(i, m.content)} title="Copiar (markdown)"
+                          className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground">
+                          {copiado === i ? <Check className="h-3 w-3 text-success" /> : <Copy className="h-3 w-3" />}
+                          {copiado === i ? "copiado" : "copiar"}
+                        </button>
+                        <button onClick={() => baixar(m.content)} title="Baixar como .md"
+                          className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground">
+                          <Download className="h-3 w-3" /> baixar .md
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

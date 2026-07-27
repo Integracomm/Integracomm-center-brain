@@ -64,6 +64,49 @@ function Toggle({ on, disabled, title, onChange }: {
   );
 }
 
+// Uso do assistente de IA por usuário (Fase 2/3, 27/07): sem esta visão, o
+// gasto por pessoa só aparece na fatura — e a avaliação da Fase 3 ("o que o
+// uso real mostrou faltar") depende de ver quem pergunta o quê.
+interface UsoAssistente {
+  mes: string; custo_mes_usd: number; chamadas_ao_modelo: number;
+  limite_por_usuario_dia: number;
+  por_usuario: Array<{ usuario: string; perguntas: number; custo_usd: number;
+    ferramentas_mais_usadas: Array<[string, number]> }>;
+}
+
+function UsoDoAssistente() {
+  const q = useApi<UsoAssistente>("/api/assistente/uso");
+  const d = q.data;
+  if (!d) return null;
+  return (
+    <SectionCard title="Assistente de IA — uso no mês"
+      subtitle={`custo por usuário e ferramentas mais consultadas · teto de ${d.limite_por_usuario_dia} perguntas/usuário/dia (ASSISTENTE_PERGUNTAS_DIA)`}
+      className="max-w-[560px]">
+      <div className="flex items-baseline justify-between">
+        <span className="font-display text-2xl font-bold tabular-nums">US$ {d.custo_mes_usd.toFixed(2)}</span>
+        <span className="text-xs text-muted-foreground">{d.chamadas_ao_modelo} chamada(s) ao modelo</span>
+      </div>
+      <div className="mt-3">
+        {d.por_usuario.length === 0 ? (
+          <p className="py-1 text-xs text-muted-foreground">nenhuma pergunta neste mês ainda</p>
+        ) : d.por_usuario.map((u) => (
+          <div key={u.usuario} className="border-t border-border py-1.5 text-xs">
+            <div className="flex justify-between gap-3">
+              <span className="font-medium">{u.usuario} · {u.perguntas} pergunta(s)</span>
+              <span className="tabular-nums">US$ {u.custo_usd.toFixed(2)}</span>
+            </div>
+            {u.ferramentas_mais_usadas.length > 0 && (
+              <p className="mt-0.5 text-muted-foreground">
+                {u.ferramentas_mais_usadas.map(([f, n]) => `${f} (${n})`).join(" · ")}
+              </p>
+            )}
+          </div>
+        ))}
+      </div>
+    </SectionCard>
+  );
+}
+
 function MedidorIA({ llm }: { llm: NonNullable<Payload["llm"]> }) {
   const cor = llm.pct < 0.7 ? "bg-success" : llm.pct < 0.9 ? "bg-warning" : "bg-destructive";
   return (
@@ -434,6 +477,7 @@ export function AdminPage() {
       {d && (
         <>
           {d.llm && <MedidorIA llm={d.llm} />}
+          <UsoDoAssistente />
           <Times d={d} recarrega={q.refetch} />
           <Integracoes d={d} />
           <Contas d={d} />
