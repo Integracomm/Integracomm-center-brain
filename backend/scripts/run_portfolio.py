@@ -224,6 +224,27 @@ def load_tone_series(conn_factory) -> dict[str, list[tuple[dt.date, float]]]:
     return out
 
 
+def ordena_por_defasagem(sample: list[dict]) -> list[dict]:
+    """Contas com o score mais VELHO primeiro (nunca pontuadas na frente de todas).
+
+    É o que torna o prazo de coleta seguro: cortar o fim da lista passa a
+    significar "deixar de fora quem já está fresco", e a fila roda sozinha entre
+    as rodadas. Falha de banco não pode derrubar a rodada — sem ordenação, segue
+    na ordem original."""
+    try:
+        with psycopg.connect(os.environ["APP_DATABASE_URL"]) as c, c.cursor() as cur:
+            cur.execute("""SELECT a.name, max(s.computed_at)
+                             FROM accounts a LEFT JOIN scores s ON s.account_id = a.id
+                            GROUP BY a.name""")
+            idade = {norm(nome): quando for nome, quando in cur.fetchall()}
+    except Exception as e:  # noqa: BLE001
+        print(f"  [ordem] defasagem indisponível ({type(e).__name__}) — ordem original", file=sys.stderr)
+        return sample
+    # None (nunca pontuada) = mais urgente de todas
+    ANTIGA = dt.datetime(1970, 1, 1, tzinfo=dt.timezone.utc)
+    return sorted(sample, key=lambda it: idade.get(norm(it["name"])) or ANTIGA)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=0, help="máx. de contas (0 = todas)")
@@ -234,6 +255,10 @@ def main() -> None:
     ap.add_argument("--no-exec", action="store_true", help="pula o contexto de execução/MRR do mirror")
     ap.add_argument("--exec-only", action="store_true", help="só enriquece exec/MRR nas contas já existentes (sem re-rodar WhatsApp)")
     ap.add_argument("--slack", action="store_true", help="ao final da rodada, envia o relatório ao grupo do Slack")
+    ap.add_argument("--prazo-min", type=int, default=int(os.environ.get("RODADA_PRAZO_MIN", "150")),
+                    help="minutos de COLETA antes de encerrar e pontuar o que já foi lido "
+                         "(0 = sem prazo). Default 150min: a rodada tem de caber na janela e "
+                         "entregar o Slack todo dia, mesmo com o gateway lento")
     args = ap.parse_args()
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -261,6 +286,13 @@ def main() -> None:
         })
         if args.limit and len(sample) >= args.limit:
             break
+
+    # ORDEM POR DEFASAGEM (27/07): a conta com o score mais VELHO é lida
+    # primeiro. Junto com o prazo de coleta, isso garante que, se sobrar tempo
+    # só para parte da carteira, o corte cai sempre em quem já está fresco — e
+    # quem ficou de fora hoje encabeça a fila amanhã. Sem isso, um prazo cortaria
+    # SEMPRE o mesmo rabo da lista e essas contas nunca mais seriam pontuadas.
+    sample = ordena_por_defasagem(sample)
 
     print(f"Universo resolvido: {len(sample)} contas ativas-cliente"
           f" ({'cache' if args.from_cache else 'AO VIVO'})")
@@ -333,6 +365,11 @@ def main() -> None:
     agent = GrowthAgent(conn_factory=conn_factory)
     ctx = AgentContext(window_start=win_start, window_end=win_end, run_id=run_id, audit=audit)
     ctx.sample = sample
+    if args.prazo_min > 0:
+        import time as _time
+        ctx.deadline = _time.monotonic() + args.prazo_min * 60
+        print(f"Prazo de coleta: {args.prazo_min} min — ao estourar, pontua o que já leu "
+              f"(as contas restantes ficam com o score anterior e entram primeiro amanhã)")
     status = "ok"
     try:
         scores = agent.run(ctx)
@@ -356,7 +393,9 @@ def main() -> None:
     alerts = [s for s in ev if _alerts(s)]
     skipped = getattr(ctx, "skipped", [])
     print(f"\n=== RODADA {run_id[:8]} ({status}) ===")
-    print(f"universo={len(sample)}  pontuadas={len(scores)}  puladas(falha leitura)={len(skipped)}  exec-contexto={n_exec}")
+    cortadas = getattr(ctx, "cortadas_por_prazo", 0)
+    print(f"universo={len(sample)}  pontuadas={len(scores)}  puladas(falha leitura)={len(skipped)}"
+          f"  cortadas(prazo)={cortadas}  exec-contexto={n_exec}")
     print(f"avaliáveis={len(ev)}  não-avaliáveis={len(nev)}  com alerta={len(alerts)}")
     if skipped:
         print("puladas:", ", ".join(n[:24] for n, _ in skipped[:10]) + (" ..." if len(skipped) > 10 else ""))

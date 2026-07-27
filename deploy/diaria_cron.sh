@@ -34,11 +34,25 @@ if ! flock -n 9; then
     exit 0
 fi
 
+INICIO=$(date +%s)
 timeout -k 60 "$TETO" /usr/bin/docker compose -f "$COMPOSE" exec -T app sh /app/deploy/daily_run.sh
 CODIGO=$?
 
+DUROU=$(( $(date +%s) - INICIO ))
 if [ "$CODIGO" -eq 124 ] || [ "$CODIGO" -eq 137 ]; then
-    echo "=== $(agora) ABORTADA: estourou o teto de $TETO ==="
+    # 27/07: os dois códigos imprimiam "estourou o teto de 4h" e isso ESCONDEU
+    # três falhas DIFERENTES por dias — 25 e 26/07 bateram o teto de verdade
+    # (4h exatas), mas 24/07 morreu em 1h53 e 27/07 em 2h10, que não é teto
+    # nenhum. 137 = SIGKILL: OOM do cgroup ou o container recriado por baixo
+    # (um `deploy` durante a rodada mata o processo que roda dentro dele).
+    # Diagnóstico só existe se o log disser o que REALMENTE aconteceu.
+    if [ "$CODIGO" -eq 124 ]; then
+        echo "=== $(agora) ABORTADA: estourou o teto de $TETO (rodou ${DUROU}s) ==="
+    else
+        echo "=== $(agora) ABORTADA: processo MORTO (SIGKILL, código 137) após ${DUROU}s —" \
+             "NÃO foi o teto de $TETO. Suspeitar de OOM do cgroup ou de deploy/restart" \
+             "do container durante a rodada ==="
+    fi
     # matar o cliente do `docker exec` NÃO mata o processo dentro do container:
     # ele seguiria consumindo gateway e RAM com a trava já liberada. A imagem é
     # slim (sem pkill/pgrep), então o alvo vem do `docker top`, que dá o PID no

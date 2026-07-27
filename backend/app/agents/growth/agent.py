@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime as dt
 import sys
+import time
 from typing import Any
 
 from ..base import AccountScore, Agent, AgentContext
@@ -55,8 +56,24 @@ class GrowthAgent(Agent):
         raw: dict[str, list[scoring.SignalInput]] = {}
         meta: dict[str, dict] = {}
         skipped: list[tuple[str, str]] = []  # (conta, motivo) — resiliência por conta
+        # PRAZO DA COLETA (27/07). A rodada estourava o teto de 4h e era MORTA —
+        # e aí NADA era pontuado e o Slack não saía (Otávio: "preciso que todos
+        # os dias esses relatórios sejam enviados com dados que o time possa
+        # agir em cima"). Agora ela para de LER quando o prazo chega e pontua o
+        # que já coletou: melhor a carteira quase toda fresca hoje do que a
+        # rodada inteira perdida. Como `ctx.sample` chega ordenado da conta MAIS
+        # DEFASADA para a menos, o pedaço que sobra é sempre o mais recente —
+        # e quem ficou de fora vira prioridade na rodada seguinte.
+        prazo = getattr(ctx, "deadline", None)
+        cortadas = 0
         try:
-            for item in sample:
+            for idx, item in enumerate(sample):
+                if prazo is not None and time.monotonic() > prazo:
+                    cortadas = len(sample) - idx
+                    print(f"  [prazo] coleta encerrada em {idx}/{len(sample)} contas — "
+                          f"{cortadas} ficam com o score anterior e entram primeiro amanhã",
+                          file=sys.stderr)
+                    break
                 gid = item["group_id"]
                 # RESILIÊNCIA: uma conta que falha na leitura (timeout persistente,
                 # grupo inacessível) é PULADA — não pode derrubar a rodada inteira.
@@ -114,6 +131,7 @@ class GrowthAgent(Agent):
             reader.close()
         ctx.account_meta = meta  # consumido pelo score()
         ctx.skipped = skipped    # exposto p/ o runner reportar/auditar
+        ctx.cortadas_por_prazo = cortadas
         return raw
 
     # -- análise ----------------------------------------------------------

@@ -24,8 +24,11 @@ interface Payload {
     total: number; receita: number };
   assessoria: { clientes_plano: Array<{ plano: string; qtde: number }>;
     total: number; leitura_tardia: boolean;
-    nps: { por_gc: Array<{ gc: string; nps: number; contas: number }>;
-      geral: number; contas_com_nota: number } | null };
+    reunioes: {
+      por_gc: Array<{ gc: string; reunioes: number; agendadas: number;
+        satisfacao: number | null; com_nota: number }>;
+      realizadas: number; agendadas: number;
+      satisfacao_geral: number | null; com_nota: number } | null };
   estrategia: { clientes: number };
   saidas: { por_plano: Array<{ plano: string; qtde: number }>; total: number;
     sem_plano: number; taxa_recorrentes: number | null; saidas_rec: number; base_rec: number };
@@ -165,22 +168,40 @@ export function AllHandsDadosPage() {
             {d.assessoria.leitura_tardia && (
               <Lacuna txt="leitura tardia: a contagem retroativa SUBCONTA (cancelados desde o fechamento saem da lista Clientes Ativos) — o número oficial é o do deck gerado logo após o mês virar" />
             )}
-            {d.assessoria.nps && (
-              <div className="mt-3 border-t border-border pt-2">
-                <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                  NPS por gerente de contas
-                </p>
-                {d.assessoria.nps.por_gc.map((g) => (
-                  <Linha key={g.gc} rot={g.gc} val={g.nps.toLocaleString("pt-BR")}
-                    sub={`${g.contas} conta(s) com nota`} />
-                ))}
-                <Linha rot="NPS Integracomm" val={d.assessoria.nps.geral.toLocaleString("pt-BR")}
-                  sub={`${d.assessoria.nps.contas_com_nota} conta(s) com nota no total`} bold />
-              </div>
-            )}
             {d.lacunas.assessoria?.map((l) => <Lacuna key={l} txt={l} />)}
             {d.lacunas.estrategia?.map((l) => <Lacuna key={l} txt={`Estratégia: ${l}`} />)}
           </SectionCard>
+
+          {/* Reuniões de GC + satisfação: eram lacuna ⚠ até o Otávio apontar a
+              fonte (27/07) — subtarefas "Reunião GC" e o campo `satisfação`. */}
+          {d.assessoria.reunioes && (
+            <SectionCard title="Assessoria · reuniões por gerente de contas" headerClassName="min-h-[46px]"
+              subtitle={`${d.assessoria.reunioes.realizadas} realizadas de ${
+                d.assessoria.reunioes.agendadas} agendadas${
+                d.assessoria.reunioes.satisfacao_geral != null
+                  ? ` · satisfação média ${d.assessoria.reunioes.satisfacao_geral.toLocaleString("pt-BR")} de 5`
+                  : ""}`}>
+              <BarListH
+                data={d.assessoria.reunioes.por_gc.map((g) => ({
+                  label: g.gc, value: g.reunioes, satisfacao: g.satisfacao, n: g.com_nota,
+                }))}
+                height={Math.max(140, d.assessoria.reunioes.por_gc.length * 40)} width={210}
+                color="var(--chart-4)"
+                valueLabel={(v, it) =>
+                  `${v}${it.satisfacao != null
+                    ? ` · ★ ${(it.satisfacao as number).toLocaleString("pt-BR")} (${it.n})`
+                    : ""}`} />
+              {/* honestidade sobre a base: a nota cobre ~40% das reuniões e
+                  satura em 5 — serve de cobertura/exceção, não de variação */}
+              <p className="mt-2 text-xs text-muted-foreground">
+                ★ = satisfação média (escala de 1 a 5 do campo do ClickUp, não a escala de NPS);
+                entre parênteses, quantas reuniões têm nota. Só {d.assessoria.reunioes.com_nota} das{" "}
+                {d.assessoria.reunioes.agendadas} reuniões do mês foram avaliadas — a média vem dessa
+                amostra. Reagendadas, canceladas e "não compareceu" contam como agendadas, não como
+                realizadas.
+              </p>
+            </SectionCard>
+          )}
 
           <SectionCard title="Saídas do mês" headerClassName="min-h-[46px]"
             subtitle={`${formatNumber(d.saidas.total)} saída(s) · ${

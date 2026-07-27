@@ -393,50 +393,99 @@ baixa o PPTX editável ou volta para ajustar o conteúdo sem perder nada.</p>
 </form><script>{js}</script></body></html>"""
 
 
-def _nps_por_gc() -> dict:
-    """NPS por gerente de contas — campos `NPS` (number) × `Gerente de contas`
-    (users) dos cards RAIZ da lista Assessoria (a fonte por trás do dashboard
-    de GCs do ClickUp que o Otávio apontou em 24/07). Lista vem do cache de
-    30min (prewarm); vazio = {} e a tela mantém a lacuna ⚠.
-    Nota: cobre o NPS; as REUNIÕES por GC não estão em lista acessível pela
-    API (seguem como lacuna até acharmos a fonte)."""
+# Reuniões de GC e a nota de satisfação (Otávio 27/07: "as reuniões são todas
+# as atividades marcadas como 'Reunião GC'" e "a nota de NPS é o campo
+# satisfação"). Ambas vivem na SUBTAREFA da reunião, dentro do card do cliente
+# — não no card do cliente, que foi onde a 1ª tentativa (24/07) procurou e não
+# achou nada.
+_RE_REUNIAO_GC = re.compile(r"reuni.o\s*gc", re.I)
+# tentativas que não viraram conversa: contam como agendadas, não como realizadas
+_RE_NAO_REALIZADA = re.compile(r"reagendad|n.o\s*compareceu|cancelad", re.I)
+
+
+def _reunioes_gc(alvo: dt.date) -> dict:
+    """Reuniões de GC do mês + satisfação, agrupadas por gerente de contas.
+
+    Fonte: subtarefas cujo NOME casa "Reunião GC", nas listas Assessoria e
+    Clientes Ativos. O GC é o ASSIGNEE da reunião (98% de cobertura; o custom
+    field "Gerente de contas" só cobre 34% e o assignee do card do cliente é o
+    squad de execução, não o GC). O mês vem de `date_done`.
+
+    A nota é o custom field `satisfação` — rating de 1 a 5 ESTRELAS (tipo emoji),
+    NÃO a escala de NPS (-100..+100). É como o time registra a satisfação da
+    reunião; a tela rotula como "satisfação (1-5)" para não passar por NPS.
+
+    Vazio = {} e a tela mantém a lacuna ⚠ (nunca zero inventado)."""
     from .config import get_settings
     from .sources.clickup_activities import _clickup_list_tasks
     s = get_settings()
-    if not (s.clickup_api_token and s.clickup_list_assessoria):
+    if not s.clickup_api_token:
         return {}
-    try:
-        tasks = _clickup_list_tasks(s.clickup_api_token, s.clickup_list_assessoria)
-    except Exception:  # noqa: BLE001
-        return {}
-    soma: dict[str, float] = {}
-    n: dict[str, int] = {}
-    tot_s = tot_n = 0.0
-    for t in tasks:
-        if t.get("parent"):
+    listas = [x for x in (s.clickup_list_assessoria, s.clickup_list_clientes_ativos) if x]
+    tasks, vistos = [], set()
+    for lst in listas:
+        try:
+            for t in _clickup_list_tasks(s.clickup_api_token, lst):
+                tid = t.get("id")
+                if tid and tid not in vistos:      # cliente pode ter card nas 2 listas
+                    vistos.add(tid)
+                    tasks.append(t)
+        except Exception:  # noqa: BLE001 — lista fora do ar não derruba a tela
             continue
-        cf = {c.get("name"): c for c in (t.get("custom_fields") or [])}
-        v = (cf.get("NPS") or {}).get("value")
-        if v in (None, ""):
+
+    ini = alvo.replace(day=1)
+    fim = (ini + dt.timedelta(days=32)).replace(day=1)
+    por_gc: dict[str, dict] = {}
+    tot = {"agendadas": 0, "realizadas": 0, "soma": 0.0, "com_nota": 0}
+
+    for t in tasks:
+        nome = t.get("name") or ""
+        if not _RE_REUNIAO_GC.search(nome):
+            continue
+        quando = t.get("date_done") or t.get("date_closed") or t.get("due_date")
+        if not quando:
             continue
         try:
-            nota = float(v)
-        except (TypeError, ValueError):
+            dia = dt.datetime.fromtimestamp(int(quando) / 1000, tz=dt.timezone.utc).date()
+        except (TypeError, ValueError, OSError):
             continue
-        gcs = (cf.get("Gerente de contas") or {}).get("value") or []
-        nomes = [((g or {}).get("username") or "").strip() for g in gcs] if isinstance(gcs, list) else []
-        for nome in (nomes or ["(sem GC)"]):
-            if not nome:
-                nome = "(sem GC)"
-            soma[nome] = soma.get(nome, 0.0) + nota
-            n[nome] = n.get(nome, 0) + 1
-        tot_s += nota
-        tot_n += 1
-    if not tot_n:
+        if not (ini <= dia < fim):
+            continue
+
+        realizada = not _RE_NAO_REALIZADA.search(nome)
+        cf = {c.get("name"): c for c in (t.get("custom_fields") or [])}
+        bruto = (cf.get("satisfação") or cf.get("satisfacao") or {}).get("value")
+        nota = None
+        if bruto not in (None, ""):
+            try:
+                nota = float(bruto)
+            except (TypeError, ValueError):
+                nota = None
+
+        assg = [((a or {}).get("username") or "").strip() for a in (t.get("assignees") or [])]
+        for gc in ([a for a in assg if a] or ["(sem responsável)"]):
+            d = por_gc.setdefault(gc, {"agendadas": 0, "realizadas": 0, "soma": 0.0, "com_nota": 0})
+            d["agendadas"] += 1
+            d["realizadas"] += int(realizada)
+            if nota is not None:
+                d["soma"] += nota
+                d["com_nota"] += 1
+        tot["agendadas"] += 1
+        tot["realizadas"] += int(realizada)
+        if nota is not None:
+            tot["soma"] += nota
+            tot["com_nota"] += 1
+
+    if not tot["agendadas"]:
         return {}
-    por_gc = sorted(((g, soma[g] / n[g], n[g]) for g in soma), key=lambda x: -x[2])
-    return {"por_gc": [{"gc": g, "nps": round(m, 2), "contas": c} for g, m, c in por_gc],
-            "geral": round(tot_s / tot_n, 2), "contas_com_nota": int(tot_n)}
+    linhas = [{"gc": g, "reunioes": d["realizadas"], "agendadas": d["agendadas"],
+               "satisfacao": round(d["soma"] / d["com_nota"], 2) if d["com_nota"] else None,
+               "com_nota": d["com_nota"]}
+              for g, d in por_gc.items()]
+    linhas.sort(key=lambda x: -x["reunioes"])
+    return {"por_gc": linhas, "realizadas": tot["realizadas"], "agendadas": tot["agendadas"],
+            "satisfacao_geral": round(tot["soma"] / tot["com_nota"], 2) if tot["com_nota"] else None,
+            "com_nota": tot["com_nota"]}
 
 
 _DADOS_CACHE: dict = {}  # mes_iso -> (monotonic, payload)
@@ -499,7 +548,7 @@ def api_allhands_dados(request: Request, mes: str = Query(None)):
 
 def _monta_dados(c, alvo: dt.date) -> dict:
     d = _dados_mes(c, alvo)
-    nps = _nps_por_gc()
+    reunioes = _reunioes_gc(alvo)
     lead, mql, sal, sql, oport = (list(d["funil"]) + [0] * 5)[:5]
 
     hoje = dt.date.today()
@@ -532,9 +581,10 @@ def _monta_dados(c, alvo: dt.date) -> dict:
                    "receita": d["receita"]},
         "assessoria": {"clientes_plano": [{"plano": p, "qtde": n} for p, n in d["clientes_plano"]],
                        "total": d["base_ativa"], "leitura_tardia": leitura_tardia,
-                       # NPS por GC (fonte achada 24/07: campos NPS × Gerente de
-                       # contas dos cards da lista Assessoria); {} = lacuna ⚠
-                       "nps": nps or None},
+                       # reuniões de GC + satisfação (fonte achada 27/07 com o
+                       # Otávio: subtarefas "Reunião GC" e o campo `satisfação`);
+                       # {} = lacuna ⚠
+                       "reunioes": reunioes or None},
         # Estratégia NÃO tem card próprio (Otávio 27/07): o nº de clientes já é
         # uma barra do gráfico "Assessoria — clientes ativos por plano". Fica só
         # a lacuna do faturamento, que é informação de verdade e não duplica nada.
@@ -546,8 +596,8 @@ def _monta_dados(c, alvo: dt.date) -> dict:
                    "base_rec": d["base_rec"]},
         # sem fonte automática — o SPA marca como lacuna, nunca zero inventado
         "lacunas": {"marketing": ["resultado de evento (leads/oportunidades/vendas do evento)"],
-                    "assessoria": ["reuniões realizadas por gerente de contas"]
-                    + ([] if nps else ["NPS por gerente de contas"]),
+                    "assessoria": ([] if reunioes
+                                   else ["reuniões e satisfação por gerente de contas"]),
                     "estrategia": ["faturamento dos clientes de estratégia"]},
     }
 

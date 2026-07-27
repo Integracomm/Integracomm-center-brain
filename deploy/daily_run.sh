@@ -11,6 +11,13 @@
 cd /app/backend
 echo "=== rodada $(date '+%Y-%m-%d %H:%M:%S') ==="
 python -m scripts.run_portfolio --slack || echo "[ERRO] run_portfolio falhou (código $?) — seguindo para as demais etapas"
+# REDE DE SEGURANÇA DO SLACK (27/07). O `--slack` acima é a última linha do
+# run_portfolio: se ele morre no meio (teto de tempo, OOM, container recriado),
+# o relatório simplesmente não sai — foi o que aconteceu de 24 a 27/07, com o
+# time sem relatório e ninguém sabendo. Esta chamada envia o que houver de mais
+# recente no banco. É idempotente por dia: se o run_portfolio JÁ enviou, aqui
+# imprime 'ja-enviado-hoje' e não duplica.
+python -m scripts.send_slack_report || echo "[ERRO] envio de backup do Slack falhou (código $?)"
 if [ "$(date +%d)" = "02" ]; then
     echo "--- dia 2: checagem mensal NPS ---"
     python -m scripts.check_nps_fill --slack || echo "[ERRO] check_nps_fill falhou (código $?)"
