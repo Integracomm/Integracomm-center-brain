@@ -12,7 +12,11 @@ param(
     [string]$RemotePath = "/opt/integracomm",
     # pula a confirmacao da worktree suja (uso NAO interativo). O prompt segue
     # sendo o padrao p/ uso humano - so nao trava execucao automatizada.
-    [switch]$SemConfirmacao
+    [switch]$SemConfirmacao,
+    # deploya MESMO com a rodada diaria em andamento (mata a pontuacao do dia).
+    # So use quando a rodada estiver comprovadamente travada e voce quiser
+    # substitui-la — ver o guarda no passo [2.5/4].
+    [switch]$MesmoComRodada
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
@@ -58,6 +62,28 @@ git archive --format=tar.gz -o $tarPath HEAD
 # dist/ e gitignored (nao entra no archive) - vai num pacote proprio
 tar -czf $distPath -C $root "frontend/dist"
 Write-Host ("   codigo {0:N1} MB · dist {1:N1} MB" -f ((Get-Item $tarPath).Length / 1MB), ((Get-Item $distPath).Length / 1MB))
+
+# GUARDA (27/07): `up -d --build` RECRIA o container do app e MATA o que estiver
+# rodando dentro dele. A rodada diaria das 06h morreu assim hoje, as 08:10, por
+# causa de um deploy meu — e o log so dizia "estourou o teto de 4h", o que
+# escondeu a causa por dias. Deployar por cima de uma rodada custa o dia inteiro
+# de pontuacao e o relatorio do Slack.
+Write-Host "== [2.5/4] checando se ha rodada em andamento ==" -ForegroundColor Cyan
+$rodando = ssh -i $KeyPath "ubuntu@$ServerIP" "sudo docker top deploy-app-1 -eo pid,args 2>/dev/null | grep -E 'daily_run|python -m scripts\.' | head -3"
+if ($rodando -and -not $MesmoComRodada) {
+    Write-Host "   ATENCAO: ha processo da rodada ativo no container:" -ForegroundColor Yellow
+    Write-Host "   $rodando" -ForegroundColor Yellow
+    if (-not $SemConfirmacao) {
+        $r = Read-Host "   Deployar agora MATA essa rodada (perde a pontuacao do dia). Continuar? (s/N)"
+        if ($r -notmatch '^[sS]') { throw "deploy cancelado - rodada em andamento." }
+    } else {
+        throw "rodada em andamento - deploy abortado. Espere terminar ou rode com -MesmoComRodada."
+    }
+} elseif ($rodando) {
+    Write-Host "   rodada ativa, mas -MesmoComRodada foi passado - seguindo" -ForegroundColor Yellow
+} else {
+    Write-Host "   nenhuma rodada ativa — seguro" -ForegroundColor Green
+}
 
 Write-Host "== [3/4] enviando para o servidor ==" -ForegroundColor Cyan
 scp -i $KeyPath $tarPath "ubuntu@${ServerIP}:/tmp/integracomm_update.tar.gz"
